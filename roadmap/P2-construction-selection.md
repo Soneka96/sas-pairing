@@ -4,11 +4,11 @@
 
 🔵 Current / next phase.
 
-**Outcome: RESEARCH CONTINUES.** See the [construction mapping](../docs/construction-selection.md). P2 remains current; P3 is still gated. Jarecki–Saxena provide a direct, concurrent SAS-AKA result with a fresh bilateral key, but it remains unclear how to bind both application contexts to that key and define compatible terminal outcomes under delayed or dropped messages while preserving the theorem’s secrecy and concurrency guarantees.
+**Outcome: RESEARCH CONTINUES.** See the [construction mapping](../docs/construction-selection.md). P2 remains current; P3 is gated. Jarecki–Saxena’s Enc-AKA theorem is the strongest direct key-agreement result, but only for `m_i = null`, `m_j = K`. Theorem 1’s arbitrary-message Enc-MCA authentication result does not itself prove context-to-key binding or bilateral terminal application success. The single remaining blocker is a proof or established composition theorem covering both properties while preserving Enc-AKA’s key-security and concurrency guarantees under delayed or dropped messages.
 
 ## Goal
 
-Evaluate candidate SAS-AKE and directly relevant SAS/OOB constructions against P1 and determine whether any candidate can be justified for this project. The mapping includes Pasini–Vaudenay, Beskorovajnov–Müller-Quade, and Jarecki–Saxena; none is selected until the remaining construction question is resolved.
+Evaluate candidate SAS-AKE and directly relevant SAS/OOB constructions against P1 and determine whether any candidate can be justified for this project. The focused Enc-MCA/Enc-AKA composition question is resolved conservatively as **NEW PROOF REQUIRED**; the terminal-result question is **CONSTRUCTION-LEVEL PROOF REQUIRED**. No construction is selected until the single missing combined proof/composition result is established.
 
 ## Why this phase exists
 
