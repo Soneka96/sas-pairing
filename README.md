@@ -15,9 +15,9 @@ The value is compared on both devices. It is not typed and is not a password. Th
 
 ## Intended properties
 
-The design aims to support active man-in-the-middle resistant initial pairing, human comparison instead of password entry, an alphanumeric SAS, and authenticated application context supplied by the consuming application. The protocol will be language-neutral, with one security core, Dart and .NET bindings, deterministic test vectors, and an explicit threat model.
+The design aims to support active man-in-the-middle resistant initial pairing, human comparison instead of password entry, an alphanumeric SAS, and authentication and binding of consumer-supplied application context by a successful ceremony. Context values are input, not trusted facts merely because an application supplied them; the eventual protocol will define which values it authenticates and binds. The protocol will be language-neutral, with one security core, Dart and .NET bindings, deterministic test vectors, and an explicit threat model.
 
-These are design goals, not current capabilities or security claims.
+These are design goals, not current capabilities or security claims. SAS examples in this README are illustrative and do not select an alphabet, length, grouping, or entropy value.
 
 ## Project status
 

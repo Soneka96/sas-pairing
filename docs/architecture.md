@@ -18,9 +18,15 @@ The future .NET package provides an idiomatic C# API over the same native core. 
 
 ## Consumer application
 
-The consumer supplies the identity and authenticated context that the protocol needs to bind, and owns application identity semantics, authorization, pair / reject / block behavior, durable trust, application retry policy, user interface, discovery, and network transport unless a future protocol specification explicitly requires otherwise.
+The consumer supplies identity and application-context values for the ceremony to authenticate and bind. Supplying a value does not make it trusted or authenticated; only values explicitly covered by the selected protocol may be described as authenticated and bound. The protocol will define which context fields receive that protection; this document does not freeze them.
 
-Network endpoint or address and display name are not identities. The core must not encode any one consumer's trust-store or domain concepts.
+The consumer owns application identity semantics, authorization, pair / reject / block behavior, durable trust, user interface, discovery, and network transport unless a future protocol specification explicitly requires otherwise. Network endpoint or address and display name are not identities. The core must not encode any one consumer's trust-store or domain concepts.
+
+## Attempt constraints and product policy
+
+The protocol/security contract defines any maximum attempts, cooldowns, ceremony limits, lifetime or session bounds, persistent counters, or other constraints required by its security argument. Enforcement may require consumer-provided storage or integration, but a consumer cannot bypass a required constraint while still claiming the same protocol security guarantees. Exact constraints remain unresolved until the protocol is selected.
+
+Consumers may present cooldowns in their UX and apply stricter limits, product-specific abuse handling, administrative lockouts, and additional rate limiting. Consumer policy may make the protocol stricter, not weaken its security-required minimums.
 
 ## Intended data flow
 
