@@ -4,7 +4,7 @@
 
 🔵 Current / next phase.
 
-**Outcome: RESEARCH CONTINUES.** See the [construction mapping](../docs/construction-selection.md). P2 remains current; P3 is gated. Jarecki–Saxena’s Enc-AKA theorem is the strongest direct key-agreement result, but only for `m_i = null`, `m_j = K`. Theorem 1’s arbitrary-message Enc-MCA authentication result does not itself prove context-to-key binding or bilateral terminal application success. The single remaining blocker is a proof or established composition theorem covering both properties while preserving Enc-AKA’s key-security and concurrency guarantees under delayed or dropped messages.
+**Outcome: RESEARCH CONTINUES.** See the [construction mapping](../docs/construction-selection.md). P2 remains current; P3 is gated. Jarecki–Saxena’s Enc-AKA theorem is the strongest direct key-agreement result, but only for `m_i = null`, `m_j = K`. Theorem 1’s arbitrary-message Enc-MCA authentication result does not itself prove context-to-key binding or bilateral terminal application success. Čagalj–Čapkun–Hubaux’s DH-SC authenticates arbitrary MTSC messages but assumes an ideal commitment and one active session per party, so it does not satisfy P1’s concurrency requirement. The single remaining blocker is a proof or established composition theorem covering both context binding and bilateral terminal outcomes for Enc-AKA while preserving key-security and concurrency guarantees under delayed or dropped messages.
 
 ## Goal
 
