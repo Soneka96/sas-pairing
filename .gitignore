@@ -1,0 +1,8 @@
+# Rust build output (when the core crate is added)
+/target/
+
+# IDE and operating-system files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

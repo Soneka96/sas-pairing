@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/Soneka96/sas-pairing/security/advisories/new
+    about: Use private vulnerability reporting. Do not post suspected vulnerabilities in a public issue.
