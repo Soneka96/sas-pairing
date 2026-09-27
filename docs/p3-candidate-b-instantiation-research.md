@@ -142,7 +142,20 @@ These requirements avoid encoding ambiguity; they do not establish that the sele
 
 **STOP concrete cryptographic selection.** Retain Candidate B as P2’s construction direction, but do not freeze a commitment, hash, `t`, SAS bit order, or byte encoding in P3 on this evidence.
 
-**Recommended next task: P3.3 — independent cryptographic review of one proposed concrete Candidate B commitment/hash mapping against Theorem 3, including its encoding and concrete-hash assumptions.** Keep the profile unselected until that review supports the mapping.
+**Recommended next task: P3.3 — primary-source clarification of Candidate B’s intended concrete commitment/hash instantiation.** Contact the paper authors and inspect any supplementary material they identify before proposing a project-specific mapping for independent cryptographic review. Keep all concrete commitment, hash, encoding, and parameter choices unselected until that evidence is obtained.
+
+Ask the authors:
+
+1. What exact hash-then-open commitment construction is intended for `Commit(m; r)` in Candidate B?
+2. Is there a concrete formula or supplementary construction considered faithful to Theorem 3?
+3. Are the commitment hash and SAS random-oracle call intended to use the same oracle/domain, domain-separated calls to one oracle, or conceptually separate oracles?
+4. What concrete encoding or framing is intended for concatenations such as `sid || m_S || m_R || r_S || r_R`?
+5. Is a standard hash such as SHA-256 or SHA3-256 with explicit injective encoding and domain separation considered a reasonable engineering instantiation of the ROM construction?
+6. If so, what security claim do the authors consider defensible for such a real-hash instantiation?
+7. Is there a more faithful or complete reference implementation of the mutual Candidate B construction than the reviewed NoisyTransfer implementation?
+8. Does the paper’s RO-free direction offer a more appropriate path for a reusable production-oriented library? If so, what exact construction or source should be evaluated?
+
+If the clarification supports a concrete proposal, submit that mapping for independent cryptographic review before selecting it. If it does not, retain STOP and record the unresolved gap.
 
 ## 11. What remains unresolved
 
