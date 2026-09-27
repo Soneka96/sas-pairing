@@ -4,6 +4,8 @@
 
 🔵 Current / next phase.
 
+**Outcome: RESEARCH CONTINUES.** See the [construction mapping](../docs/construction-selection.md). P2 remains current; P3 is still gated.
+
 ## Goal
 
 Evaluate candidate SAS-AKE constructions against P1 and determine whether any candidate can be justified for this project. Pasini–Vaudenay is the current leading research candidate, not a selection.

@@ -6,6 +6,8 @@ The protocol is not implemented. This repository is pre-alpha and not suitable f
 
 Pasini–Vaudenay SAS-based authenticated key agreement is the current leading academic candidate for further study. Shortcake upstream is useful implementation research, but it is not currently accepted as the production security core. These are research directions, not protocol decisions or endorsements.
 
+P2 outcome: **RESEARCH CONTINUES**. The [construction mapping](construction-selection.md) records the paper-level result, assumptions, Shortcake differences, and blocking questions. P2 remains current; P3 is still gated.
+
 All of the following remain gates before production implementation:
 
 - exact construction and security rationale
