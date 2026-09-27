@@ -1,21 +1,30 @@
 # Protocol status
 
-## NO PRODUCTION PROTOCOL SELECTED
+## CONSTRUCTION SELECTED; NO PRODUCTION PROTOCOL IMPLEMENTED
 
 The protocol is not implemented. This repository is pre-alpha and not suitable for production use.
 
-Pasini–Vaudenay SAS-based authenticated key agreement is the current leading academic candidate for further study. Shortcake upstream is useful implementation research, but it is not currently accepted as the production security core. These are research directions, not protocol decisions or endorsements.
+Candidates A–D and their historical analyses remain preserved in P2. P2 now selects Candidate B (Beskorovajnov–Müller-Quade, ACNS 2026 / ePrint 2025/1598) for the clarified authenticated-bootstrap result shape. Its mutual protocol UC-authenticates the exact `m_S` and `m_R` role-positioned messages, returning each peer's exact message after a successful exact SAS comparison; it does not output a reusable key or prove possession of long-term keys. Theorem 3 has `ε=2^-t` per SID and assumes a computationally hiding/binding commitment, random-oracle SAS, synchronous ideal OOB comparison, honest endpoints, and zero human error. Its distinguishing bound adds commitment hiding/binding advantages, `2q_H(κ)2^-κ` pre-hit probability, and negligible terms. A profile must encode/check role, domain, version, ceremony, peer key bytes, and security-relevant context; the theorem authenticates arbitrary message contents but does not assert that application contexts agree unless both parties check that condition.
 
-All of the following remain gates before production implementation:
+Candidate E, Vodozemac / Matrix SAS, is **INSUFFICIENT TO SELECT** as a generic upstream construction. Current Vodozemac includes maintained X25519/HKDF-SHA-256 SAS and HMAC-SHA-256 primitives. Matrix v1.18 and `matrix-sdk-crypto` supply a Matrix-specific commit-before-reveal verification ceremony and state machine, but depend on Matrix user/device identifiers and trusted device-key/cross-signing semantics. Least Authority's 2022 report examined some Vodozemac SAS source code, but did not audit the full Matrix verification protocol/SDK or any generic extraction; the report also predates Vodozemac 0.10.0. Replacing Matrix identity/context fields creates a new security-sensitive profile requiring analysis and review. The Rust crate is Apache-2.0; the maintained Famedly Dart binding is AGPL-3.0; no maintained official .NET binding was found.
+
+P1 now accepts mutually authenticated bootstrap data bound to the exact ceremony, roles, and security-relevant context carried in authenticated messages; a reusable shared key is not mandatory. Theorem 3 does not prove long-term public-key possession: the result may say “these exact public-key bytes were supplied by the peer in this authenticated ceremony,” not “the peer owns or controls the corresponding private key.” A later TLS 1.3 exchange can establish current possession only by verifying the exact pinned key bytes and its `CertificateVerify` proof. Candidate C remains documented as the shared-key alternative; its external-context-to-key gap is **NEW PROOF REQUIRED** if that alternative is pursued. Candidate A's P1 mapping and all Candidate C findings remain preserved. Shortcake remains implementation research only, not the production security core.
+
+P2 outcome: **SELECTED — Candidate B for the remote authenticated-bootstrap profile**, with the exact profile still required before implementation. The detailed theorem mapping, context/SID/retry analysis, lifecycle limits, trace analysis, and author-code assessment are in [construction selection](construction-selection.md). Candidate B authenticates exact public-key bytes as peer-supplied message data; the profile must validate expected values and does not establish private-key possession. Candidate D's ideal-commitment instantiation remains **NOT ESTABLISHED**. Candidate E remains **INSUFFICIENT TO SELECT**. The cited NoisyTransfer code is **REFERENCE IMPLEMENTATION ONLY**: it is experimental, AGPL-3.0-only, JavaScript/TypeScript, and materially differs from the proved Candidate B construction; no suitable drop-in Candidate B or MANA-IV implementation for this project's Rust/Dart/.NET core was found in the focused search.
+
+The same remote Candidate B protocol is intended for Windows-to-Windows, mobile-to-Windows, and future supported clients. The transport and UI differ; the remote protocol semantics do not. Both participants compare the complete SAS for the exact ceremony without transcription, and pairing requires bilateral completion and confirmations; QR is optional future UX research. A separate same-device profile may skip SAS only after an approved OS-authenticated primitive establishes genuine locality, an authorized local principal, and exclusion of network peers. Host approval remains explicit and ceremony-specific. Loopback, IP, hostname, discovery name, process name, or LAN proximity alone cannot establish this path. The default Automatic policy uses that profile only when its predicate is established and otherwise falls back to Candidate B; Always require SAS uses Candidate B even on the same device. TLS 1.3 with the exact pinned key and proof of possession is the post-pairing transport/authentication layer, not the Candidate B first-contact construction. RFC 9266's TLS exporter is a channel binding, not a proven shortened SAS.
+
+P2 construction selection is complete; the following remain gates before a production protocol profile or implementation:
 
 - exact construction and security rationale
-- concrete key agreement or KEM
-- commitment mechanism
-- application-context binding
+- concrete Candidate B commitment/hash instantiation justified for its random-oracle assumptions
+- exact application-context encoding and mismatch rules
 - SAS derivation and encoding
 - protocol-required attempt, cooldown, ceremony, lifetime, and persistent-counter constraints needed for the security bound; exact values and enforcement integration
 - canonical wire format and state machine
 - deterministic test vectors
 - independent external review
 
-A future candidate user experience is approximately a 40-bit SAS rendered as eight Crockford Base32 characters, for example `7K3-M2Q8D`. This is a UX candidate only: no alphabet, length, grouping, or entropy value is selected, and no security claim depends on the example. The profile must account for partial comparison, confusing glyphs, accidental approval, accessibility, localization, display conditions, and repeated-mismatch fatigue. Retry constraints needed for a security bound belong to the protocol/security contract; consumers may enforce stricter product policy but may not bypass required constraints while claiming the same bound.
+This construction selection authorizes P3 profile work, not production cryptography or a production-readiness claim.
+
+A future human-comparison format remains open. The earlier illustrative approximately 40-bit Crockford Base32 string is retained as a UX candidate only; no alphabet, length, grouping, or entropy value is selected, and no security claim depends on it. The profile must account for partial comparison, confusing glyphs, accidental approval, accessibility, localization, display conditions, and repeated-mismatch fatigue. Retry constraints needed for a security bound belong to the protocol/security contract; consumers may enforce stricter product policy but may not bypass required constraints while claiming the same bound.

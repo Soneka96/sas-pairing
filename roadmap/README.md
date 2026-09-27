@@ -7,9 +7,9 @@ P0 ✅ Repository Foundation
  ↓
 P1 ✅ Threat Model and Protocol Requirements
  ↓
-P2 🔵 Construction Selection / Formal Mapping
+P2 ✅ Construction Selection / Formal Mapping
  ↓
-P3 🟡 Protocol Profile + Deterministic Vectors
+P3 🔵 Protocol Profiles + Deterministic Vectors
  ↓
 P4 🟡 Native Rust Security Core
  ↓
@@ -39,7 +39,7 @@ P10 🟡 Consumer Integration / DovahLink Example
 
 The roadmap is evidence-driven and may change. Deep planning is limited to the current phase; the next phase is understood well enough to expose dependencies. Later phases remain milestone-level until earlier security decisions resolve. A phase may end in STOP rather than automatically progressing. No dates or delivery estimates are implied.
 
-P0 and P1 are complete based on the repository foundation and the P1 merge in current `main`. P2 is the next gate. Pasini–Vaudenay is a research candidate, not a selected construction.
+P0, P1, and P2 are complete. Candidate B is selected for the remote authenticated-bootstrap profile; P3 is the next gate for the remote profile and separate same-device local profile. Construction selection does not mean a production protocol is implemented or production-ready.
 
 ## Security gates across phases
 
