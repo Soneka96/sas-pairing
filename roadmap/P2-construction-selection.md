@@ -4,11 +4,11 @@
 
 🔵 Current / next phase.
 
-**Outcome: RESEARCH CONTINUES.** See the [construction mapping](../docs/construction-selection.md). P2 remains current; P3 is gated. Jarecki–Saxena’s Enc-AKA theorem is the strongest direct key-agreement result, but only for `m_i = null`, `m_j = K`. Theorem 1’s arbitrary-message Enc-MCA authentication result does not itself prove context-to-key binding. FGSW Theorem 5.1 supplies generic, role-asymmetric post-AKE key confirmation under Match-security/key-secrecy and KDF/MAC assumptions, but confirms the base AKE SID and does not cover Candidate C’s external context. P1’s context requirement is ambiguous; the research note distinguishes agreed context, key-context association, and consumer trust without changing P1. The context-binding classification is **NEW PROOF REQUIRED**. The single remaining blocker is a proof or established composition theorem binding both participants’ generic context inputs to Candidate C’s same fresh key while preserving its key secrecy, authentication, and concurrency guarantees. Čagalj–Čapkun–Hubaux’s DH-SC remains outside P1 due its ideal-commitment and concurrency assumptions.
+**Outcome: RESEARCH CONTINUES.** See the [construction mapping](../docs/construction-selection.md). P2 remains current; P3 is gated. The current P1 audit classifies the reusable shared-key requirement as **AMBIGUOUS**: P1 neither requires that output explicitly nor says authenticated bootstrap messages alone suffice. Candidate B is **PROMISING** if P1 accepts mutual SAS authentication of peer-supplied data without a reusable key; its theorem authenticates exact messages under a unique SID but does not equate contexts, return a shared key, or prove long-term key possession. Candidate C remains the direct-key option if P1 requires that output; its context-to-key result remains **NEW PROOF REQUIRED** only if C is pursued. Candidate A and all prior A–D findings remain documented. Candidate D’s one-active-session assumption would require a profile that rejects attacker-created parallel instances and clarification of P1’s current coexistence clause; its ideal-commitment assumption remains a serious blocker. P1 is not edited.
 
 ## Goal
 
-Evaluate candidate SAS-AKE and directly relevant SAS/OOB constructions against P1 and determine whether any candidate can be justified for this project. The focused Enc-MCA/Enc-AKA context-to-key question is **NEW PROOF REQUIRED** and is the single remaining P2 proof blocker. Terminal-result wording remains a P1 clarification item, not a second construction proof blocker: under the proposed clarification, local completion may differ under message loss, while two partnered sessions that both succeed must agree. No construction is selected until the context-to-key result is established.
+Evaluate candidate SAS-AKE and directly relevant SAS/OOB constructions against P1 and determine whether any candidate can be justified for this project. The result shape and shared-key requirement need P1 clarification before selection. Candidate B has no identified new proof obligation for its basic authenticated-message result, provided the profile defines encoding, role/SID binding, mismatch behavior, attempt limits, human/OOB assumptions, and result correlation. A key-control claim requires a separately justified proof of possession. Candidate C’s context-to-key question and Candidate D’s commitment-instantiation gap remain candidate-specific. Terminal/lifecycle wording also needs to distinguish paired protocol outputs from durable application completion. No construction is selected until the authoritative requirement and applicable proof/profile gaps are resolved.
 
 ## Why this phase exists
 
@@ -48,7 +48,7 @@ Record gaps and evidence with references. Treat an unmet requirement as a gap, n
 
 ## Deliverables
 
-A concise construction comparison and requirement-by-requirement mapping, with citations to primary sources, explicit assumptions, unresolved gaps, and a recorded phase outcome. Any proposed direction remains a candidate until the evidence supports selection.
+A concise comparison of Candidates A–D and requirement-by-requirement mappings, with citations to primary sources, exact functionality, assumptions, unresolved proof/profile gaps, and a recorded phase outcome. Any proposed direction remains a candidate until the evidence supports selection.
 
 ## Security invariants
 
