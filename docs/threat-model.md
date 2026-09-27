@@ -17,7 +17,7 @@ The terms **MUST**, **MUST NOT**, and **SHOULD** state requirements for evaluati
 - **Human approver:** A person acting for the intended pairing who compares the SAS shown for both participants in the same live ceremony and explicitly approves that ceremony after a match. The protocol does not establish the approver's identity or make the human comparison a perfect authenticated channel.
 - **Network attacker:** An active attacker with the capabilities described below. The attacker need not control either endpoint to attack the network exchange.
 
-Roles identify protocol behavior only. A network endpoint or address is not identity; a display name is not identity; and a public-key claim alone is not proof of possession.
+Roles identify protocol behavior only. A network endpoint or address is not identity; a display name is not identity; and a public-key claim alone is not proof of possession. If a pairing result claims that a peer controls or owns a specific public key, the selected protocol MUST establish proof of control of the corresponding private key. Unless that proof has been established, the result MUST NOT describe the public-key relationship as authenticated proof of possession or authenticated ownership.
 
 ## Attacker model and security boundary
 
@@ -39,7 +39,7 @@ The human approver compares the SAS displayed for both participants for the inte
 
 Approval authorizes completion of that one ceremony, subject to all protocol checks. It MUST NOT authorize another or later ceremony, a different peer or role, an unbound context, application permissions, or durable application trust by itself. The consumer makes its own trust and authorization decisions from the pairing result.
 
-The SAS is a value for human comparison. It is **not** a PIN, password, bearer token, or secret that must remain confidential. Its security purpose and required handling must be justified by the selected protocol and SAS security model. This document does not select an alphabet, bit length, grouping, or rendering scheme. The approximately 40-bit Crockford Base32 direction remains only a candidate.
+The SAS is a value for human comparison. It is **not** a PIN, password, bearer token, or secret that must remain confidential. Its security purpose and required handling must be justified by the selected protocol and SAS security model. No numeric minimum SAS guessing/security target has yet been justified; selecting one remains a required research and decision gate. A final SAS profile MUST NOT be selected until that target and the repeated-attempt assumptions are justified. The approximately 40-bit Crockford Base32 direction remains only a candidate, not the security target. This document does not select an alphabet, bit length, grouping, or rendering scheme.
 
 Human comparison is part of the security system, not a perfect channel. A candidate's security analysis and consumer guidance must account for partial comparison, misread characters, accidental approval, fatigue, repeated attacker-induced ceremonies, accessibility needs, and localization or rendering differences. The design must not claim a stronger human-comparison assurance than its comparison procedure reasonably supports.
 
@@ -73,7 +73,7 @@ Candidate protocols must justify freshness and reject or render ineffective, as 
 - messages or approval replayed after the ceremony has expired;
 - data from one concurrent ceremony accepted as data for another;
 - messages, state, approval, or results replayed across initiator and responder roles; and
-- messages, state, approval, or results replayed across distinct application contexts.
+- messages, state, approval, or results replayed across distinct cryptographically bound application contexts, or across application contexts where those contexts are part of the selected protocol binding.
 
 Duplicate or reordered delivery must not cause a stale or incomplete run to become successful. No concrete nonce, counter, timestamp, transcript format, or cryptographic mechanism is selected here.
 
