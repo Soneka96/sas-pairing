@@ -4,11 +4,11 @@
 
 🔵 Current / next phase.
 
-**Outcome: RESEARCH CONTINUES.** See the [construction mapping](../docs/construction-selection.md). P2 remains current; P3 is still gated.
+**Outcome: RESEARCH CONTINUES.** See the [construction mapping](../docs/construction-selection.md). P2 remains current; P3 is still gated. The mapping now evaluates Pasini–Vaudenay’s direct SAS-AKE and Beskorovajnov–Müller-Quade’s UC SAS authentication plus one-shot SMT composition; neither currently provides a justified complete project result.
 
 ## Goal
 
-Evaluate candidate SAS-AKE constructions against P1 and determine whether any candidate can be justified for this project. Pasini–Vaudenay is the current leading research candidate, not a selection.
+Evaluate candidate SAS-AKE and directly relevant SAS/OOB constructions against P1 and determine whether any candidate can be justified for this project. Pasini–Vaudenay remains the leading direct AKE candidate; Beskorovajnov–Müller-Quade is a recent composable authentication/SMT candidate, not a selection.
 
 ## Why this phase exists
 

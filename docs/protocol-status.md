@@ -4,7 +4,7 @@
 
 The protocol is not implemented. This repository is pre-alpha and not suitable for production use.
 
-Pasini–Vaudenay SAS-based authenticated key agreement is the current leading academic candidate for further study. Shortcake upstream is useful implementation research, but it is not currently accepted as the production security core. These are research directions, not protocol decisions or endorsements.
+Pasini–Vaudenay SAS-based authenticated key agreement remains the leading direct AKE candidate. Beskorovajnov–Müller-Quade (ACNS 2026 / IACR ePrint 2025/1598) is also under P2 review: its UC-authentication and KEM/DEM result is for one-shot secure message transfer, not a reusable pairing-key result. Neither direction is selected. Shortcake upstream remains implementation research, not the production security core.
 
 P2 outcome: **RESEARCH CONTINUES**. The [construction mapping](construction-selection.md) records the paper-level result, assumptions, Shortcake differences, and blocking questions. P2 remains current; P3 is still gated.
 
