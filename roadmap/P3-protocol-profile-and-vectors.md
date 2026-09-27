@@ -2,11 +2,11 @@
 
 ## Status
 
-🟡 Planned; gated on a SELECTED P2 outcome.
+🔵 Next; P2 selected Candidate B for the remote profile. P3 defines the remote profile and specifies the separate same-device profile before implementation.
 
 ## Goal
 
-Turn the selected construction into a concrete, language-neutral candidate protocol profile and deterministic conformance vectors.
+Define the selected remote construction as a concrete, language-neutral profile with deterministic conformance vectors, and specify the separate same-device local profile. Do not implement production cryptography in P3.
 
 ## Why this phase exists
 
@@ -14,12 +14,14 @@ Implementation and independent review need one precise profile that removes ambi
 
 ## Inputs / prerequisites
 
-- A documented SELECTED outcome from P2 with evidence, assumptions, limitations, and justified security bound.
+- P2's selected Candidate B remote construction, evidence, assumptions, limitations, and justified security bound.
 - P1 requirements and the authoritative architecture and protocol-status documents.
 
 ## Scope
 
-Resolve and document the concrete roles and message ordering; cryptographic primitive and commitment profiles; transcript definition and authentication; domain separation and context binding; SAS derivation and SAS rendering profile; canonical encoding; ceremony state machine; failure and replay semantics; and deterministic positive and negative/mutation vectors. Decide concrete values only when supported by P2 and the profile's security rationale.
+**Remote Candidate B profile:** define S/R ↔ Host/Client role mapping; exact bootstrap message schemas; canonical encoding; authenticated/fixed protocol, profile, and version negotiation with downgrade prevention; SID generation and lifecycle; commitment instantiation; random-oracle/hash profile; SAS bit length and rendering; full-comparison UX contract; bilateral confirmation semantics; aggregate attempt/retry budget; persistence across restart; stale approval handling; cancellation; timeout; concurrent ceremonies; terminal-state handling; and deterministic vectors. Preserve the ideal-OOB assumptions and human-error limits; do not present the theorem as a guarantee against human mistakes or atomic durable storage. Carry the exact authenticated public-key bytes unchanged into later pinning/proof-of-possession checks; do not silently replace an identity key, and require explicit re-pairing under a new trust epoch for identity changes.
+
+**Same-device local profile:** define the OS-authentication primitive/interface, local authorization rule, locality establishment, remote exclusion, ceremony/session identifier, Host approval semantics, stale/replay behavior, compatible bootstrap-result semantics, and interaction with Always require SAS. Do not treat same machine, loopback, IP, hostname, discovery name, process name, or LAN proximity as proof. Do not claim resistance to an attacker controlling the trusted OS/user boundary enough to impersonate or control the authorized participant. Do not select low-level APIs without evidence.
 
 ## Out of scope
 
@@ -43,4 +45,4 @@ Return to P2 or stop if the selected construction cannot support a required prof
 
 ## What this unlocks
 
-P4 implementation of the reviewed candidate profile in one native security core.
+P4 implementation planning for the reviewed and specified security profiles in one native security core, subject to security review gates.

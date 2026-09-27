@@ -2,7 +2,7 @@
 
 ## Status
 
-✅ Complete. P1 is present in current `main`, merged by PR #1.
+✅ Complete. Clarified for the owner-approved authenticated-bootstrap result contract and separate same-device profile requirements.
 
 ## Goal
 
@@ -18,7 +18,7 @@ P0 repository foundation.
 
 ## Scope
 
-P1 established participant roles, the active network-attacker model, ceremony and human-approval boundaries, required pairing properties, context binding, replay and concurrency requirements, failure handling, repeated-attempt concerns, and a language-neutral result contract. These are evaluation requirements, not proof that a protocol satisfies them.
+P1 establishes participant roles, the active network-attacker model, ceremony and human-approval boundaries, required pairing properties, context binding, replay and concurrency requirements, failure handling, repeated-attempt concerns, and a language-neutral result contract. A reusable shared key is not mandatory; mutually authenticated bootstrap data bound to the exact ceremony, roles, and authenticated security-relevant context is sufficient. Public-key bytes do not imply proof of possession. A separately justified OS-authenticated same-device profile may omit human SAS only under its specified trust predicate; metadata claims such as loopback, IP, or hostname do not establish it. These are requirements, not proof that any production protocol or local profile has been implemented.
 
 ## Out of scope
 
@@ -34,8 +34,8 @@ Requirements must be justified by a candidate's security analysis and assumption
 
 ## Exit criteria
 
-The merged threat model records the attacker model, required properties, security boundaries, and unresolved decisions for candidate evaluation.
+The threat model records the attacker model, accepted result contract, profile requirements, security boundaries, and unresolved profile decisions. Remote pairing over untrusted networks still requires an active-attacker-resistant construction.
 
 ## What this unlocks
 
-P2 construction evaluation and formal mapping against the documented requirements.
+P2 construction selection and formal mapping against the documented requirements; P2 selects Candidate B for the remote profile.

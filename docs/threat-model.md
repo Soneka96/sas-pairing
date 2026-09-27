@@ -4,7 +4,7 @@
 
 This document defines the security problem and requirements that a future candidate protocol must satisfy. It defines **what** pairing must guarantee, not the cryptographic construction or implementation that provides those guarantees. A candidate must justify each claimed property against its construction, security analysis, and stated assumptions; listing a requirement here does not mean this project currently meets it.
 
-This project is pre-alpha. No production protocol or production cryptography has been selected or implemented. Pasini–Vaudenay SAS-based authenticated key agreement remains a research candidate. Shortcake is evidence and implementation reference material only unless separately evaluated. No key-agreement or KEM profile, commitment construction, final SAS encoding, wire format, or API is selected here. `sas-pairing` remains application-neutral; DovahLink is an original consumer/example, not part of the protocol core.
+This project is pre-alpha. A remote construction has been selected in P2, but no production protocol profile or production cryptography has been implemented. P1 states requirements and does not select primitives, commitment construction, final SAS encoding, wire format, or API. Shortcake is evidence and implementation reference material only unless separately evaluated. `sas-pairing` remains application-neutral; DovahLink is an original consumer/example, not part of the protocol core.
 
 The terms **MUST**, **MUST NOT**, and **SHOULD** state requirements for evaluating a future protocol and its consumers. They are not claims about existing capabilities.
 
@@ -23,7 +23,7 @@ Roles identify protocol behavior only. A network endpoint or address is not iden
 
 Assume the attacker may observe, intercept, modify, replay, reorder, delay, drop, inject, and create messages; initiate repeated ceremonies; create separate sessions to each participant; and attempt an active man-in-the-middle attack. The network provides no trusted identity, ordering, delivery, or freshness.
 
-The attacker model is not weakened by excluding endpoint compromise. The protocol alone cannot protect against a compromised endpoint or operating system, malicious local software with equivalent privileges, a compromised display or input surface, a coerced user, or an attacker who controls the trusted human comparison itself. These are out of scope for the protocol's network guarantees and must not be described as attacks the protocol defeats.
+The remote protocol alone cannot protect against a compromised endpoint, a compromised display or input surface, a coerced user, or an attacker who controls the trusted human comparison itself. The separate same-device profile also does not claim to resist an attacker who has compromised the trusted local OS/user security boundary enough to impersonate or control the authorized local participant. These limits do not weaken the remote network-attacker model and must not be described as attacks either profile defeats.
 
 ## Pairing ceremony and identity
 
@@ -42,6 +42,14 @@ Approval authorizes completion of that one ceremony, subject to all protocol che
 The SAS is a value for human comparison. It is **not** a PIN, password, bearer token, or secret that must remain confidential. Its security purpose and required handling must be justified by the selected protocol and SAS security model. No numeric minimum SAS guessing/security target has yet been justified; selecting one remains a required research and decision gate. A final SAS profile MUST NOT be selected until that target and the repeated-attempt assumptions are justified. The approximately 40-bit Crockford Base32 direction remains only a candidate, not the security target. This document does not select an alphabet, bit length, grouping, or rendering scheme.
 
 Human comparison is part of the security system, not a perfect channel. A candidate's security analysis and consumer guidance must account for partial comparison, misread characters, accidental approval, fatigue, repeated attacker-induced ceremonies, accessibility needs, and localization or rendering differences. The design must not claim a stronger human-comparison assurance than its comparison procedure reasonably supports.
+
+## Pairing profiles and selection policy
+
+Remote pairing over an untrusted network requires a construction that meets the applicable active-attacker requirements. P2 selects Candidate B for that remote authenticated-bootstrap profile. The same remote protocol and authenticated wire/profile semantics apply to Windows-to-Windows and mobile-to-Windows pairing; transport and UI integration may differ. The intended remote UX is compare-only: both participants display and compare the entire SAS for the exact ceremony, with no manual transcription. Pairing succeeds only after bilateral completion consistent with the construction and both required confirmations; one participant pressing a local button alone is insufficient. UI labels are not protocol fields.
+
+A separate same-device profile may skip human SAS comparison only when an approved profile establishes a genuinely local connection using an OS-authenticated primitive, authorizes the connecting principal, and excludes remote network peers. The Host still receives a ceremony-specific local request and must explicitly approve that ceremony. Same machine, loopback, IP address, hostname, discovery name, or process name alone MUST NOT select this path. The exact local primitive, authorization rule, locality proof, remote exclusion, and replay protection remain profile work; until established, use the remote SAS profile.
+
+The default policy is **Automatic**: use the approved same-device profile only when its security predicate is established; otherwise use Candidate B remote SAS pairing. **Always require SAS** uses the remote Candidate B SAS ceremony even on the same verified device. No user preference may bypass Candidate B for remote pairing. The local profile's OS/user boundary assumption is limited to the protection it actually establishes.
 
 ## Required properties of successful pairing
 
@@ -102,10 +110,10 @@ Depending on the selected construction and its analysis, security-required state
 
 ## Pairing result contract
 
-A successful result must represent that the requirements claimed by the selected protocol were met for one exact ceremony, including the peer/role and any context the protocol actually authenticated and bound. It must let a consumer make its own application-level trust decision without implying that unsupported identity or context claims were verified. The result must distinguish authenticated-and-bound information from consumer-supplied or otherwise unverified information as required by the eventual protocol contract.
+A successful pairing MUST produce mutually authenticated bootstrap data bound to the exact ceremony, explicit participant roles, and all security-relevant context carried in the authenticated messages. The exact encoding is profile work. A reusable shared pairing key is not required. Authenticated public-key bytes mean only that the peer supplied those exact bytes as part of the successfully authenticated ceremony; they do not prove possession, ownership, or control of the corresponding private key.
 
-The result does not itself establish application authorization, permanent trust, or guarantees beyond those justified by the selected protocol. This contract is language-neutral and does not freeze Rust types, a C ABI, Dart or .NET APIs, a wire format, or a trust-storage model.
+The consumer decides whether and when to persist trust or authorize application behavior. The result does not itself establish application authorization, durable trust, or guarantees beyond those justified by the profile. This contract is language-neutral and does not freeze Rust types, a C ABI, Dart or .NET APIs, a wire format, or a trust-storage model. A profile's participants must agree on successful ceremony completion; their durable writes are not assumed to be atomic.
 
 ## Unresolved decisions
 
-The protocol, its security proof and bound, key agreement or KEM, commitment construction, context encoding and binding profile, SAS derivation and encoding, attempt and lifetime parameters, persistence requirements, wire format, state machine, and result/API shapes remain unresolved. No production cryptography exists yet. Requirements here do not select a candidate or justify a claim; each candidate and parameter must be separately evaluated and reviewed before implementation.
+The exact profile encodings, construction instantiation, context and mismatch rules, SAS derivation and rendering, aggregate attempt/lifetime limits, persistence, wire format, and state machine remain unresolved. No production protocol or production cryptography exists yet. P2 records the remote construction selection and its evidence; this requirements document does not turn that selection into a production-readiness claim.

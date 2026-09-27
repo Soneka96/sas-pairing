@@ -4,13 +4,11 @@
 
 ✅ Complete — Candidate B selected for the authenticated-bootstrap result contract.
 
-**Outcome: CONDITIONAL SELECTION — Candidate B with explicit profile for the proposed authenticated-bootstrap result contract.** P1's historical text remains unchanged and ambiguous about requiring a reusable shared key; this P2 decision treats the proposed clarification below as the result contract under evaluation, pending its adoption into P1. This is a completed P2 decision for that contract, not a silent P1 revision. Theorem 3 already supports arbitrary role-positioned message bytes and returns the peer's exact message after the synchronous SAS comparison. Profile rules must define canonical encoding, Host/Client role mapping, unique SID/ceremony lifecycle, context equality checks, total retry accounting, exact OOB semantics, and consumer persistence. Public-key bytes are authenticated only as peer-supplied values; the result does not claim that the key claim is true or that the peer possesses the private key. TLS 1.3 proof of possession applies to later connections. Candidate C's direct-key/context gap remains conditional if a shared-key requirement returns. Candidate A/C/D/E research remains documented; Candidate E is not selected. No same-machine shortcut is selected; Windows local/remote and mobile use the same protocol. See the [construction mapping](../docs/construction-selection.md) and [protocol status](../docs/protocol-status.md) for the detailed theorem, trace, implementation, and lifecycle analysis.
-
-**Proposed P1 clarification (not applied in this P2 change):** “Successful pairing MUST establish a mutually authenticated bootstrap result for the exact pairing ceremony and the security-relevant context carried in the authenticated messages. A reusable shared pairing key is not required unless the selected construction exposes one with established guarantees. If a result includes a public key without a separately justified proof of possession, it MUST describe that value only as peer-supplied and authenticated for this ceremony; it MUST NOT claim that the peer owns or controls the corresponding private key. A later TLS connection may establish current control of the pinned key only by verifying the corresponding TLS 1.3 proof of possession. The consumer decides whether and when the authenticated bootstrap result establishes durable trust.”
+**Outcome: SELECTED — Candidate B for the remote authenticated-bootstrap profile, subject to the P3 profile requirements.** P1 now accepts mutual authentication of exact role-positioned bootstrap messages for one ceremony, including security-relevant context carried in those messages, without requiring a reusable shared pairing key. Candidate B's theorem returns the peer's exact message after the synchronous exact SAS comparison; it authenticates public-key bytes only as peer-supplied values and does not prove private-key possession. Candidate C remains evidence for the shared-key alternative; Candidate A/C/D/E research remains preserved and Candidate E is not selected. TLS is post-pairing transport/authentication. A separate OS-authenticated same-device profile is not Candidate B without SAS and remains P3 work. Windows and mobile clients use the same remote protocol. See the [construction mapping](../docs/construction-selection.md) and [protocol status](../docs/protocol-status.md) for the detailed theorem, assumptions, limitations, and lifecycle analysis.
 
 ## Goal
 
-The evaluation is complete. Candidate B is selected only for mutual authentication of role-positioned bootstrap messages under its published assumptions and the explicit profile requirements. Candidate C, D, and E retain their conditional findings; the Windows-first product flow does not relax the security model.
+The construction evaluation is complete. Candidate B is selected for mutual authentication of role-positioned bootstrap messages under its published assumptions and explicit profile requirements. Candidate C, D, and E retain their candidate-specific findings; the product flow does not relax the security model. Construction selection does not mean a production protocol has been implemented or is ready for production.
 
 ## Why this phase exists
 
@@ -50,7 +48,7 @@ Record gaps and evidence with references. Treat an unmet requirement as a gap, n
 
 ## Deliverables
 
-A concise comparison of Candidates A–E and requirement-by-requirement mappings, with citations to primary sources, exact functionality, assumptions, unresolved proof/profile gaps, current wrapper/license and bounded-reuse findings, and the recorded phase outcome. Any proposed direction remains a candidate until the evidence supports selection.
+A concise comparison of Candidates A–E and requirement-by-requirement mappings, with citations to primary sources, exact functionality, assumptions, unresolved proof/profile gaps, current wrapper/license and bounded-reuse findings, and the recorded phase outcome. Preserve the evidence and limitations for all candidates, including those not selected.
 
 ## Security invariants
 
@@ -64,7 +62,7 @@ P2 ends with exactly one of these outcomes:
 
 Evidence justifies a construction/profile direction against P1, states its assumptions and limitations, and supports proceeding to P3.
 
-### RESEARCH CONTINUES
+### RESEARCH CONTINUES (alternative outcome; not the current P2 status)
 
 A candidate remains promising, but evidence is insufficient to select it. Identify the unanswered questions and research needed; do not proceed as though the selection were made.
 
@@ -78,4 +76,4 @@ Stop if a critical P1 property cannot be mapped to a justified construction, if 
 
 ## What this unlocks
 
-Only a SELECTED outcome unlocks P3's language-neutral candidate profile. RESEARCH CONTINUES and STOP do not authorize protocol implementation.
+The current outcome is SELECTED and unlocks P3 profile work. RESEARCH CONTINUES and STOP are alternative phase outcomes and do not authorize protocol implementation.
