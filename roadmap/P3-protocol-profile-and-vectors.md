@@ -2,7 +2,7 @@
 
 ## Status
 
-🔵 Next; P2 selected Candidate B for the remote profile. P3 defines the remote profile and specifies the separate same-device profile before implementation.
+🔵 In progress — P3.1 profile foundation drafted; security-sensitive profile decisions and vectors remain.
 
 ## Goal
 
@@ -19,9 +19,9 @@ Implementation and independent review need one precise profile that removes ambi
 
 ## Scope
 
-**Remote Candidate B profile:** define S/R ↔ Host/Client role mapping; exact bootstrap message schemas; canonical encoding; authenticated/fixed protocol, profile, and version negotiation with downgrade prevention; SID generation and lifecycle; commitment instantiation; random-oracle/hash profile; SAS bit length and rendering; full-comparison UX contract; bilateral confirmation semantics; aggregate attempt/retry budget; persistence across restart; stale approval handling; cancellation; timeout; concurrent ceremonies; terminal-state handling; and deterministic vectors. Preserve the ideal-OOB assumptions and human-error limits; do not present the theorem as a guarantee against human mistakes or atomic durable storage. Carry the exact authenticated public-key bytes unchanged into later pinning/proof-of-possession checks; do not silently replace an identity key, and require explicit re-pairing under a new trust epoch for identity changes.
+**Remote Candidate B profile:** define a deterministic mapping between generic Initiator/Responder roles and Candidate B's S/R positions; exact bootstrap message schemas; canonical encoding; authenticated/fixed protocol, profile, and version negotiation with downgrade prevention; SID generation and lifecycle; commitment instantiation; random-oracle/hash profile; SAS bit length and rendering; full-comparison UX contract; bilateral confirmation semantics; aggregate attempt/retry budget; persistence across restart; stale approval handling; cancellation; timeout; concurrent ceremonies; terminal-state handling; and deterministic vectors. Any consumer-specific Host/Client mapping is a non-normative integration example, not a generic protocol role. Preserve the ideal-OOB assumptions and human-error limits; do not present the theorem as a guarantee against human mistakes or atomic durable storage. Carry the exact authenticated public-key bytes unchanged into later pinning/proof-of-possession checks; do not silently replace an identity key, and require explicit re-pairing under a new trust epoch for identity changes.
 
-**Same-device local profile:** define the OS-authentication primitive/interface, local authorization rule, locality establishment, remote exclusion, ceremony/session identifier, Host approval semantics, stale/replay behavior, compatible bootstrap-result semantics, and interaction with Always require SAS. Do not treat same machine, loopback, IP, hostname, discovery name, process name, or LAN proximity as proof. Do not claim resistance to an attacker controlling the trusted OS/user boundary enough to impersonate or control the authorized participant. Do not select low-level APIs without evidence.
+**Same-device local profile:** define the OS-authentication primitive/interface, local authorization rule, locality establishment, remote exclusion, ceremony/session identifier, explicit ceremony-specific approval by the authorizing participant, stale/replay behavior, compatible bootstrap-result semantics, and interaction with Always require SAS. Do not treat same machine, loopback, IP, hostname, discovery name, process name, or LAN proximity as proof. Do not claim resistance to an attacker controlling the trusted OS/user boundary enough to impersonate or control the authorized participant. Do not select low-level APIs without evidence.
 
 ## Out of scope
 
