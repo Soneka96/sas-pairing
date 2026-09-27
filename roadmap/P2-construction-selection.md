@@ -2,13 +2,15 @@
 
 ## Status
 
-🔵 Current / next phase.
+✅ Complete — Candidate B selected for the authenticated-bootstrap result contract.
 
-**Outcome: RESEARCH CONTINUES.** See the [construction mapping](../docs/construction-selection.md). P2 remains current; P3 is gated. The current P1 audit classifies the reusable shared-key requirement as **AMBIGUOUS**: P1 neither requires that output explicitly nor says authenticated bootstrap messages alone suffice. Candidate B is **PROMISING** if P1 accepts mutual SAS authentication of peer-supplied data without a reusable key; its theorem authenticates exact messages under a unique SID but does not equate contexts, return a shared key, or prove long-term key possession. Candidate C remains the studied direct-key option if P1 requires that output; its context-to-key result remains **NEW PROOF REQUIRED** only if C is pursued. All A–D research remains documented. Candidate E's maintained Vodozemac SAS primitive and Matrix-specific ceremony are evaluated, but adapting Matrix identity/context fields to a generic profile is not justified by the audit/specification and is **INSUFFICIENT TO SELECT**. No P1 change or Candidate E selection is made. Same-machine no-SAS pairing remains only a profile possibility with OS-authenticated IPC and an explicit local threat boundary.
+**Outcome: CONDITIONAL SELECTION — Candidate B with explicit profile for the proposed authenticated-bootstrap result contract.** P1's historical text remains unchanged and ambiguous about requiring a reusable shared key; this P2 decision treats the proposed clarification below as the result contract under evaluation, pending its adoption into P1. This is a completed P2 decision for that contract, not a silent P1 revision. Theorem 3 already supports arbitrary role-positioned message bytes and returns the peer's exact message after the synchronous SAS comparison. Profile rules must define canonical encoding, Host/Client role mapping, unique SID/ceremony lifecycle, context equality checks, total retry accounting, exact OOB semantics, and consumer persistence. Public-key bytes are authenticated only as peer-supplied values; the result does not claim that the key claim is true or that the peer possesses the private key. TLS 1.3 proof of possession applies to later connections. Candidate C's direct-key/context gap remains conditional if a shared-key requirement returns. Candidate A/C/D/E research remains documented; Candidate E is not selected. No same-machine shortcut is selected; Windows local/remote and mobile use the same protocol. See the [construction mapping](../docs/construction-selection.md) and [protocol status](../docs/protocol-status.md) for the detailed theorem, trace, implementation, and lifecycle analysis.
+
+**Proposed P1 clarification (not applied in this P2 change):** “Successful pairing MUST establish a mutually authenticated bootstrap result for the exact pairing ceremony and the security-relevant context carried in the authenticated messages. A reusable shared pairing key is not required unless the selected construction exposes one with established guarantees. If a result includes a public key without a separately justified proof of possession, it MUST describe that value only as peer-supplied and authenticated for this ceremony; it MUST NOT claim that the peer owns or controls the corresponding private key. A later TLS connection may establish current control of the pinned key only by verifying the corresponding TLS 1.3 proof of possession. The consumer decides whether and when the authenticated bootstrap result establishes durable trust.”
 
 ## Goal
 
-Evaluate Candidates A–E, current reusable protocol/implementation options, and directly relevant TLS/local-platform alternatives against P1. Clarify result shape, context guarantees, local-path trust assumptions, and remote human-comparison UX before selection. Candidate B's theorem, Candidate C's conditional context-to-key gap, Candidate D's commitment assumption, and Candidate E's Matrix-specific identity/transcript boundary remain distinct. The Windows-first product flow does not itself relax P1. No construction is selected until the authoritative requirement and applicable proof/profile gaps are resolved.
+The evaluation is complete. Candidate B is selected only for mutual authentication of role-positioned bootstrap messages under its published assumptions and the explicit profile requirements. Candidate C, D, and E retain their conditional findings; the Windows-first product flow does not relax the security model.
 
 ## Why this phase exists
 
@@ -44,7 +46,7 @@ Record gaps and evidence with references. Treat an unmet requirement as a gap, n
 - Selecting a KEM for convenience.
 - Freezing the SAS alphabet or rendering, wire format, or state-machine profile.
 - Designing an ABI, FFI, Dart API, or .NET API.
-- Claiming Pasini–Vaudenay is selected before the mapping supports that conclusion.
+- Production protocol code or cryptographic claims beyond the selected theorem/profile mapping.
 
 ## Deliverables
 
