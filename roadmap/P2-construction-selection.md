@@ -4,11 +4,11 @@
 
 🔵 Current / next phase.
 
-**Outcome: RESEARCH CONTINUES.** See the [construction mapping](../docs/construction-selection.md). P2 remains current; P3 is still gated. The mapping now evaluates Pasini–Vaudenay’s direct SAS-AKE and Beskorovajnov–Müller-Quade’s UC SAS authentication plus one-shot SMT composition; neither currently provides a justified complete project result.
+**Outcome: RESEARCH CONTINUES.** See the [construction mapping](../docs/construction-selection.md). P2 remains current; P3 is still gated. Jarecki–Saxena provide a direct, concurrent SAS-AKA result with a fresh bilateral key, but it remains unclear how to bind both application contexts to that key and define compatible terminal outcomes under delayed or dropped messages while preserving the theorem’s secrecy and concurrency guarantees.
 
 ## Goal
 
-Evaluate candidate SAS-AKE and directly relevant SAS/OOB constructions against P1 and determine whether any candidate can be justified for this project. Pasini–Vaudenay remains the leading direct AKE candidate; Beskorovajnov–Müller-Quade is a recent composable authentication/SMT candidate, not a selection.
+Evaluate candidate SAS-AKE and directly relevant SAS/OOB constructions against P1 and determine whether any candidate can be justified for this project. The mapping includes Pasini–Vaudenay, Beskorovajnov–Müller-Quade, and Jarecki–Saxena; none is selected until the remaining construction question is resolved.
 
 ## Why this phase exists
 
