@@ -38,4 +38,4 @@ The wrapper can be used by Dart/Flutter consumers and its behavior is consistent
 
 ## What this unlocks
 
-The .NET wrapper in P9 and consumer integration examples in P10.
+P9 is next in the planned work order but remains independently gated on P7; P10 follows when both wrappers are ready.
