@@ -2,7 +2,7 @@
 
 ## Status
 
-🔵 Next; P2 selected Candidate B for the remote profile. P3 defines the remote profile and specifies the separate same-device profile before implementation.
+🔵 In progress — P3.1 profile foundation drafted; security-sensitive profile decisions and vectors remain.
 
 ## Goal
 
