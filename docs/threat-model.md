@@ -55,7 +55,9 @@ The default policy is **Automatic**: use the approved same-device profile only w
 
 A future protocol may claim successful pairing only if its security argument justifies, under explicit assumptions, that:
 
-- both participants accept the same exact ceremony and compatible terminal outcome;
+- a participant reports success only after verifying all required authentication and confirmation evidence for that exact ceremony and accepting its own required local approval;
+- if both participants report success, their results are mutually compatible and identify the same exact ceremony, roles, peer bootstrap data, and bound context; the protocol MUST NOT allow conflicting successful results;
+- stale ceremony state, the wrong peer, role, bootstrap, or context cannot produce success; one local approval alone is insufficient. Message loss may leave one participant with a local successful result while the other returns no success; simultaneous success, distributed atomic commit, and atomic durable trust persistence are not guaranteed;
 - protocol roles are bound so that messages, SAS, approval, and result cannot be reassigned across initiator and responder roles;
 - each participant is bound to the peer participating in that ceremony, without treating an address, display name, or unsupported public-key assertion as identity or proof of possession;
 - the run is fresh and cannot be completed using stale ceremony state or stale approval;

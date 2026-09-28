@@ -178,9 +178,17 @@ If the consumer has no expected-peer policy, the result remains authenticated pe
 
 ## 9. Completion and result semantics
 
-Completion MAC contexts use type `0x32` and include protocol domain, profile identifier, version, purpose, fixed sender/receiver role codes, ceremony ID, and SHA-256 of the complete transcript through `RESPONDER_KEY`. The transcript digest is exactly SHA-256 of `ASCII("sas-pairing-vodozemac-profile-draft-01/transcript/v1")` followed by the complete canonical `START`, `ACCEPT`, `INITIATOR_KEY`, and `RESPONDER_KEY` frames, each preceded by `u32be(length)`. This digest is carried in each completion message and MUST match the receiver's locally computed digest.
+Completion MAC contexts use type `0x32` and include protocol domain, profile identifier, version, purpose, fixed sender/receiver role codes, ceremony ID, and SHA-256 of the complete transcript through `RESPONDER_KEY`. The transcript digest is exactly SHA-256 of `ASCII("sas-pairing-vodozemac-profile-draft-01/transcript/v1")` followed by the complete canonical `START`, `ACCEPT`, `INITIATOR_KEY`, and `RESPONDER_KEY` frames, each preceded by `u32be(length)`. This digest is carried in each completion wire message and MUST match the receiver's locally computed digest.
 
-The completion-purpose strings are fixed ASCII values `initiator-finish`, `responder-finish-ack`, and `initiator-finish-ack`. Each message's MAC input is the unpadded Base64url encoding of its complete canonical message frame with the MAC field omitted; its MAC info uses the matching purpose and sender/receiver role order. Each receiver verifies the MAC before state transition. A completion message for another transcript or ceremony fails closed.
+Each completion MAC uses a separate, non-wire `CompletionAuthFrame`. The frame is encoded canonically under §3.1 and has these fields in exactly this order: protocol domain ASCII `org.sas-pairing`; profile-identifier ASCII bytes; version `u16be(1)`; sender role code (`0x01` I or `0x02` R); receiver role code (the other role); ceremony ID bytes; completion-purpose ASCII bytes; and the 32-byte transcript digest. Its frame type and purpose are fixed by this mapping:
+
+| Wire message | Wire type | Non-wire auth-frame type | Purpose | Direction |
+|---|---:|---:|---|---|
+| `INITIATOR_FINISH` | `0x06` | `0x35` | `initiator-finish` | I → R |
+| `RESPONDER_FINISH_ACK` | `0x07` | `0x36` | `responder-finish-ack` | R → I |
+| `INITIATOR_FINISH_ACK` | `0x08` | `0x37` | `initiator-finish-ack` | I → R |
+
+The auth-frame type is a non-wire discriminator for this structure; the purpose and role fields also distinguish the authenticated operation and direction. The wire message and its `CompletionAuthFrame` are different structures: the wire message contains its actual wire type, common fields, transcript digest, and raw 32-byte MAC; the auth frame contains the fields above and never contains a MAC. The auth frame is never transmitted as a separate protocol message. The MAC input is exactly the unpadded Base64url encoding of the complete canonical non-wire `CompletionAuthFrame`, with no wire fields omitted. The sender calculates/verifies the MAC with the existing vodozemac MAC API and §3.2 context-string construction, using type `0x32` context, the matching purpose, and the same domain, profile, version, roles, ceremony ID, and transcript digest. The receiver reconstructs the expected authentication frame and context from the received wire message plus local ceremony state before verification. It verifies the raw 32-byte MAC before any state transition. A completion message for another transcript or ceremony fails closed.
 
 The local result conditions and authenticated knowledge at each result point are:
 
