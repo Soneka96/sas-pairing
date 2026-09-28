@@ -4,7 +4,7 @@
 
 ## 1. Executive decision question
 
-Should `sas-pairing` stop preparing Candidate B for production and instead build one application-neutral Rust ceremony around the maintained Apache-2.0 `vodozemac::sas` implementation, exposed to Dart and .NET through thin wrappers?
+Can a shared application-neutral Rust ceremony around the maintained Apache-2.0 `vodozemac::sas` implementation reduce cryptographic implementation ownership for a future profile, while Candidate B remains the selected P2 construction for the current remote authenticated-bootstrap profile?
 
 **Outcome: B — promising but review required.** The primitive API and the specified Matrix decimal SAS fit the numeric-only constraint. The SAS methods accept caller-selected context and caller-supplied MAC input. This makes authenticating canonical bootstrap bytes technically feasible without changing the underlying DH, HKDF, SAS, or HMAC algorithms. But `vodozemac::sas` is not the Matrix ceremony, and Matrix's documented identity, transcript, and state assumptions cannot simply be claimed for an application-neutral profile. Before selecting this architecture, an independent protocol reviewer must examine the generic ceremony mapping, canonical encoding, transcript binding, attempt policy, and terminal-state contract.
 
@@ -14,9 +14,23 @@ Classification:
 - Matrix decimal SAS: **CANDIDATE** (specified and directly exposed by vodozemac; 39 bits).
 - MAC of canonical generic bootstrap data: **CANDIDATE — mechanically supported by the vodozemac API; security equivalence of the generic bootstrap mapping requires independent review**.
 - Shared Rust ceremony and Dart/.NET wrappers: **CANDIDATE**, not selected for implementation yet.
-- Candidate B remains the **SELECTED construction for the remote authenticated-bootstrap profile under P2**. The shared Rust ceremony using `vodozemac::sas` is a separate **CANDIDATE** architecture and remains unselected until the generic profile is specified, independently reviewed, and the project makes an explicit later protocol-selection decision; do not delete or rewrite Candidate B's research.
+- Candidate B remains the **SELECTED construction for the current remote authenticated-bootstrap profile under P2**. A generic ceremony built around `vodozemac::sas` is a separate **CANDIDATE protocol/implementation direction** under P3 research and does not supersede Candidate B unless an explicit reviewed selection decision updates the project protocol status. Candidate B's concrete production profile remains gated.
 - AGPL Dart/Flutter bindings: **RESEARCH ONLY** as prior art.
 - Independent Dart and .NET cryptographic implementations: **STOP** under the one-security-core requirement.
+
+## P3.3 traceability — public-source clarification
+
+P3.2 concluded that Candidate B was selected at the construction level, but the project did not have enough evidence to select a concrete commitment/hash instantiation safely. It ended with a **STOP** on concrete instantiation and recommended further primary-source clarification. Before contacting the authors, the project performed additional public-source research.
+
+That research reviewed the Candidate B paper, cited cryptographic literature, commitment constructions, the Random Oracle Model (ROM) interpretation, related author/public implementation material, and practical evidence for hash-based instantiation. It produced a concrete Candidate B project proposal suitable for later independent review, but did not establish a production profile. SHA-256 and SHA3-256 remained candidate heuristic real-hash mappings; Candidate B's ROM theorem does not directly establish either mapping. Canonical encoding remained security-sensitive, parameter mapping remained unresolved and review-sensitive, and retry/attempt policy remained unresolved. The Boneh–Shoup example of a 512-bit commitment nonce is not source evidence that Candidate B's protocol parameter `κ` must be 512 bits; that mapping remained a project proposal and review question.
+
+Public evidence was sufficient to produce a reviewable proposal, so direct author contact was no longer required merely to continue research. The authors did not confirm the proposed instantiation, and public evidence did not prove SHA-256 or SHA3-256 under Candidate B's exact theorem. Candidate B remained the **SELECTED P2 construction**, while no concrete Candidate B commitment/hash profile became **SELECTED**. Independent review remained mandatory, as did deterministic vectors and production implementation approval.
+
+P3.3 still left the project owning concrete cryptographic instantiation choices, security reasoning, implementation, independent review, and long-term cryptographic maintenance. That ownership burden motivated P3.4's investigation into whether an established maintained SAS implementation could reduce custom cryptographic ownership.
+
+The project sequence is: **P3.2** Candidate B concrete-instantiation STOP → **P3.3** public-source clarification → reviewable Candidate B proposal exists, but ownership and review burden remains → **P3.4** investigate vodozemac reuse → **P3.5** exact generic vodozemac ceremony/profile → independent review → explicit architecture/protocol selection.
+
+For project-history purposes, this public-source clarification work is treated as **P3.3**, even though it was not merged as a separate pull request artifact.
 
 ## 2. Existing project requirements
 
@@ -105,7 +119,7 @@ This assessment does not claim that Matrix itself specified arbitrary bootstrap 
 9. **Must the secret become the application's long-term secret?** No. Matrix SAS verification does not output a reusable shared key; `EstablishedSas` is a temporary verification object.
 10. **Can one-shot bootstrap authentication precede a different authenticated transport?** Yes, conceptually. Bind and validate the exact bootstrap data, finish pairing, drop SAS state, then independently establish the selected transport and verify proof of possession of any pinned key.
 11. **How are retries, replays, and ceremony separation handled?** Matrix transaction/request IDs, event ordering, timeouts, cancel events, and rejection of unknown/out-of-sequence messages separate a flow. These do not supply project-wide durable retry counters, restart semantics, or protection if consumers reuse IDs. The generic profile needs fresh unique ceremony IDs, terminal-state invalidation, expiry, concurrency/replay rules, and any security-required attempt limits.
-12. **Which P1/P2 requirements must change?** None need be weakened. P1's exact authenticated-bootstrap result and explicit no-proof-of-possession limit align with this use. P1 still needs an adopted numeric target (39 bits if choosing Matrix decimal), an aggregate attempt policy and durable enforcement where required, canonical generic context/SID/transcript rules, and a reviewed restart/replay lifecycle. P2's Candidate B selection can change only after the generic vodozemac ceremony passes independent review and these profile gates are answered; preserve all Candidate B findings.
+12. **Which P1/P2 requirements must change?** None need be weakened. P1's exact authenticated-bootstrap result and explicit no-proof-of-possession limit align with this use. P1 still needs an adopted numeric target (39 bits if choosing Matrix decimal), an aggregate attempt policy and durable enforcement where required, canonical generic context/SID/transcript rules, and a reviewed restart/replay lifecycle. Candidate B's P2 selection changes only after the generic vodozemac ceremony passes independent review, these profile gates are answered, and an explicit reviewed selection decision updates project protocol status; preserve all Candidate B findings.
 
 ## 9. Dart/Flutter prior art
 
@@ -322,7 +336,7 @@ Candidate B remains valuable: it has a project-specific formal result for authen
 
 | Option | Security ownership | Dart | .NET | Skyrim UX | License | Maintenance | Recommendation |
 |---|---|---|---|---|---|---|---|
-| Candidate B own implementation | We own commitment, SAS, MAC, and ceremony construction | Wrapper | Wrapper | Numeric form still a profile decision | Project MIT OR Apache; dependencies depend on instantiation | Highest crypto/review burden | **SELECTED current P2 construction; concrete instantiation and independent review still gated. Do not implement as production crypto until those gates are satisfied.** |
+| Candidate B own implementation | We own commitment, SAS, MAC, and ceremony construction | Wrapper | Wrapper | Numeric form still a profile decision | Project MIT OR Apache; dependencies depend on instantiation | Highest crypto/review burden | **SELECTED current P2 construction; concrete implementation/profile remains gated** on commitment/hash instantiation, profile definition, retry/attempt policy, deterministic vectors, independent review, and production implementation approval. |
 | Existing Dart vodozemac + separate .NET | Two security/protocol paths | Existing AGPL binding | Separate/no direct equivalent | Can display Matrix numeric SAS | Apache Rust underneath, AGPL Dart package | Duplicated behavior and review | **STOP** |
 | Full Matrix SDK per language | Matrix-specific SDKs own different ceremony layers | Famedly binding/client SDK | Matrix C# SDKs exist, no focused reusable core verified | Matrix decimal can fit | Varies; Famedly AGPL, some C# SDKs MIT/AGPL | Large API surface, skew, matrix stack coupling | **RESEARCH ONLY** |
 | Shared Rust core + vodozemac | Upstream primitive plus our single Rust ceremony | Thin generated wrapper | Thin generated wrapper | Specified numeric SAS, 39 bits | Apache dependency compatible with project choices; own wrappers | Concentrated protocol + multi-target native builds | **CANDIDATE; review required** |
