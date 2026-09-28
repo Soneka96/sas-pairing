@@ -89,7 +89,7 @@ Duplicate or reordered delivery must not cause a stale or incomplete run to beco
 
 ## Concurrent ceremonies
 
-Multiple ceremonies may coexist. Every accepted message, human approval, and pairing result MUST remain associated with one exact ceremony and its participants, roles, and applicable context. Approval for ceremony A must never authorize ceremony B; messages from A must never satisfy B's protocol state; and participants must not confuse one ceremony's identity with another's. A candidate must justify these properties without relying on user-visible ordering alone. This document sets no arbitrary concurrency limit.
+Multiple ceremonies may coexist subject to a profile's resource policy. Every accepted message, human approval, and pairing result MUST remain associated with one exact ceremony and its participants, roles, and applicable context. Approval for ceremony A must never authorize ceremony B; messages from A must never satisfy B's protocol state; and participants must not confuse one ceremony's identity with another's. A candidate must justify these properties without relying on user-visible ordering alone. Attacker-created concurrent ceremony state MUST have a global resource bound that is not keyed solely to unauthenticated peer identity or labels. This generic requirement selects no numeric concurrency limit.
 
 ## Cancellation, disconnect, expiry, and errors
 
@@ -98,6 +98,7 @@ Multiple ceremonies may coexist. Every accepted message, human approval, and pai
 - **Human rejection:** Rejection terminates that ceremony without a successful pairing result. A later attempt is a new ceremony.
 - **Expiry:** An expired ceremony cannot succeed or be resumed as if fresh. Exact lifetime values remain for later security analysis.
 - **Malformed input:** Malformed or invalid protocol input must not be interpreted permissively in a way that weakens a security requirement or advances ambiguous state to success.
+- **Resource-bounded input:** Remotely supplied protocol data MUST be bounded before unbounded allocation. A declared length MUST be validated against applicable limits, and aggregate size arithmetic MUST be checked before allocating or retaining its payload. Transport-layer limits alone are insufficient.
 - **Ambiguous state:** Conflicting, missing, or uncertain security-sensitive state fails closed. Recovery must not accidentally make stale state valid again.
 
 The protocol and consumer behavior must not report success until the required checks and approval for that ceremony have completed. Failure, cancellation, and expiry handling must not leak a stale approval into another run.
@@ -112,7 +113,7 @@ If the claimed bound depends on attempt accounting, each attempt MUST be atomica
 
 Accounting required by the claim MUST survive ordinary process crash/restart, device reboot, and application update. Profile-specific attempt limits and accounting epochs are normative security behavior, not optional consumer policy. The epoch scope MUST be explicit and MUST NOT rely on untrusted peer-supplied identity. Any reset/recovery MUST preserve the stated claim: it cannot silently replenish the budget or be triggered solely by the untrusted network. If a claim spans backup restore or storage rollback, the deployment requires rollback-resistant or monotonic state. Otherwise, restoring older accounting state begins or re-enters a different accounting epoch and the claim must say so. Uninstall/reinstall cannot silently preserve a lifetime claim without an external durable anchor. The exhaustion and reset behavior and exact rollback scope remain profile decisions; a numeric attempt limit is meaningless without defining its accounting epoch.
 
-Resource/denial-of-service controls and human fatigue controls are distinct from SAS-security accounting. Resource controls may begin at an earlier event, such as accepting a start message, without that event counting as a SAS guess. UX controls such as warnings, cooldowns, or limits on simultaneously displayed comparisons may supplement security policy but MUST NOT substitute for its SAS-attempt counter unless formally justified. Applications may impose stricter resource or UX limits.
+Resource/denial-of-service controls and human fatigue controls are distinct from SAS-security accounting. Resource controls may begin at an earlier event, such as accepting a start message, without that event counting as a SAS guess. Resource rejection before the profile's SAS exposure boundary MUST NOT charge a SAS attempt. UX controls such as warnings, cooldowns, or limits on simultaneously displayed comparisons may supplement security policy but MUST NOT substitute for its SAS-attempt counter unless formally justified. Applications may impose stricter resource or UX limits.
 
 ## Pairing result contract
 
