@@ -29,7 +29,7 @@ Reopening P2 decisions without recording the evidence that requires it; implemen
 
 ## Deliverables
 
-A reviewed candidate profile, explicit decision records for durable choices as appropriate, and deterministic vectors that independent implementations can consume. Vector correctness is conformance evidence, not proof of cryptographic security.
+A reviewed candidate profile, explicit decision records for durable choices as appropriate, and deterministic vectors that independent implementations can consume. The [vodozemac security decisions log](../docs/p3-vodozemac-security-decisions.md) records rationale and review boundaries for that separate unselected candidate. Vector correctness is conformance evidence, not proof of cryptographic security.
 
 ## Security invariants
 

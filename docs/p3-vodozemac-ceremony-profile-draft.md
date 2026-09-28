@@ -15,6 +15,8 @@ The ceremony authenticates the exact peer-supplied bootstrap bytes within one ru
 
 Normative words such as **MUST**, **MUST NOT**, and **SHOULD** describe this draft only. A reviewer may reject or change any candidate choice. Security properties of Matrix or vodozemac do not automatically transfer to this generic mapping.
 
+For decision rationale and review history, see the [P3 vodozemac security decisions log](p3-vodozemac-security-decisions.md). This log is non-normative; this profile remains the normative candidate source.
+
 ## 2. Roles and fixed profile values
 
 There are exactly two protocol roles:
