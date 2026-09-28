@@ -38,7 +38,7 @@ Theorem 3 assumes computationally hiding and binding `Com`, the random-oracle SA
 
 | Requirement | Paper support | Engineering consequence |
 |---|---|---|
-| Correct opening | `Verify(C,m,d)` accepts honestly generated openings except with negligible probability. | Receiver must verify the exact committed `sid || m_S` before calculating the SAS or succeeding. |
+| Correct opening | `Verify(C,m,d)` accepts honestly generated openings except with negligible probability. | Receiver must verify the exact committed `sid \|\| m_S` before calculating the SAS or succeeding. |
 | Computational hiding | Explicit theorem assumption; paper’s definition compares equal-length challenge messages. | `C` must not reveal the committed message before the opening, within the message-length model justified by the profile. |
 | Computational binding | Explicit theorem assumption: no efficient party opens one `C` to two distinct messages. | The profile must preserve one unique accepted message for the commitment. |
 | Randomness | `r_S ← {0,1}^κ`, fresh and uniform; hidden until opening; included in the SAS input. The proof’s pre-hit bound relies on guessing it. | Use an approved CSPRNG, keep `r_S` secret through commitment, and never reuse it across sessions. Carrying P2’s 256-bit SID default through the paper’s shared `κ` is a mapping candidate described below. |
