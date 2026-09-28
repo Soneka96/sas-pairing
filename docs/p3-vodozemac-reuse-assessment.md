@@ -14,7 +14,7 @@ Classification:
 - Matrix decimal SAS: **CANDIDATE** (specified and directly exposed by vodozemac; 39 bits).
 - MAC of canonical generic bootstrap data: **CANDIDATE — mechanically supported by the vodozemac API; security equivalence of the generic bootstrap mapping requires independent review**.
 - Shared Rust ceremony and Dart/.NET wrappers: **CANDIDATE**, not selected for implementation yet.
-- Candidate B: **CANDIDATE / RESEARCH REFERENCE** until the reuse mapping passes review; do not delete or rewrite its research.
+- Candidate B remains the **SELECTED construction for the remote authenticated-bootstrap profile under P2**. The shared Rust ceremony using `vodozemac::sas` is a separate **CANDIDATE** architecture and remains unselected until the generic profile is specified, independently reviewed, and the project makes an explicit later protocol-selection decision; do not delete or rewrite Candidate B's research.
 - AGPL Dart/Flutter bindings: **RESEARCH ONLY** as prior art.
 - Independent Dart and .NET cryptographic implementations: **STOP** under the one-security-core requirement.
 
@@ -318,11 +318,11 @@ Ownership detail for the candidate shared-core architecture:
 
 ## 17. Candidate B comparison and decision matrix
 
-Candidate B remains valuable: it has a project-specific formal result for authenticating exact role-positioned messages and a clearer connection to the current selected profile. Reuse is attractive only if it reduces cryptographic implementation ownership without importing incompatible Matrix assumptions. Keep Candidate B as research reference and fallback until the reviewer accepts the generic SAS mapping. Do not mark it obsolete merely because vodozemac is easier to bind.
+Candidate B remains valuable: it has a project-specific formal result for authenticating exact role-positioned messages and a clearer connection to the current selected profile. Reuse is attractive only if it reduces cryptographic implementation ownership without importing incompatible Matrix assumptions. Candidate B remains the selected P2 construction while its concrete instantiation and review gates remain open. It may become a fallback or research reference only if a later explicit protocol-selection decision replaces it. Do not mark it obsolete merely because vodozemac is easier to bind.
 
 | Option | Security ownership | Dart | .NET | Skyrim UX | License | Maintenance | Recommendation |
 |---|---|---|---|---|---|---|---|
-| Candidate B own implementation | We own commitment, SAS, MAC, and ceremony construction | Wrapper | Wrapper | Numeric form still a profile decision | Project MIT OR Apache; dependencies depend on instantiation | Highest crypto/review burden | **CANDIDATE / fallback** while current selection remains; do not implement without its open instantiation/review gates |
+| Candidate B own implementation | We own commitment, SAS, MAC, and ceremony construction | Wrapper | Wrapper | Numeric form still a profile decision | Project MIT OR Apache; dependencies depend on instantiation | Highest crypto/review burden | **SELECTED current P2 construction; concrete instantiation and independent review still gated. Do not implement as production crypto until those gates are satisfied.** |
 | Existing Dart vodozemac + separate .NET | Two security/protocol paths | Existing AGPL binding | Separate/no direct equivalent | Can display Matrix numeric SAS | Apache Rust underneath, AGPL Dart package | Duplicated behavior and review | **STOP** |
 | Full Matrix SDK per language | Matrix-specific SDKs own different ceremony layers | Famedly binding/client SDK | Matrix C# SDKs exist, no focused reusable core verified | Matrix decimal can fit | Varies; Famedly AGPL, some C# SDKs MIT/AGPL | Large API surface, skew, matrix stack coupling | **RESEARCH ONLY** |
 | Shared Rust core + vodozemac | Upstream primitive plus our single Rust ceremony | Thin generated wrapper | Thin generated wrapper | Specified numeric SAS, 39 bits | Apache dependency compatible with project choices; own wrappers | Concentrated protocol + multi-target native builds | **CANDIDATE; review required** |
