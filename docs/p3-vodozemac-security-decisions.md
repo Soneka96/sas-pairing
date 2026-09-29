@@ -76,7 +76,7 @@ On restart, active state and pending approval are discarded; historical request 
 
 **Does not establish:** Authentication, freshness, peer identity, authorization, ceremony identity, replay security by itself, possession, secrecy, SAS security, anonymity/unlinkability, or global/historical uniqueness. Request-ID unpredictability is not relied upon for any protocol-authentication claim.
 
-**Repository history:** `cd788a6e863b7dce2ae1a27d7b4787f173377f29` records this candidate request-ID policy.
+**Repository history:** `9a95910a4e01f8c291ee57af3f2d365dca8b5285` records this candidate request-ID policy.
 
 **Independent-review status:** Candidate policy defined; generation, collision reservation, routing isolation, and the distinction from authentication/freshness remain subject to independent review as part of the complete profile. This internal decision is not an independent external security review.
 
