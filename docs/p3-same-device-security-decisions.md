@@ -4,7 +4,7 @@ This document is the audit trail for the separate same-device authenticated-loca
 
 ## Status and evidence boundaries
 
-Candidate B remains the **prior P2 abstract remote construction selection**, with its concrete instantiation unresolved. The vodozemac ceremony remains **CANDIDATE — NOT SELECTED** for remote pairing, and no remote construction is ready for final selection. This authenticated-local profile is separate from either remote construction. The Windows principal-bound named-pipe adapter is documented as a candidate only; no platform adapter is approved. Independent external security review remains mandatory. This is a candidate decision record, not external review or production approval.
+P2 historically selected Candidate B as the abstract remote construction. During P3, the owner reopened that implementation direction because concrete instantiation would require substantial custom cryptographic design and proof-mapping/maintenance; this is not a finding that Candidate B is insecure, and it remains a formal reference and possible fallback. The vodozemac ceremony is the **FAVORED CANDIDATE — NOT SELECTED** for remote pairing, pending project-specific analysis and independent review. No remote construction is ready for final selection. This authenticated-local profile is separate from either remote construction. The Windows principal-bound named-pipe adapter is documented as a candidate only; no platform adapter is approved. Independent external security review remains mandatory. This is a candidate decision record, not external review or production approval.
 
 Keep four evidence levels distinct:
 

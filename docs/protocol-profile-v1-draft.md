@@ -4,11 +4,11 @@
 >
 > This document defines a specification surface for future P3 decisions. It does not select unresolved cryptographic parameters, define an implementable wire profile, or authorize implementation.
 
-**Current status:** Candidate B was the prior P2 abstract selection. Its concrete instantiation remains unresolved, and the separate vodozemac profile remains unselected. No remote construction is ready for final selection. This foundation and its Candidate B references preserve the earlier P2 direction; they do not describe a currently selected production profile. See [current protocol status](protocol-status.md).
+**Current status:** P2 originally selected Candidate B as the abstract construction. The owner later reopened the implementation-direction choice because concrete instantiation would require substantial project-owned cryptographic design and proof-mapping/maintenance; this is not a finding that Candidate B is insecure. Candidate B remains a formal reference and possible fallback. The separate vodozemac profile is the **FAVORED CANDIDATE — NOT SELECTED**, pending project-specific analysis and independent review. This foundation preserves the historical Candidate B direction; it does not describe a currently selected production profile. See [current protocol status](protocol-status.md).
 
 ## 1. Purpose and security boundary
 
-The remote profile uses the Candidate B construction selected in [P2](construction-selection.md) to authenticate the exact peer-supplied, role-positioned bootstrap message for one pairing ceremony, after successful protocol checks and the required full SAS comparison. It does not establish a reusable shared pairing secret.
+This draft's remote profile describes the construction historically selected in [P2](construction-selection.md), Candidate B, to authenticate the exact peer-supplied, role-positioned bootstrap message for one pairing ceremony, after successful protocol checks and the required full SAS comparison. The owner later reopened that implementation-direction decision; this is not the current selected production profile. It does not establish a reusable shared pairing secret.
 
 Successful pairing means only that the remote profile authenticated the exact bootstrap messages supplied by the participants for this ceremony, including those message fields that the final profile requires and validates. It does not establish that supplied identity claims are externally true, that a participant possesses the private key corresponding to supplied public-key bytes, that an endpoint is uncompromised, or that human comparison is perfect. A later transport or authentication protocol must prove possession of the exact pinned identity key when that property is needed. Consumer authorization and durable trust remain consumer decisions.
 
@@ -115,7 +115,7 @@ A separate same-device profile may omit SAS only after a reviewed profile establ
 - authorization for this exact ceremony, resistant to stale requests and replay; and
 - result semantics compatible with the generic pairing result contract.
 
-The local participant must explicitly approve the exact ceremony. Loopback, IP address, hostname, discovery name, process name, same-machine observation, or LAN proximity alone is insufficient to activate this profile. The profile must state the trusted OS/user boundary and must not claim resistance to an attacker able to control that boundary. No OS primitive or authorization rule is selected here; until one is justified and reviewed, remote peers use the Candidate B SAS profile.
+The local participant must explicitly approve the exact ceremony. Loopback, IP address, hostname, discovery name, process name, same-machine observation, or LAN proximity alone is insufficient to activate this profile. The profile must state the trusted OS/user boundary and must not claim resistance to an attacker able to control that boundary. No OS primitive or authorization rule is selected here; the production remote profile also remains unselected pending the current candidate's security review and an explicit owner decision.
 
 ## 9. Unresolved decisions — evidence required
 

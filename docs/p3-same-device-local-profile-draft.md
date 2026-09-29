@@ -7,7 +7,7 @@
 
 ## 1. Purpose and status
 
-This document defines an abstract candidate contract for a separate same-device authenticated-local pairing profile. It does not implement the profile, select or approve a platform adapter, or make a production-readiness claim. Candidate B remains the **prior P2 abstract remote construction selection**; its concrete instantiation is unresolved. The vodozemac ceremony remains **CANDIDATE — NOT SELECTED** for remote pairing, and no remote construction is ready for final selection. The local profile is independent of both remote constructions and does not reuse remote SAS or Diffie–Hellman messages.
+This document defines an abstract candidate contract for a separate same-device authenticated-local pairing profile. It does not implement the profile, select or approve a platform adapter, or make a production-readiness claim. P2 historically selected Candidate B, but the owner later reopened the implementation direction because concrete instantiation would entail substantial custom cryptographic design and proof-mapping/maintenance; this does not disprove Candidate B, which remains a formal reference and possible fallback. The vodozemac ceremony is the **FAVORED CANDIDATE — NOT SELECTED** for remote pairing, pending project-specific analysis and independent review. No remote construction is ready for final selection. The local profile is independent of both remote constructions and does not reuse remote SAS or Diffie–Hellman messages.
 
 There are **zero approved platform adapters**. Until a concrete adapter is independently reviewed and approved for a deployment, the SAS-free local path is unavailable in that deployment. Independent external security review remains mandatory.
 

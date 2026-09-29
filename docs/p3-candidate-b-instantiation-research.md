@@ -1,10 +1,12 @@
 # P3.2 — Candidate B cryptographic instantiation research
 
+> **Historical selection context:** P2 originally selected Candidate B as the abstract remote construction. The owner later reopened that choice because a concrete Candidate B profile would require substantial project-owned cryptographic design and proof-mapping/maintenance. This was an engineering/security ownership decision, not a finding that Candidate B is insecure. Candidate B remains a formal reference and possible fallback; no concrete instantiation is selected.
+
 > **RESEARCH / NOT A PROFILE / NOT PRODUCTION READY**
 >
-> This document evaluates concrete instantiation options for Candidate B selected in P2. It does not choose a wire format, hash, commitment, parameter set, or production implementation.
+> This document evaluates concrete instantiation options for Candidate B, which was selected at P2 and is now retained as a formal reference and possible fallback. It does not choose a wire format, hash, commitment, parameter set, or production implementation.
 
-**Current project status:** Candidate B remains the prior P2 abstract selection, but its concrete instantiation is blocked. Preserve the `STOP concrete cryptographic selection` conclusion below. The historical P3.3 author-clarification recommendation is not the current project-level next security action; see [current manager context](../ai/context/project.md).
+**Current project status:** Candidate B's abstract construction was selected at P2, but the owner later reopened the implementation direction because concrete instantiation would require substantial custom cryptographic design and proof-mapping/maintenance. Candidate B remains a formal reference and possible fallback; this decision does not disprove it. Preserve the `STOP concrete cryptographic selection` conclusion below as a project-evidence limit. The vodozemac-based ceremony is favored for investigation but remains unselected; the historical P3.3 author-clarification recommendation is not the current project-level next security action. See [current manager context](../ai/context/project.md).
 
 ## 1. Question
 
@@ -131,7 +133,7 @@ These requirements avoid encoding ambiguity; they do not establish that the sele
 
 | Item | Classification | Reason |
 |---|---|---|
-| Candidate B mutual construction and abstract properties | **SELECTED** (P2 result retained) | The project’s P2 decision selected this construction under its stated theorem assumptions; this does not select an instantiation. |
+| Candidate B mutual construction and abstract properties | **HISTORICALLY SELECTED AT P2; NOW REOPENED** | P2 selected the abstract construction under its stated theorem assumptions. The owner later reopened the implementation-direction choice because of custom cryptographic ownership risk. This does not select an instantiation or disprove the construction. |
 | SHA-256 randomized hash-then-open commitment | **CANDIDATE** | Practical standard primitive and plausible salted-hash commitment; concrete proof mapping, formula, encoding, parameters, and independent review remain missing. |
 | SHA3-256 randomized hash-then-open commitment | **CANDIDATE** | Same gaps as SHA-256; standard algorithm does not close the ROM gap. |
 | SHA-256 SAS profile | **CANDIDATE** | Standard and mature implementation support; concrete-hash theorem gap, input encoding, `t`, truncation bit order, and review unresolved. |
@@ -142,7 +144,7 @@ These requirements avoid encoding ambiguity; they do not establish that the sele
 
 ## 10. Historical recommendation (superseded for current project priority)
 
-**STOP concrete cryptographic selection.** Retain Candidate B as P2’s construction direction, but do not freeze a commitment, hash, `t`, SAS bit order, or byte encoding in P3 on this evidence.
+**STOP concrete Candidate B instantiation on current evidence.** Retain Candidate B as a formal reference and possible fallback, but do not freeze a commitment, hash, `t`, SAS bit order, or byte encoding on this evidence. This STOP is not a claim that Candidate B is insecure.
 
 **Historical recommendation when this research was written: P3.3 — primary-source clarification of Candidate B’s intended concrete commitment/hash instantiation.** It did not authorize choosing a project-specific mapping. Current project priority is recorded in [manager context](../ai/context/project.md); all concrete commitment, hash, encoding, and parameter choices remain unselected, and the STOP remains in force.
 
