@@ -27,4 +27,6 @@ P2 construction selection is complete; the following remain gates before a produ
 
 This construction selection authorizes P3 profile work, not production cryptography or a production-readiness claim.
 
+The separate, unselected vodozemac candidate now records local Responder admission, timeout, and two global rate-control requirements in D15 of its candidate profile/decision log. These decisions do not select that candidate or close Candidate B's production-profile gates; exact deployment rate values and implementation coordination remain open, and independent external review is mandatory.
+
 A future human-comparison format remains open. The earlier illustrative approximately 40-bit Crockford Base32 string is retained as a UX candidate only; no alphabet, length, grouping, or entropy value is selected, and no security claim depends on it. The profile must account for partial comparison, confusing glyphs, accidental approval, accessibility, localization, display conditions, and repeated-mismatch fatigue. Retry constraints needed for a security bound belong to the protocol/security contract; consumers may enforce stricter product policy but may not bypass required constraints while claiming the same bound.

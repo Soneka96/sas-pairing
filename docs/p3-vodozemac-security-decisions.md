@@ -110,7 +110,7 @@ On restart, active state and pending approval are discarded; historical request 
 
 **Assumptions / evidence:** Profile §§6 and 11.2–11.4 define the wire/authentication distinction, duplicate classification, and terminal behavior. These are project adaptations, not inherited generic guarantees from Matrix.
 
-**Does not establish:** A fixed timeout value, which remains unresolved, or implementation/runtime secret-erasure guarantees.
+**Does not establish:** That the timeout policy recorded in D15 is suitable for every deployment, or implementation/runtime secret-erasure guarantees.
 
 **Repository history:** `80d1005` reconciled cancellation authentication and duplicate/terminal semantics; `68d41e8` tightened completion and terminal handling.
 
@@ -294,6 +294,34 @@ On restart, active state and pending approval are discarded; historical request 
 
 **Independent-review status:** Candidate semantics are now defined; they are not externally reviewed or approved. Independent review must assess their fit with the complete candidate and confirm the pre-exposure ordering. Candidate B remains the SELECTED P2 construction; this vodozemac profile remains CANDIDATE — NOT SELECTED.
 
+### D15 — Remote admission, timeout, and exhaustion-resistance policy
+
+**Status:** Candidate decision; independent review remains required.
+
+**Decision:** A Responder integration MUST provide an independently locally controlled remote-pairing admission policy. Reference/general interactive integrations SHOULD default to disabled and enable only after deliberate local action. Consumers MAY deliberately choose continuous enablement; it is permitted, remains subject to all counters, and accepts greater remote-exhaustion availability risk without violating the candidate's SAS bound by itself. A disabled gate rejects new `START`s before semantic/cryptographic work and is rechecked atomically at the responder SAS-exposure boundary. Closing or expiring the local admission window aborts active Responder runs and never resumes them. Neither admission changes nor the window reset/refund the durable SAS epoch.
+
+Use a non-extendable five-minute absolute ceremony deadline and a 60-second machine/protocol inactivity deadline. The absolute timer starts at Initiator local-state creation or, for Responder, when a valid bounded `START` passes local admission and enters active state. The inactivity timer covers machine/protocol waits, pauses while the complete SAS awaits deliberate human action, refreshes only on valid expected state progress, and is never refreshed by duplicates, junk, keepalives, or UI activity. Both use monotonic elapsed time; resume after suspension rechecks deadlines conservatively, and process restart aborts active ceremonies while durable SAS accounting survives.
+
+Every Responder deployment MUST have two distinct finite global controls across the applicable local security-core/endpoint scope: a START/resource-admission limiter and an SAS-opportunity release limiter at or immediately before the charged key release. Numeric rates are deployment-selected, not universal. Per-IP, identity, request-ID, connection, or other rotatable labels cannot be the sole global control. Worker/process instances serving the same endpoint coordinate whichever global state they claim. START-limiter persistence is not required for the aggregate SAS bound; a time-to-exhaustion claim requires enough coordinated/persistent limiter state to prevent restart or worker bypass. The eight-slot cap controls concurrency, the START limiter controls serial admission work, the SAS limiter slows irreversible budget consumption, and the durable `N = 5,497` counter caps total charged opportunities.
+
+An unauthenticated remote attacker may repeat `START → ACCEPT → valid attacker I_pub → charge opportunity → RESPONDER_KEY / R_pub → abort`. It need not display, compare, approve, or complete. Consuming all 5,497 opportunities is a persistent availability attack: the endpoint fails closed and remote SAS pairing remains unavailable until separately locally authorized epoch reset. This availability attack is not by itself an authentication-probability violation and does not enlarge the aggregate `10^-8` random-match bound. Pairing enablement, successful ceremonies, restart, time windows, timeout, and rate control never reset or refund attempts.
+
+**Rationale:** Local admission preserves deliberate local intent and prevents a network-only attacker from creating a Responder SAS opportunity while disabled. Its exposure-boundary recheck closes the race between local disablement and key release. Separate timeouts bound stale and stalled state while leaving deliberate human comparison enough time under a finite absolute deadline. Global START control addresses serial unauthenticated work; the separate SAS-release control slows irreversible use of a persistent finite budget. Neither rate control substitutes for the eight concurrent slots or durable SAS accounting. Keeping budget exhaustion distinct from authentication failure preserves the stated statistical claim while documenting the persistent availability consequence.
+
+**Alternatives considered:** Permanently open admission; a local gate without an atomic exposure-boundary recheck; a per-request network-triggered approval prompt; a cryptographic pre-admission token/cookie; a fixed universal numeric rate; timeout-only protection; and rate-limiting-only protection. Permanently open increases remote-exhaustion risk; a local-only first check leaves a stale-state race; per-request prompts permit unauthenticated prompt fatigue; tokens/cookies introduce a separate cryptographic protocol and do not replace local intent or resource limits; universal rates do not fit varied deployments; and timeouts or rate limits alone do not provide the other control's property.
+
+**Evidence / precedent:** Profile §§11.1.1–11.3 and 12. The current [Matrix Rust SDK SAS state source](https://matrix-org.github.io/matrix-rust-sdk/src/matrix_sdk_crypto/verification/sas/sas_state.rs.html) defines `MAX_AGE = 60 * 5 seconds` and `MAX_EVENT_TIMEOUT = 60 seconds`. This is supporting engineering precedent only; it does not prove the numbers universally optimal or prove this generic candidate's policy. Illustrative rate arithmetic (not limits or defaults): 5,497 charged opportunities at one per second take about 1 hour 32 minutes; at 10 per minute, about 9 hours 10 minutes; at 60 per hour, about 3 days 19 hours 37 minutes. These examples show why a finite total budget does not make rate control unnecessary.
+
+**Security boundary:** Exhaustion affects availability; the total durable counter continues to enforce the candidate's aggregate SAS bound. Admission enablement does not reset the epoch, and charged attempts are not refunded. No new wire bit, error, or message is added. `expected_peer = none` remains D14 open peer identity mode, not open network admission; matching expected-peer bytes do not authenticate admission or prove long-term-key possession.
+
+**Future vector/test implications:** Cover disabled/default admission, explicit enablement, continuous-enabled operation, no network enablement, disabled `START` before slot/key/`ACCEPT`, closure and window expiry aborting active Responder runs, closure/exposure races and charged/no-charge outcomes, no epoch reset/refund on admission changes, timeout boundaries and terminal cleanup, human approval timer exclusion, valid-progress-only inactivity refresh, both global limiter scopes and bypass rotation, worker coordination, restart abort with durable-budget preservation, and fail-closed exhaustion. No vectors or implementation tests are produced by this decision.
+
+**Open gates:** Exact numeric START/SAS rates; cross-process/storage implementation; platform clock and suspend behavior; rate-state persistence needed for claimed time-to-exhaustion; independent review of admission/timeout policy; same-device profile; deterministic vectors; and final P3 consistency/adversarial review. P3 remains in progress.
+
+**Repository history:** To be recorded with the resulting policy commit in a follow-up documentation commit.
+
+**Independent-review status:** These are candidate decisions, not external review or approval. Candidate B remains the SELECTED P2 construction with its concrete production instantiation gated. The vodozemac ceremony remains CANDIDATE — NOT SELECTED; no production protocol is approved and independent external review remains mandatory.
+
 ## Current unresolved P3 gates
 
 These gates are based on the current candidate profile, P3 roadmap, and supporting assessments. They are not resolved by recording the decisions above.
@@ -301,8 +329,8 @@ These gates are based on the current candidate profile, P3 roadmap, and supporti
 - Request-ID generation, active-local collision handling, and routing policy are defined as candidate decisions (profile §4, D12); they are not an undecided candidate-design gate, but remain subject to independent review as part of the complete profile. Incoming peer-selected IDs remain attacker-controlled within the 1–64-byte syntax.
 - Exact vodozemac release, candidate feature selection, known RNG path, X25519 contributory behavior, and basic long-lived secret lifecycle are now specified as candidate decisions (profile §5, D13); they remain subject to independent review. Still open are independent acceptance of ThreadRng/getrandom and entropy adequacy, the actual P4 resolved dependency versions, supported target-platform RNG assumptions, Linux fork integration where applicable, and adequacy of temporary-material zeroization.
 - Application-context and expected-peer semantics are now defined as candidate local inputs, exact comparisons, and pre-exposure checks (profile §§4, 8, 10); their fit and enforcement still require independent review.
-- Exact monotonic timeout duration remains open (profile §11.3).
-- Global resource/rate thresholds and multi-process coordination of the eight-slot bound remain open (profile §§11.1.1, 14).
+- Local remote-admission semantics, the five-minute absolute timeout, 60-second inactivity timeout, global START limiter requirement, and global SAS-exposure limiter requirement are defined as candidate decisions (profile §11.1.1–§11.3, D15) and remain subject to independent review.
+- Exact numeric rates, cross-process/storage implementation, clock/suspend behavior, rate-state persistence needed for time-to-exhaustion claims, and multi-process coordination of admission, eight slots, both limiters, and the durable counter remain open (profile §§11.1.1–11.3, D15).
 - The separate same-device profile remains P3 work (P3 roadmap); it is not defined by this vodozemac candidate.
 - Deterministic vector values and conformance vectors remain deferred (profile §12).
 - Independent audit of the complete candidate remains open; internal research is not independent external security review.

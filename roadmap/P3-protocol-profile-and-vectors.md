@@ -2,7 +2,7 @@
 
 ## Status
 
-🔵 In progress — P3.1 profile foundation drafted; the unselected vodozemac candidate's dependency, lifecycle, and application-context/expected-peer semantics are defined subject to independent review, while other profile gates, the same-device profile, and vectors remain.
+🔵 In progress — P3.1 profile foundation drafted; the unselected vodozemac candidate now defines dependency/lifecycle, application-context/expected-peer, local admission, timeout, and two global rate-control requirements subject to independent review. Deployment-selected rate values and integration details, other profile gates, the same-device profile, and vectors remain.
 
 ## Goal
 
