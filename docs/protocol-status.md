@@ -14,6 +14,8 @@ P2 outcome: **SELECTED — Candidate B for the remote authenticated-bootstrap pr
 
 The same remote Candidate B protocol is intended for Windows-to-Windows, mobile-to-Windows, and future supported clients. The transport and UI differ; the remote protocol semantics do not. Both participants compare the complete SAS for the exact ceremony without transcription, and pairing requires bilateral completion and confirmations; QR is optional future UX research. The abstract same-device candidate contract is drafted in [the separate local profile](p3-same-device-local-profile-draft.md), with its own [decision log](p3-same-device-security-decisions.md). It may skip SAS only when a deployment has a separately approved adapter that establishes genuine locality, mutual endpoint authentication, consumer authorization, and remote-peer exclusion. Host approval remains explicit and ceremony-specific. There are zero approved adapters, so the abstract draft alone does not enable SAS-free production pairing. Loopback, IP, hostname, discovery name, process name, or LAN proximity alone cannot establish this path. The default Automatic policy uses that profile only when its predicate is established and otherwise falls back to Candidate B; Always require SAS uses Candidate B even on the same device. TLS 1.3 with the exact pinned key and proof of possession is the post-pairing transport/authentication layer, not the Candidate B first-contact construction. RFC 9266's TLS exporter is a channel binding, not a proven shortened SAS.
 
+The separate local candidate now defines its transcript-derived ceremony identity, canonical payload and outer-record framing, message types and schemas, state machine, duplicate handling, completion points, and complete-record maximum. These mechanics remain candidate-only and require independent review. Exact active local-ceremony cap, local rate limits, local timeout policy, platform adapters, deterministic vectors, and independent review remain open. No platform adapter is approved, and the abstract profile alone cannot activate SAS-free production pairing.
+
 P2 construction selection is complete; the following remain gates before a production protocol profile or implementation:
 
 - exact construction and security rationale
@@ -21,7 +23,7 @@ P2 construction selection is complete; the following remain gates before a produ
 - exact application-context encoding and mismatch rules for the production-selected concrete profile; the separate vodozemac candidate now defines local context/expected-peer semantics, but remains unselected and subject to independent review
 - SAS derivation and encoding
 - protocol-required attempt, cooldown, ceremony, lifetime, and persistent-counter constraints needed for the security bound; exact values and enforcement integration
-- canonical wire format and state machine
+- remote Candidate B canonical wire format and state machine
 - deterministic test vectors
 - independent external review
 

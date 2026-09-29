@@ -47,11 +47,11 @@ An OS SID/UID/GID/package credential is a principal credential, not automaticall
 
 ## L3 — Local ceremony, approval, and result lifecycle
 
-**Status:** Abstract candidate decision; encoding mechanics remain open.
+**Status:** Historical abstract candidate decision. Its original single-nonce framing is superseded by L5's two-nonce and canonical-identity mechanics; its lifecycle and approval principles are further specified by L6.
 
 **Decision:** The core generates a fresh public, non-secret 128-bit nonce for every local attempt. Ceremony state also binds profile/version, exact roles, the exact authenticated connection, endpoint evidence and authorization decisions, both canonical bootstrap records, shared context, and approval state. Host approval applies only to that complete state. Initiator's deliberate Start is its intent; no second confirmation is required solely for symmetry. A valid Host approval is followed by `LOCAL_ACK`; Responder reports success only after receiving the matching ACK. Disconnect, changed state, revoked authorization, adapter-predicate loss, or restart terminates the attempt. There is no resume; a new connection/retry gets new state and new approval.
 
-The nonce by itself is not claimed to authenticate the complete ceremony. The final exported `ceremony_identity` representation and canonical wire framing remain open. Results may be asymmetric under final message loss; if both sides succeed, results must be compatible. Durable trust remains consumer-owned.
+At the time L3 was recorded, the nonce by itself was not claimed to authenticate the complete ceremony, and the exported identity and canonical framing were open; L5 now defines those mechanics. Results may be asymmetric under final message loss; if both sides succeed, results must be compatible. Durable trust remains consumer-owned.
 
 **Rationale:** Complete-state binding prevents stale approval from transferring across changed connections or inputs. No-resume semantics avoid requiring durable active-ceremony replay state. Local verified completion states what each side knows without promising atomic bilateral success or durable persistence.
 
@@ -79,8 +79,58 @@ Local attempts neither consume nor reset/refund the remote `N = 5,497` SAS oppor
 
 **Independent-review status:** Generic selection and separation rules require review with the complete local profile. Future adapter decisions require separate scoped evidence and review.
 
+## L5 — Canonical local framing and transcript identity
+
+**Status:** Candidate mechanics defined; requires independent review.
+
+**Decision:** Retain profile identifier `sas-pairing-local-authenticated-profile-draft-01`, version `1`, and define two distinct public, non-secret 16-byte nonces. The Initiator security core generates `initiator_nonce` with an OS-backed CSPRNG for each new locally initiated ceremony and sends it in `LOCAL_START`. The Responder security core generates `responder_nonce` with an OS-backed CSPRNG only after valid/authenticated/authorized `LOCAL_START` and sends it in `LOCAL_ACCEPT`. Before release, each core checks against active locally generated nonces in its applicable local namespace and regenerates on collision. A receiver treats a peer-provided nonce as untrusted input; security does not depend on attacker-supplied randomness. No persistent historical nonce database is required solely for active collision avoidance.
+
+Reuse the seven-byte ASCII `SASPAIR` payload header, `u16be(1)` version, fixed local message types `0x40..0x44`, and field encoding `u32be(length) || exact_bytes`. V1 field order is exact and forbids missing, repeated, reordered, unknown, or trailing fields; length arithmetic is checked before allocation. Every local message carries the exact ASCII profile identifier. Roles are one byte (`Initiator=0x01`, `Responder=0x02`) and every message explicitly encodes sender then receiver. Local schemas and bootstrap reuse are normatively listed in the profile. The transport-independent outer record is `u32be(payload_length) || payload`; fragmentation is allowed and the declared length excludes the four-byte prefix.
+
+The sole authoritative ceremony identity is exactly 32 raw bytes:
+
+```text
+D = ASCII("sas-pairing-local-authenticated-profile-draft-01/transcript/v1")
+transcript = u32be(len(D)) || D
+          || u32be(len(START)) || START
+          || u32be(len(ACCEPT)) || ACCEPT
+ceremony_identity = SHA-256(transcript)
+```
+
+`START` and `ACCEPT` are their exact canonical payloads, including header and fields but excluding outer record prefixes. This identity is fixed after canonical ACCEPT exists and before Host approval. START+ACCEPT bind profile/version/types/roles, both nonces, and both canonical bootstraps including contexts. Excluding approval lets Host approval refer to an already-fixed identity and avoids circular ordering. The digest identifies/binds canonical protocol bytes; it is not a MAC, peer authentication, OS connection authentication, or adapter evidence. Distinct accepted canonical transcripts with the same digest imply a SHA-256 collision. No HMAC, signature, Diffie–Hellman, or shared pairing secret is added to the local ceremony.
+
+The complete local record cap is 65,536 bytes including its four-byte prefix, hence payload maximum 65,532 bytes. OS credential structures and platform-specific principal evidence are excluded from the generic transcript. The local state separately binds the exact authenticated connection, adapter-authenticated endpoint evidence, consumer authorization decision, and current authorization state/version sufficient to invalidate stale authorization. This is a security property, not a mandated token/API type; revocation or replacement invalidates the active ceremony.
+
+**Rationale:** The Responder nonce contributes independent freshness after an authenticated and authorized request; replaying START therefore produces a different transcript and identity except for the negligible chance of a repeated 128-bit nonce or a SHA-256 collision. Exact canonical framing and a transcript digest provide one deterministic local identity without treating either nonce as the result identity. Keeping connection and authorization evidence in local state preserves adapter binding without making OS-specific structures part of generic bytes.
+
+**Alternatives considered:** Nonce-only identity; approval-inclusive transcript identity; nonce plus digest as competing identities; transport-specific record boundaries; a new local magic; or a local MAC/HMAC. Nonce-only does not bind both accepted bootstrap records; approval-inclusive identity cannot be fixed before approval; multiple identity values make result semantics ambiguous; transport-specific framing harms consistency; new magic duplicates the existing envelope; and a local MAC would imply a key/authentication mechanism absent from this channel-based profile.
+
+**Does not establish:** SHA-256 authentication, endpoint authentication, any adapter approval, or production readiness.
+
+**Independent-review status:** The exact transcript, SHA-256 collision assumption, parser bounds, and adapter boundary remain subject to independent review.
+
+## L6 — Local state machine, duplicate, and completion semantics
+
+**Status:** Candidate mechanics defined; requires independent review.
+
+**Decision:** The Initiator moves `Idle → AwaitAccept` when it deliberately sends START on an authenticated connection. The Responder accepts START only after authenticating/authorizing the Initiator and validating profile, bootstrap, context, and expected-peer state; it generates its nonce, constructs canonical ACCEPT and fixes identity, sends ACCEPT, and enters `AwaitHostDecision`. The Initiator accepts canonical ACCEPT only after authenticating/authorizing the Host and validating nonce/bootstrap/context/expected-peer state; it fixes the same identity and enters `AwaitApproval`. Exact Host approval causes the Responder to send APPROVE and enter `AwaitAck`; Host rejection sends REJECT when possible and is terminal. A valid APPROVE causes the Initiator to recheck connection/authorization, write one complete ACK, and succeed after the write. The Responder succeeds only after receiving and validating the matching ACK on the same authenticated connection.
+
+Before establishment, route local state by exact authenticated connection instance and initiator nonce; after establishment, that same state object also records the digest. Connection identity is not serialized. Different connections are distinct even when transcript, nonces, and digest match. The state binds adapter-authenticated evidence, consumer authorization, and current authorization state/version sufficient to invalidate stale authorization; revocation/replacement terminates the active ceremony. No reordering buffer exists.
+
+On the same active connection/ceremony, an exact byte-for-byte duplicate of an accepted message is ignored idempotently without another transition, prompt, ACCEPT, APPROVE, ACK, or result. A changed duplicate, illegal-next message, or out-of-order message is terminal failure. In particular, a duplicate APPROVE after ACK issuance cannot produce a second ACK. Terminal states are immutable. V1 adds no retransmission/recovery behavior.
+
+Initiator success occurs only after deliberate Start; mutual endpoint authentication/authorization; peer bootstrap/context/expected-peer validation; fixed identity; matching Host APPROVE; live connection/authorization recheck; and successful complete ACK write on the still-valid connection. This does not prove ACK receipt, Responder success, or durable trust. Responder success requires authentication/authorization and validation, fixed identity, exact Host approval, APPROVE sent, and matching ACK actually received on the same connection. Thus after ACK write but before receipt, Initiator may succeed while Responder does not. Other pre-ACK disconnect points yield no success; REJECT remains terminal despite later messages. New connection/restart means fresh nonces, authentication, authorization, approval, and ceremony; resume is unsupported.
+
+**Rationale:** State-object and connection binding prevents equal wire bytes or digest values from crossing authenticated channels. Idempotent duplicate ignore prevents accidental repeated side effects while ensuring lost final ACK does not hide an unapproved retry protocol. The selected local completion contract makes each endpoint's result depend only on evidence it actually observed and does not claim distributed atomicity.
+
+**Alternatives considered:** Duplicate-triggered retransmission; a second final ACK; reconnect/resume; and an atomic/common-success claim. Retransmission and a second ACK create additional delivery semantics without common knowledge; resume would require new persistent replay/approval machinery; and network loss makes simultaneous common success unclaimable.
+
+**Does not establish:** Simultaneous success, ACK delivery from a successful write, durable trust persistence, or adapter security.
+
+**Independent-review status:** State transitions, duplicate semantics, result points, and connection/authorization invalidation remain subject to review.
+
 ## Unresolved local mechanics and future decisions
 
-No concrete platform adapter selection is made here. Keep open: final ceremony identity representation; canonical message encoding and type numbers; local complete-frame maximum if separate; active-ceremony cap; local rate limits; local timeout policy; Windows, Linux, macOS, Android, and iOS adapter/support decisions; and independent external security review. Future platform decisions must be added to this log with their OS/version scope, primitive, peer evidence, mutual authentication, remote exclusion, endpoint/permission/race assumptions, authorization semantics, integrity, limits, and review status.
+No concrete platform adapter selection is made here. Keep open: exact active local-ceremony cap; local rate limits; local timeout policy; deterministic vectors; Windows, Linux, macOS, Android, and iOS adapter/support decisions; and independent external security review. Future platform decisions must be added to this log with their OS/version scope, primitive, peer evidence, mutual authentication, remote exclusion, endpoint/permission/race assumptions, authorization semantics, integrity, limits, and review status. L5/L6 supersede L3's earlier open framing/identity mechanics; no remote-profile decision changes.
 
 The local profile reuses the remote bootstrap and D14 semantics but does not alter the remote profile or remote security decision log. Platform credential structures remain adapter evidence and are excluded from generic wire/bootstrap/result claims.
