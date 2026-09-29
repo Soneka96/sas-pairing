@@ -242,11 +242,74 @@ Local attempts MUST NOT consume, reset, or refund the remote 5,497 SAS opportuni
 
 Local messages carrying the existing canonical bootstrap reuse its exact field and bootstrap maxima and MUST NOT enlarge them. A complete local record is at most 65,536 bytes including the four-byte outer prefix, so `payload_length` is at most 65,532 bytes. Reject zero/invalid length, payloads above 65,532, checked-arithmetic overflow, truncation, and malformed payload before unbounded allocation. Do not modify the remote frame cap. Partial reads follow §10; bytes after one complete record belong to the next record.
 
-The profile requires bounded input sizes, bounded active local ceremonies, finite rate/resource controls, prompt/fatigue protection, and finite ceremony timeouts. Exact active-ceremony maximum, local rate thresholds, and local timeout values remain open same-device candidate gates. Remote five-minute/60-second timeout values are precedent only and are not inherited here.
+The profile requires bounded input sizes, bounded active local ceremonies, finite rate/resource controls, prompt/fatigue protection, and finite ceremony timeouts. The local candidate values and enforcement rules are defined in §15. These controls protect availability and human attention; they do not count or limit remote SAS attempts.
 
 Raw OS token/SID structures, PID, Linux `ucred`, UID/GID triples, Android Binder structures, and similar platform credentials MUST NOT be placed in generic wire/bootstrap data. An adapter or consumer may retain evidence separately for audit under its own rules.
 
-## 15. Platform research status (non-normative)
+## 15. Local admission, capacity, rate, and timeout policy
+
+### 15.1 Admission and connection scope
+
+The applicable local security core MUST maintain an independently locally controlled state:
+
+```text
+local_pairing_admission = enabled | disabled
+```
+
+Network or peer input MUST NOT enable admission. General interactive/reference integrations SHOULD default to disabled and enable only after deliberate local action. A service/deployment MAY deliberately keep admission continuously enabled, subject to every resource limit, ceremony-specific Host approval, authorization, rate control, and timeout in this section.
+
+Disabling admission immediately prevents new ceremonies and terminally fails all existing nonterminal local ceremonies, invalidating pending approval and releasing owned slots. Re-enabling admission never resumes an old ceremony. Admission is neither durable trust, peer identity, SAS accounting, nor an authorization result.
+
+Host approval authorizes one exact accepted ceremony. Admission determines whether local pairing may be admitted at all. Host approval occurs after request work and state already exist, so it does not replace admission or prevent request-processing and prompt abuse.
+
+One authenticated local IPC connection MUST carry at most one local pairing ceremony during its lifetime. A second `LOCAL_START` on that connection MUST NOT start a retry, replace prior state, or create another concurrent ceremony; it is refused or fails according to state. A new attempt requires a new authenticated connection, new nonces and ceremony identity, fresh endpoint authentication, authorization, and Host approval. This rule is separate from duplicate-message handling.
+
+### 15.2 Active ceremony and Host-decision capacity
+
+The maximum is exactly **4 active local ceremonies globally** across the applicable local security-core/logical-endpoint scope, shared by Initiator and Responder ceremonies and all workers serving that scope. It is not four per worker, connection, PID, SID/UID, application identity, or bootstrap identity. Optional narrower limits MAY supplement this global cap.
+
+An Initiator atomically reserves one active slot when local Start creates ceremony state, before sending `LOCAL_START`; if unavailable, it fails before sending. A Responder does not consume a ceremony slot for raw unauthenticated transport activity. After bounded intake, adapter endpoint authentication, local admission, the applicable START limiter, canonical/semantic `START` validation, consumer authorization, and context/expected-peer validation, it MUST atomically reserve both an active slot and the single Host-decision slot before creating active state, generating/releasing `responder_nonce`, or sending `LOCAL_ACCEPT`. If either reservation is unavailable, it refuses before state, nonce, ACCEPT, or Host prompt.
+
+The separate maximum for ceremonies in `AwaitHostDecision` is exactly **1**. This slot is held only while a ceremony is in `AwaitHostDecision`; it is released when that state ends. On approval, `AwaitHostDecision → AwaitAck` releases the Host-decision slot but retains the ordinary active slot. Another ceremony may then enter `AwaitHostDecision`, subject to the limiters and available active slot. Rejection and every other terminal path release all slots owned by the ceremony.
+
+There is no Host-approval queue. A Responder must have both slots before `LOCAL_ACCEPT`; authenticated peers do not bypass this rule. With all four active slots occupied or the Host-decision slot occupied, refuse the new ceremony without evicting/replacing an existing one, creating a prompt, or generating/releasing ACCEPT merely to report capacity. Slot release occurs exactly once on success, rejection, timeout, disconnect, cancellation, authorization revocation, adapter-predicate loss, admission closure, or process restart.
+
+### 15.3 Mandatory global rate controls
+
+Every deployment MUST configure explicit finite rate and burst/capacity values for both of these distinct global controls:
+
+1. **START/resource admission limiter:** bounds serial local request-processing work. Apply it after bounded transport intake and sufficient adapter endpoint authentication to identify an eligible local connection, and before expensive semantic/state work where practical.
+2. **Host-approval request limiter:** bounds prompt flooding, approval fatigue, and habituation. Apply only after local admission, authorization, structural validation, and context/expected-peer validation, and before reserving or surfacing the Host-decision interaction.
+
+Missing or unbounded values fail closed for new local ceremony admission/prompts. Exact numeric rates and burst capacities are deployment-selected and MUST NOT be invented as universal profile values. Optional per-principal, per-app, per-connection, or per-user limits MAY be stricter, but do not replace either global control.
+
+Global enforcement MUST be coordinated across all workers serving the same applicable endpoint scope and MUST NOT rely solely on PID, UID/SID, public key, application identity, bootstrap, connection, or ceremony nonce. Authenticated or previously known peers do not bypass capacity, rate controls, or deadlines. Uncertain/missing live shared limiter state fails closed for new admissions/prompts. Durable rate-window state is not required across an ordinary restart; a process/device restart MAY initialize a fresh operational rate window because these limits are not a cryptographic cumulative-attempt counter. A deployment claiming a bound across restart within a time interval MUST persist/coordinate enough state to support that claim. There is no generic rollback/reinstall continuity guarantee.
+
+### 15.4 Deadlines and terminal behavior
+
+The candidate uses three finite deadlines:
+
+```text
+machine/protocol inactivity = 60 seconds
+Host decision deadline       = 2 minutes
+absolute ceremony deadline   = 5 minutes
+```
+
+The machine inactivity deadline applies while waiting for machine/protocol progress, including Initiator `AwaitAccept` and Responder `AwaitAck`; it does not run during deliberate Host-decision wait. It starts when Initiator Start creates active state or when an accepted Responder `START` becomes active after required admission and slot reservations. Only a valid, expected, state-advancing protocol event refreshes it. Duplicates, malformed or illegal messages, keepalives, unrelated traffic, UI activity, and adapter noise do not.
+
+The non-extendable 2-minute Host-decision deadline applies while the Responder is in `AwaitHostDecision` and while the Initiator waits in `AwaitApproval` for that same Host decision after validating `LOCAL_ACCEPT`. It starts for the Responder when ceremony identity is fixed, `LOCAL_ACCEPT` is issued, and the state enters `AwaitHostDecision`; for the Initiator it starts when valid `LOCAL_ACCEPT` is validated, identity is fixed, and the state enters `AwaitApproval`. The 60-second machine deadline is suspended in this phase; the absolute deadline continues.
+
+The non-extendable 5-minute absolute deadline starts at Initiator active-state creation or Responder acceptance into active state, and continues through machine waits, Host decision, approval, and final ACK wait. No event extends it; it overrides any remaining phase-specific time.
+
+Any deadline expiry terminally fails the ceremony, invalidates Host approval/callbacks, releases each owned slot exactly once, drops volatile ceremony evidence, and prevents later messages from resurrecting it. Retries require a new authenticated connection and a new ceremony. Deadlines use monotonic elapsed time; wall-clock changes MUST NOT extend them. After suspend/resume, deadlines are re-evaluated conservatively; if elapsed time cannot be established reliably enough, active ceremonies fail. Process restart destroys all active state and pending approvals and does not resume ceremonies.
+
+These values are candidate engineering/resource limits, not cryptographic-strength claims. The local controls bound memory, CPU, state, IPC churn, stale authorization, prompt flooding, human fatigue, and availability. Local ceremonies contain no 39-bit SAS random guess, consume none of remote `N = 5,497`, do not affect remote `ε = 10^-8`, and require no local statistical attempt counter. Resource-cap, rate, or timeout refusal affects availability; it does not weaken a completed ceremony when its required predicates hold, and it never changes remote SAS accounting.
+
+### 15.5 Future coverage (not implemented here)
+
+Future vectors/tests MUST cover: fifth active ceremony refusal before responder state, nonce, ACCEPT, or prompt; shared cap across roles/workers; second `LOCAL_START` on one connection; unavailable Host slot causing no state/nonce/ACCEPT/prompt; Host slot release at approval transition to `AwaitAck` while active slot remains; another ceremony entering Host decision; no queue; START-rate and Host-prompt-rate rejection; rotating PID/identity/connection not bypassing live global limiters; exact 60-second, 2-minute, and 5-minute timeout behavior and absolute-deadline precedence; duplicate does not refresh; valid transition selects the next timer; timeout/admission closure releases slots once; conservative suspend expiry; restart destroys active state and may start fresh operational rate windows; and no local control changes remote 5,497 accounting. No tests or vectors are implemented by this document.
+
+## 16. Platform research status (non-normative)
 
 These are research notes, not profile guarantees or adapter approvals.
 
@@ -273,29 +336,27 @@ Windows named pipes are not inherently local-only. A future candidate would need
 
 These notes do not standardize the APIs or turn research into profile guarantees.
 
-## 16. Adapter approval gate
+## 17. Adapter approval gate
 
-An adapter may be called **APPROVED** only after a separate security review records its exact OS primitive and version scope; endpoint creation semantics; remote exclusion; peer credential mechanism; mutual endpoint authentication; namespace/path/name ownership; permissions/ACLs; race handling; process/PID lifecycle if used; handle inheritance/transfer assumptions; authorization semantics; integrity assumptions; and known limits. Approval is deployment-scoped. No adapter meets this gate in this task.
+An adapter may be called **APPROVED** only after a separate security review records its exact OS primitive and version scope; endpoint creation semantics; remote exclusion; peer credential mechanism; mutual endpoint authentication; namespace/path/name ownership; permissions/ACLs; race handling; process/PID lifecycle if used; handle inheritance/transfer assumptions; authorization semantics; integrity assumptions; pre-authentication bounds for listener/backlog, credential-query, and partial-read resources; and known limits. Every approved adapter must bound those adapter-level resources separately. The generic four-slot cap does not claim to bound all adapter-level denial of service. Approval is deployment-scoped. No adapter meets this gate in this task.
 
 Future adapter specifications may be separate documents, for example `docs/p3-local-adapter-windows-draft.md`, `docs/p3-local-adapter-linux-draft.md`, and `docs/p3-local-adapter-android-draft.md`; no placeholders are created here.
 
-## 17. Future conformance coverage
+## 18. Future conformance coverage
 
-Future deterministic vectors should include positive canonical `LOCAL_START`, `LOCAL_ACCEPT`, exact transcript bytes, 32-byte identity, `LOCAL_APPROVE`, `LOCAL_REJECT`, and `LOCAL_ACK`. Mutation cases should cover profile, version, type, either nonce, roles, either bootstrap/context, wrong identity, reordered/unknown/missing fields, duplicates and changed duplicates, trailing/truncated data, overflow, oversized and zero-invalid records, fragmented valid records, cross-profile messages, wrong-connection approval/ACK, and replayed START yielding a fresh Responder nonce and new identity. Also retain adapter/selection cases: no approved adapter blocks Automatic local selection; loopback is insufficient; authorization and mutual-authentication failures block success; changed connection is distinct; Always require SAS stays remote; and local activity does not affect the remote 5,497 budget. Do not generate vectors now.
+Future deterministic vectors should include positive canonical `LOCAL_START`, `LOCAL_ACCEPT`, exact transcript bytes, 32-byte identity, `LOCAL_APPROVE`, `LOCAL_REJECT`, and `LOCAL_ACK`. Mutation cases should cover profile, version, type, either nonce, roles, either bootstrap/context, wrong identity, reordered/unknown/missing fields, duplicates and changed duplicates, trailing/truncated data, overflow, oversized and zero-invalid records, fragmented valid records, cross-profile messages, wrong-connection approval/ACK, and replayed START yielding a fresh Responder nonce and new identity. Resource/lifecycle coverage is listed in §15.5. Also retain adapter/selection cases: no approved adapter blocks Automatic local selection; loopback is insufficient; authorization and mutual-authentication failures block success; changed connection is distinct; Always require SAS stays remote; and local activity does not affect the remote 5,497 budget. Do not generate vectors now.
 
 No vectors or implementation tests are produced by this draft.
 
-## 18. Open same-device gates
+## 19. Open same-device gates
 
-1. Exact active local-ceremony cap.
-2. Exact local rate limits.
-3. Exact local timeout policy.
-4. Windows adapter.
-5. Linux adapter.
-6. macOS adapter.
-7. Android adapter.
-8. iOS/support policy.
-9. Deterministic vectors.
-10. Independent external security review.
+1. Concrete deployment-selected finite rates and burst/capacity values for both global limiters.
+2. Windows adapter.
+3. Linux adapter.
+4. macOS adapter.
+5. Android adapter.
+6. iOS/support policy.
+7. Deterministic vectors.
+8. Independent external security review.
 
-These are open mechanics and approval gates, not reasons to infer a platform adapter is approved. The local profile is a candidate foundation only.
+These remaining rate configuration, vector, adapter, and review gates do not reopen the candidate's selected cap, connection rule, admission, prompt serialization, or timeout values. They do not imply any platform adapter is approved. The local profile is a candidate foundation only.
