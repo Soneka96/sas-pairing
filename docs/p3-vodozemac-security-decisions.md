@@ -268,6 +268,8 @@ On restart, active state and pending approval are discarded; historical request 
 
 **Evidence:** [GitHub tag-signature verification record](https://api.github.com/repos/matrix-org/vodozemac/git/tags/9cdcc49ec1b213570a3a59cdeb40e8310999ea9e); [vodozemac 0.11.0 tagged SAS source](https://github.com/matrix-org/vodozemac/blob/db1b34820f3102307284e762f335b3f72c735bf0/src/sas.rs), [tagged manifest](https://github.com/matrix-org/vodozemac/blob/db1b34820f3102307284e762f335b3f72c735bf0/Cargo.toml), [tagged release notes](https://github.com/matrix-org/vodozemac/blob/db1b34820f3102307284e762f335b3f72c735bf0/CHANGELOG.md), [crates.io version metadata](https://crates.io/crates/vodozemac/0.11.0), [published archive](https://static.crates.io/crates/vodozemac/vodozemac-0.11.0.crate), [x25519-dalek 3.0.0 source](https://docs.rs/crate/x25519-dalek/3.0.0/source/src/x25519.rs), and [Rand 0.10.2 ThreadRng source](https://github.com/rust-random/rand/blob/0.10.2/src/rngs/thread.rs). The version/MSRV and manifest feature values were checked against the exact tag; the archive checksum was independently matched to the index metadata.
 
+**Repository history:** `060e41eba81756df4b6f1da0903eb14df3a8622e` records this decision on `security/p3-vodozemac-ceremony-profile`.
+
 **Independent-review status:** Open. Independent reviewers must accept the exact dependency, feature configuration, ThreadRng/getrandom path and target assumptions, fork integration where applicable, zeroization boundary, complete profile, and temporary-material limitations. The P4 consumer lockfile must resolve and capture the exact dependency graph; the upstream source repository's lockfile is not that graph.
 
 ## Current unresolved P3 gates
