@@ -334,7 +334,7 @@ These gates are based on the current candidate profile, P3 roadmap, and supporti
 - The separate abstract same-device profile defines local framing/identity mechanics in its own profile and decision log; platform adapters and independent review remain P3 work. It is not defined by this vodozemac candidate.
 - Deterministic remote candidate vector values are now recorded in `vectors/p3-remote-vodozemac-draft-01.json`; broader state-machine, boundary, and deployment conformance coverage remains open (see [P3 conformance cases](p3-conformance-cases.md)).
 - Independent audit of the complete candidate remains open; internal research is not independent external security review.
-- P3 remote-profile completion is blocked on remote construction selection/review; cross-document consistency and roadmap exit criteria are not complete (P3 roadmap). The repository does not record a completed full internal whole-profile re-review; informal/internal review cannot substitute for the independent external review required by P5.
+- P3 remote-profile completion is blocked on pre-implementation construction review and a subsequent explicit owner selection/profile-freeze decision; cross-document consistency and roadmap exit criteria are not complete (P3 roadmap). The repository does not record a completed full internal whole-profile re-review; informal/internal review cannot substitute for the independent external review required by P3.5. P5 separately reviews the actual implementation after P4.
 - Independent external security review of the complete candidate and its cryptographic assumptions remains mandatory before selection or any production-readiness claim.
 
 ## Evidence and review boundaries

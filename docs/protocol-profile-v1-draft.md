@@ -4,6 +4,8 @@
 >
 > This document defines a specification surface for future P3 decisions. It does not select unresolved cryptographic parameters, define an implementable wire profile, or authorize implementation.
 
+> This file preserves the historical Candidate B P3 foundation. It is not the currently favored vodozemac candidate profile and does not represent a selected v1 protocol.
+
 **Current status:** P2 originally selected Candidate B as the abstract construction. The owner later reopened the implementation-direction choice because concrete instantiation would require substantial project-owned cryptographic design and proof-mapping/maintenance; this is not a finding that Candidate B is insecure. Candidate B remains a formal reference and possible fallback. The separate vodozemac profile is the **FAVORED CANDIDATE — NOT SELECTED**, pending project-specific analysis and independent review. This foundation preserves the historical Candidate B direction; it does not describe a currently selected production profile. See [current protocol status](protocol-status.md).
 
 ## 1. Purpose and security boundary

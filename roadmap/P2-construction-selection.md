@@ -78,4 +78,4 @@ Stop if a critical P1 property cannot be mapped to a justified construction, if 
 
 ## What this unlocks
 
-The current outcome is SELECTED and unlocks P3 profile work. RESEARCH CONTINUES and STOP are alternative phase outcomes and do not authorize protocol implementation.
+**Historical P2 outcome: SELECTED — Candidate B.** This historical selection originally unlocked P3 investigation and candidate-profile work. **Current project construction state: REOPENED during P3.** Candidate B is not currently selected for implementation; no production remote construction is selected. RESEARCH CONTINUES and STOP are alternative phase outcomes and do not authorize protocol implementation.
