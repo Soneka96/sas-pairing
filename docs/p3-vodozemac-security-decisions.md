@@ -4,7 +4,7 @@ This document records the rationale, evidence boundaries, alternatives, assumpti
 
 ## Status and architecture boundary
 
-Candidate B remains the **SELECTED P2 remote construction**, while its concrete production instantiation remains gated. The vodozemac ceremony is a separate **CANDIDATE — NOT SELECTED**. If later accepted, the proposed reuse direction is one shared Rust security ceremony using vodozemac with thin Dart/.NET wrappers; no independent Dart or .NET cryptography. That architecture is not a final production selection. No production cryptography or remote protocol is approved. Independent external review remains mandatory.
+Candidate B is the **prior P2 abstract remote construction selection**, while its concrete instantiation remains gated. No remote construction is ready for final selection. The vodozemac ceremony is a separate **CANDIDATE — NOT SELECTED**. If later accepted, the proposed reuse direction is one shared Rust security ceremony using vodozemac with thin Dart/.NET wrappers; no independent Dart or .NET cryptography. That architecture is not a final production selection. No production cryptography or remote protocol is approved. Independent external review remains mandatory.
 
 The assessment recommends the shared Rust-core direction only as promising reuse, subject to a complete profile and independent review ([reuse assessment](p3-vodozemac-reuse-assessment.md), §18). Vodozemac primitives and Matrix ceremony behavior are precedent, not evidence that this generic composition is secure.
 
@@ -292,7 +292,7 @@ On restart, active state and pending approval are discarded; historical request 
 
 **Vector/test implications:** Future conformance/state-machine coverage includes open success; expected identity and algorithm/key matches; each mismatch; partial expectations; responder mismatch before slot allocation; initiator mismatch before SAS-attempt reservation; no display/charge/result on pre-boundary mismatch; no expected-to-open downgrade; intentional empty context and independent-context mismatch; rejection of peer-copied context as local input; and preservation of authenticated K1 against lookup K2. No vectors or production tests are generated here.
 
-**Independent-review status:** Candidate semantics are now defined; they are not externally reviewed or approved. Independent review must assess their fit with the complete candidate and confirm the pre-exposure ordering. Candidate B remains the SELECTED P2 construction; this vodozemac profile remains CANDIDATE — NOT SELECTED.
+**Independent-review status:** Candidate semantics are now defined; they are not externally reviewed or approved. Independent review must assess their fit with the complete candidate and confirm the pre-exposure ordering. Candidate B remains the prior P2 abstract selection; this vodozemac profile remains CANDIDATE — NOT SELECTED, and no remote construction is ready for final selection.
 
 ### D15 — Remote admission, timeout, and exhaustion-resistance policy
 
@@ -320,7 +320,7 @@ An unauthenticated remote attacker may repeat `START → ACCEPT → valid attack
 
 **Repository history:** `c6a367af99f5c9029151d6549401d60186c0f699` records this decision on `security/p3-vodozemac-ceremony-profile`.
 
-**Independent-review status:** These are candidate decisions, not external review or approval. Candidate B remains the SELECTED P2 construction with its concrete production instantiation gated. The vodozemac ceremony remains CANDIDATE — NOT SELECTED; no production protocol is approved and independent external review remains mandatory.
+**Independent-review status:** These are candidate decisions, not external review or approval. Candidate B remains the prior P2 abstract selection with its concrete instantiation gated. The vodozemac ceremony remains CANDIDATE — NOT SELECTED; no remote construction is ready for final selection, no production protocol is approved, and independent external review remains mandatory.
 
 ## Current unresolved P3 gates
 
@@ -332,9 +332,9 @@ These gates are based on the current candidate profile, P3 roadmap, and supporti
 - Local remote-admission semantics, the five-minute absolute timeout, 60-second inactivity timeout, global START limiter requirement, and global SAS-exposure limiter requirement are defined as candidate decisions (profile §11.1.1–§11.3, D15) and remain subject to independent review.
 - Exact numeric rates, cross-process/storage implementation, clock/suspend behavior, rate-state persistence needed for time-to-exhaustion claims, and multi-process coordination of admission, eight slots, both limiters, and the durable counter remain open (profile §§11.1.1–11.3, D15).
 - The separate abstract same-device profile defines local framing/identity mechanics in its own profile and decision log; platform adapters and independent review remain P3 work. It is not defined by this vodozemac candidate.
-- Deterministic vector values and conformance vectors remain deferred (profile §12).
+- Deterministic remote candidate vector values are now recorded in `vectors/p3-remote-vodozemac-draft-01.json`; broader state-machine, boundary, and deployment conformance coverage remains open (see [P3 conformance cases](p3-conformance-cases.md)).
 - Independent audit of the complete candidate remains open; internal research is not independent external security review.
-- P3 remains in progress; cross-document consistency and roadmap exit criteria are not complete (P3 roadmap). The repository does not record a completed full internal whole-profile re-review; informal/internal review cannot substitute for the independent external review required by P5.
+- P3 remote-profile completion is blocked on remote construction selection/review; cross-document consistency and roadmap exit criteria are not complete (P3 roadmap). The repository does not record a completed full internal whole-profile re-review; informal/internal review cannot substitute for the independent external review required by P5.
 - Independent external security review of the complete candidate and its cryptographic assumptions remains mandatory before selection or any production-readiness claim.
 
 ## Evidence and review boundaries

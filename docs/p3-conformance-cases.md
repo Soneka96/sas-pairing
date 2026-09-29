@@ -20,7 +20,7 @@ Each row supplies a stable ID, precondition/input, expected outcome, and relevan
 | R-WIRE-010 | Complete nested bootstrap is 16,385 bytes | Reject over bootstrap maximum | No new charge; no new slot; no prompt; terminal if active |
 | R-WIRE-011 | `key_algorithm` contains non-ASCII or violates `[a-z0-9][a-z0-9.-]*` | Reject malformed bootstrap | No new charge; no new slot; no prompt; terminal if active |
 | R-WIRE-012 | X25519 public-key field length differs from 32 bytes | Reject before key construction | No new charge; no new slot; no prompt; terminal if active |
-| R-WIRE-013 | 32-byte non-contributory X25519 peer key | Reject `NonContributoryKey` result | No new charge if rejected before responder reveal; no prompt; terminal |
+| R-WIRE-013 | 32-byte non-contributory X25519 peer key | Reject `NonContributoryKey` result. If R rejects `I_pub` before revealing `R_pub`, I's attempt was charged before `I_pub` and R's was not. If I rejects `R_pub`, both attempts were charged before their respective key releases. | Charge is role/state-specific; never refund an already charged attempt; no prompt; terminal |
 | R-WIRE-014 | Change START bytes after ACCEPT was constructed | Commitment/transcript checks fail; no SAS or result | No result; exposure charge only if already crossed; terminal |
 | R-WIRE-015 | Flip one bit of committed `R_pub` | Commitment verification fails | Initiator has already reserved before `I_pub`; no refund; terminal |
 | R-WIRE-016 | Later message carries another request ID | Reject routing/correlation mismatch | No new charge; active slot released on terminal cleanup; terminal |

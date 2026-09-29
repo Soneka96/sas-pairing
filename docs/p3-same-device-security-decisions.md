@@ -4,7 +4,7 @@ This document is the audit trail for the separate same-device authenticated-loca
 
 ## Status and evidence boundaries
 
-Candidate B remains the **SELECTED P2 remote construction**. The vodozemac ceremony remains **CANDIDATE — NOT SELECTED** for remote pairing. This authenticated-local profile is separate from either remote construction. The Windows principal-bound named-pipe adapter is documented as a candidate only; no platform adapter is approved. Independent external security review remains mandatory. This is a candidate decision record, not external review or production approval.
+Candidate B remains the **prior P2 abstract remote construction selection**, with its concrete instantiation unresolved. The vodozemac ceremony remains **CANDIDATE — NOT SELECTED** for remote pairing, and no remote construction is ready for final selection. This authenticated-local profile is separate from either remote construction. The Windows principal-bound named-pipe adapter is documented as a candidate only; no platform adapter is approved. Independent external security review remains mandatory. This is a candidate decision record, not external review or production approval.
 
 Keep four evidence levels distinct:
 
@@ -155,7 +155,7 @@ Resource limits protect memory, CPU, state, IPC churn, stale authorization, prom
 
 **Future vector/test implications:** Cover fifth global active ceremony refused; cap shared by roles/workers; second START on one connection rejected; unavailable Host slot causes no state/nonce/ACCEPT/prompt; Host slot releases on approval transition to AwaitAck while active slot remains and another ceremony can enter Host decision; no queue; START and prompt rate rejection; PID/identity/connection rotation cannot bypass live global limiters; 60-second machine timeout; 2-minute Host timeout; 5-minute absolute timeout and precedence; duplicates do not refresh; valid transitions select the proper next timer; timeout releases exact slots once; admission closure releases state; conservative suspend expiry; restart destroys active state and may start a fresh operational rate window; deployment claims across restart have supporting persistence; and no local control changes remote 5,497 accounting. No vectors or tests are implemented here.
 
-**Independent-review status:** The abstract policy is recorded but remains subject to independent external security review. Exact deployment rates, cross-process coordination/storage, concrete adapters, vectors, and final P3 review remain open.
+**Independent-review status:** The abstract policy is recorded but remains subject to independent external security review. Exact deployment rates, cross-process coordination/storage, concrete adapters, broader conformance coverage beyond the existing local deterministic fixture, and final P3 review remain open.
 
 ## Unresolved local mechanics and future decisions
 

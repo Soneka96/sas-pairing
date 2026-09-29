@@ -4,6 +4,8 @@
 >
 > This document evaluates concrete instantiation options for Candidate B selected in P2. It does not choose a wire format, hash, commitment, parameter set, or production implementation.
 
+**Current project status:** Candidate B remains the prior P2 abstract selection, but its concrete instantiation is blocked. Preserve the `STOP concrete cryptographic selection` conclusion below. The historical P3.3 author-clarification recommendation is not the current project-level next security action; see [current manager context](../ai/context/project.md).
+
 ## 1. Question
 
 Can Candidate B be instantiated with practical standard primitives while retaining the theorem and assumptions selected in P2? In particular, can its commitment and random-oracle calls be mapped to precise bytes and a maintained Rust implementation without claiming that a real hash is a random oracle?
@@ -138,13 +140,13 @@ These requirements avoid encoding ambiguity; they do not establish that the sele
 | NoisyTransfer implementation as Candidate B | **RESEARCH ONLY** | Author-linked implementation evidence, but materially different protocol/formula and AGPL-3.0-only JS package. |
 | Any concrete commitment/hash combination for the P3 profile | **STOP** | Current sources do not justify the real-hash instantiation or fully specify commitment inputs/encoding. |
 
-## 10. Recommendation
+## 10. Historical recommendation (superseded for current project priority)
 
 **STOP concrete cryptographic selection.** Retain Candidate B as P2’s construction direction, but do not freeze a commitment, hash, `t`, SAS bit order, or byte encoding in P3 on this evidence.
 
-**Recommended next task: P3.3 — primary-source clarification of Candidate B’s intended concrete commitment/hash instantiation.** Contact the paper authors and inspect any supplementary material they identify before proposing a project-specific mapping for independent cryptographic review. Keep all concrete commitment, hash, encoding, and parameter choices unselected until that evidence is obtained.
+**Historical recommendation when this research was written: P3.3 — primary-source clarification of Candidate B’s intended concrete commitment/hash instantiation.** It did not authorize choosing a project-specific mapping. Current project priority is recorded in [manager context](../ai/context/project.md); all concrete commitment, hash, encoding, and parameter choices remain unselected, and the STOP remains in force.
 
-Ask the authors:
+The questions proposed for that historical author-clarification path were:
 
 1. What exact hash-then-open commitment construction is intended for `Commit(m; r)` in Candidate B?
 2. Is there a concrete formula or supplementary construction considered faithful to Theorem 3?

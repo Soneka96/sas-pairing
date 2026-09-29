@@ -12,7 +12,7 @@ The ordinary deployment mode described here is an interactive desktop Host and I
 
 The candidate scope is **currently serviced Windows 11 desktop builds**, with validation for each supported release and relevant edition/configuration. The supported release set must be recorded and revalidated as servicing changes. Older API minimum-version tables do not establish general Windows 10, Windows Server, or historical Windows support. Platform behavior and security assumptions must be revalidated for every release in the supported set. Microsoft documents changing release servicing windows; see [Windows 11 lifecycle](https://learn.microsoft.com/en-us/lifecycle/faq/windows) and [Windows 11 release information](https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information).
 
-The abstract same-device profile remains candidate-defined. Candidate B remains the **SELECTED P2 remote construction**; vodozemac remains an unselected remote candidate. This Windows adapter is **CANDIDATE — NOT APPROVED**. Independent external security review remains mandatory, and the abstract local profile alone does not enable SAS-free production pairing.
+The abstract same-device profile remains candidate-defined. Candidate B remains the **prior P2 abstract remote construction selection**, with its concrete instantiation unresolved; vodozemac remains an unselected remote candidate. No remote construction is ready for final selection. This Windows adapter is **CANDIDATE — NOT APPROVED**. Independent external security review remains mandatory, and the abstract local profile alone does not enable SAS-free production pairing.
 
 ## 2. Source behavior and project decisions
 
@@ -244,7 +244,7 @@ Windows principal-bound named-pipe adapter:
 CANDIDATE — NOT APPROVED — REQUIRES INDEPENDENT SECURITY REVIEW
 ```
 
-No Windows implementation or other OS adapter is approved. Automatic SAS-free production selection remains blocked. Open Windows/local gates are: deterministic adapter/conformance tests; concrete adapter-level pre-auth resource values; concrete deployment rate values; validation on each supported serviced Windows 11 release; separate service/package modes if needed; deterministic generic P3 vectors; and independent external review of the adapter and whole P3 profile. The local profile is not complete or production-ready solely because this draft exists.
+No Windows implementation or other OS adapter is approved. Automatic SAS-free production selection remains blocked. Open Windows/local gates are: deterministic adapter-specific conformance tests; concrete adapter-level pre-auth resource values; concrete deployment rate values; validation on each supported serviced Windows 11 release; separate service/package modes if needed; broader generic P3 conformance coverage beyond the existing deterministic fixtures; and independent external review of the adapter and whole P3 profile. The local profile is not complete or production-ready solely because this draft exists.
 
 ## 17. Evidence boundary
 

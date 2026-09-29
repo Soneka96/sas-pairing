@@ -2,11 +2,11 @@
 
 ## Status
 
-🔵 In progress — deterministic remote and authenticated-local P3 vector fixtures and a conformance-case matrix are now recorded in `docs/p3-deterministic-vectors.md`, `docs/p3-conformance-cases.md`, and `vectors/`. The unselected vodozemac candidate defines dependency/lifecycle, application-context/expected-peer, remote admission, timeout, and two global rate-control requirements subject to independent review. The separate abstract same-device candidate defines ceremony identity, canonical framing, message types, state machine, duplicate/completion semantics, complete-record maximum, four-slot global active cap, one-ceremony-per-connection rule, single Host-decision slot, local admission, 60-second/2-minute/5-minute deadlines, and mandatory finite global START and Host-approval limiters. A Windows principal-bound named-pipe adapter candidate is documented; it is **not approved**, and there remain zero production-approved adapters. Exact limiter values remain deployment-selected. Windows per-release validation and adapter conformance, independent external review, and other profile gates remain open. P3 is not complete until whole-profile review and remaining exit criteria are satisfied.
+**BLOCKED ON REMOTE CONSTRUCTION SELECTION / REVIEW.** P3 has produced substantial candidate work, including deterministic remote-vodozemac and authenticated-local fixtures and a 148-case conformance matrix (see `docs/p3-deterministic-vectors.md`, `docs/p3-conformance-cases.md`, and `vectors/`). Candidate B remains the prior P2 abstract selection, but its concrete instantiation is unresolved. The vodozemac candidate is concrete and reviewable but is not selected; its complete project-specific security argument has not been independently established. The local profile remains candidate-only, and the Windows principal-bound named-pipe adapter remains **not approved**; zero production-approved local adapters exist. P3 remote-profile completion cannot satisfy its exit criteria until a remote construction is deliberately selected and appropriately profiled/reviewed. Independent review, exact local limiter values, Windows per-release validation, adapter conformance, and remaining candidate gates remain open. Candidate work is preserved; P3 is not complete and the current branch is not ready for P4.
 
 ## Goal
 
-Define the selected remote construction as a concrete, language-neutral profile with deterministic conformance vectors, and specify the separate same-device local profile. Do not implement production cryptography in P3.
+Develop reviewable, language-neutral candidate profiles and deterministic conformance vectors, and specify the separate same-device local profile. Remote-profile completion requires a deliberate construction selection first. Do not implement production cryptography in P3.
 
 ## Why this phase exists
 
@@ -14,7 +14,7 @@ Implementation and independent review need one precise profile that removes ambi
 
 ## Inputs / prerequisites
 
-- P2's selected Candidate B remote construction, evidence, assumptions, limitations, and justified security bound.
+- A deliberately selected remote construction with evidence, assumptions, limitations, and a reviewed security argument. Candidate B's prior P2 selection alone is not enough to satisfy this prerequisite.
 - P1 requirements and the authoritative architecture and protocol-status documents.
 
 ## Scope
@@ -37,7 +37,7 @@ Keep the profile application-neutral, fail closed on invalid or ambiguous state,
 
 ## Exit criteria
 
-The profile is sufficiently precise for independent implementation and review; all security-sensitive choices trace to P2 evidence; vectors cover positive behavior and meaningful negative or mutation cases.
+The exit criteria cannot be satisfied from the current branch. A remote construction must first be deliberately selected on adequate evidence; the selected profile must then be sufficiently precise for independent implementation and review, security-sensitive choices must trace to accepted evidence, and vectors must cover positive behavior and meaningful negative or mutation cases. Candidate vectors do not satisfy the construction-selection or independent-review gate.
 
 ## STOP conditions
 
@@ -45,4 +45,4 @@ Return to P2 or stop if the selected construction cannot support a required prof
 
 ## What this unlocks
 
-P4 implementation planning for the reviewed and specified security profiles in one native security core, subject to security review gates.
+P4 remains unavailable from the current branch. It may be planned only after a remote construction is selected and its profile and security gates are satisfied.

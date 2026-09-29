@@ -6,6 +6,8 @@ This document defines the security problem and requirements that a future candid
 
 This project is pre-alpha. A remote construction has been selected in P2, but no production protocol profile or production cryptography has been implemented. P1 states requirements and does not select primitives, commitment construction, final SAS encoding, wire format, or API. Shortcake is evidence and implementation reference material only unless separately evaluated. `sas-pairing` remains application-neutral; DovahLink is an original consumer/example, not part of the protocol core.
 
+**Current project status:** Candidate B remains the prior P2 abstract selection, but its concrete instantiation is blocked. The separate vodozemac remote candidate is not selected. No remote construction is ready for final selection; see [current protocol status](protocol-status.md). The P1 requirements and P2 history below do not imply a current production profile selection.
+
 The terms **MUST**, **MUST NOT**, and **SHOULD** state requirements for evaluating a future protocol and its consumers. They are not claims about existing capabilities.
 
 ## Actors and roles

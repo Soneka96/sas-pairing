@@ -4,6 +4,8 @@
 >
 > This document defines a specification surface for future P3 decisions. It does not select unresolved cryptographic parameters, define an implementable wire profile, or authorize implementation.
 
+**Current status:** Candidate B was the prior P2 abstract selection. Its concrete instantiation remains unresolved, and the separate vodozemac profile remains unselected. No remote construction is ready for final selection. This foundation and its Candidate B references preserve the earlier P2 direction; they do not describe a currently selected production profile. See [current protocol status](protocol-status.md).
+
 ## 1. Purpose and security boundary
 
 The remote profile uses the Candidate B construction selected in [P2](construction-selection.md) to authenticate the exact peer-supplied, role-positioned bootstrap message for one pairing ceremony, after successful protocol checks and the required full SAS comparison. It does not establish a reusable shared pairing secret.
@@ -140,4 +142,4 @@ No choice below is implied by examples, familiar defaults, or this draft. Each r
 
 This is the P3 profile foundation only. P3 remains incomplete until security-sensitive decisions are justified, the remote and same-device profiles are sufficiently precise for review, and deterministic vectors cover positive and meaningful negative cases. No production implementation or readiness claim follows from this draft.
 
-The smallest next P3 unit is research and a reviewed decision for the concrete Candidate B commitment and random-oracle/hash profile, since those choices determine whether the selected theorem can be instantiated without changing its assumptions.
+The original next-step note for this foundation was Candidate B commitment/hash research. That recommendation is historical and is superseded by the current project-level next action in [AI manager context](../ai/context/project.md). The Candidate B instantiation STOP remains in force.

@@ -7,7 +7,7 @@
 
 ## 1. Purpose and status
 
-This document defines an abstract candidate contract for a separate same-device authenticated-local pairing profile. It does not implement the profile, select or approve a platform adapter, or make a production-readiness claim. Candidate B remains the **SELECTED P2 remote construction**. The vodozemac ceremony remains **CANDIDATE — NOT SELECTED** for remote pairing. The local profile is independent of both remote constructions and does not reuse remote SAS or Diffie–Hellman messages.
+This document defines an abstract candidate contract for a separate same-device authenticated-local pairing profile. It does not implement the profile, select or approve a platform adapter, or make a production-readiness claim. Candidate B remains the **prior P2 abstract remote construction selection**; its concrete instantiation is unresolved. The vodozemac ceremony remains **CANDIDATE — NOT SELECTED** for remote pairing, and no remote construction is ready for final selection. The local profile is independent of both remote constructions and does not reuse remote SAS or Diffie–Hellman messages.
 
 There are **zero approved platform adapters**. Until a concrete adapter is independently reviewed and approved for a deployment, the SAS-free local path is unavailable in that deployment. Independent external security review remains mandatory.
 
@@ -356,7 +356,7 @@ No vectors or implementation tests are produced by this draft.
 4. macOS adapter.
 5. Android adapter.
 6. iOS/support policy.
-7. Deterministic vectors.
+7. Broader state-machine and resource conformance coverage beyond the existing deterministic fixture.
 8. Independent external security review.
 
 These remaining rate configuration, vector, adapter, and review gates do not reopen the candidate's selected cap, connection rule, admission, prompt serialization, or timeout values. They do not imply any platform adapter is approved. The local profile is a candidate foundation only.

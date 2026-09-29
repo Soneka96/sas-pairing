@@ -9,7 +9,7 @@ P1 ✅ Threat Model and Protocol Requirements
  ↓
 P2 ✅ Construction Selection / Formal Mapping
  ↓
-P3 🔵 Protocol Profiles + Deterministic Vectors
+P3 🔴 Protocol Profiles + Deterministic Vectors (blocked)
  ↓
 P4 🟡 Native Rust Security Core
  ↓
@@ -39,7 +39,7 @@ P10 🟡 Consumer Integration / DovahLink Example
 
 The roadmap is evidence-driven and may change. Deep planning is limited to the current phase; the next phase is understood well enough to expose dependencies. Later phases remain milestone-level until earlier security decisions resolve. A phase may end in STOP rather than automatically progressing. No dates or delivery estimates are implied.
 
-P0, P1, and P2 are complete. Candidate B is selected for the remote authenticated-bootstrap profile; P3 is the next gate for the remote profile and separate same-device local profile. Construction selection does not mean a production protocol is implemented or production-ready.
+P0, P1, and the historical P2 research phase are complete. P2 selected Candidate B as an abstract construction direction, but later instantiation research could not justify a concrete profile. The separate vodozemac remote candidate is not selected. **P3 is blocked on remote construction selection and independent security review; the current branch is not ready for P4.** See [protocol status](../docs/protocol-status.md) and [AI manager context](../ai/context/project.md). This does not erase P2's historical decision or P3 candidate work.
 
 ## Security gates across phases
 

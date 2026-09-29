@@ -1,5 +1,11 @@
 # P2 — Construction selection and formal mapping
 
+## Current project status
+
+P2 historically selected Candidate B as the abstract remote construction direction. Later concrete-instantiation research could not justify an implementable Candidate B profile on current evidence. A separate vodozemac candidate now exists, but it is not selected and has not yet received independent review of its complete project-specific security argument. No replacement construction has been selected; remote construction selection is reopened and blocked pending security evidence. See [current manager context](../ai/context/project.md) and [protocol status](protocol-status.md).
+
+The historical P2 decision below is preserved as recorded. It is not a current final remote-profile selection or authorization to implement.
+
 ## Status and scope
 
 **Outcome: SELECTED — Candidate B for the remote authenticated-bootstrap profile, subject to the explicit P3 profile requirements.** The result contract accepts mutual authentication of the exact peer-supplied bootstrap messages for one ceremony; it does not require a reusable shared pairing key or claim public-key ownership. Theorem 3 directly authenticates arbitrary role-positioned messages and outputs the peer's exact message. Candidate A/C/D/E findings remain preserved; Candidate C remains evidence for the shared-key alternative, Candidate E remains reference/implementation evidence only, and TLS is the post-pairing transport. P1 now accepts authenticated bootstrap data while preserving the proof-of-possession distinction. No production protocol is implemented and no production-readiness claim is made.
