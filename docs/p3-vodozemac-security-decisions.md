@@ -318,7 +318,7 @@ An unauthenticated remote attacker may repeat `START → ACCEPT → valid attack
 
 **Open gates:** Exact numeric START/SAS rates; cross-process/storage implementation; platform clock and suspend behavior; rate-state persistence needed for claimed time-to-exhaustion; independent review of admission/timeout policy; same-device profile; deterministic vectors; and final P3 consistency/adversarial review. P3 remains in progress.
 
-**Repository history:** To be recorded with the resulting policy commit in a follow-up documentation commit.
+**Repository history:** `c6a367af99f5c9029151d6549401d60186c0f699` records this decision on `security/p3-vodozemac-ceremony-profile`.
 
 **Independent-review status:** These are candidate decisions, not external review or approval. Candidate B remains the SELECTED P2 construction with its concrete production instantiation gated. The vodozemac ceremony remains CANDIDATE — NOT SELECTED; no production protocol is approved and independent external review remains mandatory.
 
