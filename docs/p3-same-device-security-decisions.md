@@ -4,7 +4,7 @@ This document is the audit trail for the separate same-device authenticated-loca
 
 ## Status and evidence boundaries
 
-Candidate B remains the **SELECTED P2 remote construction**. The vodozemac ceremony remains **CANDIDATE — NOT SELECTED** for remote pairing. This authenticated-local profile is separate from either remote construction. No platform adapter is approved; independent external security review remains mandatory. This is a candidate decision record, not external review or production approval.
+Candidate B remains the **SELECTED P2 remote construction**. The vodozemac ceremony remains **CANDIDATE — NOT SELECTED** for remote pairing. This authenticated-local profile is separate from either remote construction. The Windows principal-bound named-pipe adapter is documented as a candidate only; no platform adapter is approved. Independent external security review remains mandatory. This is a candidate decision record, not external review or production approval.
 
 Keep four evidence levels distinct:
 
@@ -159,6 +159,35 @@ Resource limits protect memory, CPU, state, IPC churn, stale authorization, prom
 
 ## Unresolved local mechanics and future decisions
 
-Keep open: concrete deployment-selected values for both mandatory global limiters; deterministic vectors; Windows, Linux, macOS, Android, and iOS adapter/support decisions; and independent external security review. Future platform decisions must be added to this log with their OS/version scope, primitive, peer evidence, mutual authentication, remote exclusion, endpoint/permission/race assumptions, authorization semantics, integrity, limits, and review status. L5/L6 supersede L3's earlier open framing/identity mechanics; L7 closes the abstract candidate resource/timeout policy without selecting any platform adapter or exact limiter values. No remote-profile decision changes.
+Keep open: concrete deployment-selected values for both mandatory global limiters; deterministic vectors; Windows adapter conformance and per-release validation; Linux, macOS, Android, and iOS adapter/support decisions; and independent external security review. Future platform decisions must be added to this log with their OS/version scope, primitive, peer evidence, mutual authentication, remote exclusion, endpoint/permission/race assumptions, authorization semantics, integrity, limits, and review status. L5/L6 supersede L3's earlier open framing/identity mechanics; L7 closes the abstract candidate resource/timeout policy without selecting any platform adapter or exact limiter values. L8 records a Windows principal-bound adapter candidate only and does not approve it. No remote-profile decision changes.
 
 The local profile reuses the remote bootstrap and D14 semantics but does not alter the remote profile or remote security decision log. Platform credential structures remain adapter evidence and are excluded from generic wire/bootstrap/result claims.
+
+## L8 — Windows principal-bound authenticated-local adapter candidate
+
+**Status:** Candidate adapter documented; **NOT APPROVED**; requires independent external security review. This decision preserves zero production-approved platform adapters.
+
+### Decision
+
+Document a Windows authenticated-local candidate using duplex byte-mode named pipes at `\\.\pipe\LOCAL\<deployment-defined-name>`, scoped to currently serviced Windows 11 desktop builds with validation per supported release. Require `LOCAL\` namespace use, `PIPE_REJECT_REMOTE_CLIENTS` on every server instance, an explicit owner/DACL, non-inheritable handles, finite adapter-level pre-auth resources and pipe-instance bounds, and `FILE_FLAG_FIRST_PIPE_INSTANCE` for the initial Host instance.
+
+For ordinary interactive desktop mode, require the expected Host `TokenUser` SID and an authorization policy restricted to the intended user plus logon SID/session. The Host authenticates the Initiator using `ImpersonateNamedPipeClient`, `OpenThreadToken`, and required token queries after exactly one bounded first record and before admitting `LOCAL_START` to generic ceremony processing. It always reverts impersonation; failed `RevertToSelf` takes the worker/process out of service following Microsoft's fail-safe guidance.
+
+The Initiator authenticates the Host before generic Start or `LOCAL_START` using the owner SID from `GetSecurityInfo` on the actual connected pipe handle, plus the expected `LOCAL\` login-session boundary, restrictive DACL, and consumer authorization. The owner SID is normative Host-principal evidence for the permitted Windows ownership boundary; the DACL is access-control evidence, not identity. Every client open uses `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`. Pipes use duplex byte mode; generic local framing remains authoritative. The pipe name and connection bind the adapter evidence to that one pipe instance. Windows SIDs, tokens, PIDs, and session evidence remain outside generic wire, transcript, and result data.
+
+The security claim is principal-bound only. It does not identify an executable, process name, path, PID, file hash, Authenticode signer, window, human, or bootstrap private-key possessor. Same-account different-session peers are not automatically authorized. Service/session-0 and packaged/AppContainer modes need separate policy and review. All failures of remote exclusion, namespace/session checks, descriptor/owner validation, either endpoint authentication, authorization, pre-auth resources, or generic admission fail closed with no local SAS-free success.
+
+### Alternatives considered
+
+One-way client authentication only; PID or process-name server identity; executable-path identity; default pipe security descriptor; DACL-only Host identity; pipe-name secrecy; SSPI/Negotiate; service/broker-only architecture; and application-signature identity. These either leave the Host unauthenticated to the Initiator, rely on mutable or name-based metadata, exceed the minimum principal-bound mode, or require a separate identity mechanism and review.
+
+### Evidence boundary
+
+- **Microsoft API semantics:** Microsoft documentation describes `LOCAL\` login-session scope, named-pipe modes and per-instance behavior, remote-client rejection, first-instance creation, owner/DACL access, token inspection and impersonation, SQOS impersonation levels, handle inheritance, and owner-assignment privileges. References are collected in [the Windows adapter draft](p3-local-adapter-windows-draft.md).
+- **Internal candidate design:** this log selects the above API combination and principal/session authorization as a project candidate. The pipe owner SID is normative Host-principal evidence only within the stated owner-creation contract; the DACL is not identity evidence.
+- **Application identity:** unsolved. No executable, signer, package, or service identity is claimed by this minimum adapter.
+- **Review:** source documentation is not a complete threat analysis or approval. Independent external review, supported-release validation, concrete pre-auth and deployment rate values, deterministic adapter/conformance tests, deterministic generic P3 vectors, and whole-P3 review remain required.
+
+**Does not establish:** A particular executable or human, private-key possession, security beyond the configured principal/logon-session boundary, any Windows production approval, or production readiness.
+
+**Independent-review status:** Not reviewed or approved. The candidate must be revalidated on each currently serviced Windows 11 desktop release in scope. Service, package, and AppContainer modes are outside this decision.

@@ -315,7 +315,7 @@ These are research notes, not profile guarantees or adapter approvals.
 
 | Platform | Current research status |
 |---|---|
-| Windows | Needs more adapter research/review. |
+| Windows | Principal-bound named-pipe adapter candidate documented in [the Windows adapter draft](p3-local-adapter-windows-draft.md); **not approved**, requires per-release validation and independent review. |
 | Linux | Sufficient evidence to draft a future adapter candidate; **not approved**. |
 | macOS | Needs more adapter research/review. |
 | Android | Sufficient evidence to draft a future adapter candidate; **not approved**. |
@@ -323,9 +323,9 @@ These are research notes, not profile guarantees or adapter approvals.
 
 `Ready to draft candidate adapter` does not mean `approved adapter`. There are zero approved adapters after this task.
 
-### Windows research note
+### Windows adapter candidate note
 
-Windows named pipes are not inherently local-only. A future candidate would need explicit remote rejection such as `PIPE_REJECT_REMOTE_CLIENTS`, a restrictive security descriptor/DACL, authenticated client token, consumer authorization, server authentication by the client, and squatting/race handling. PID, process name, and executable path alone are insufficient. This is research direction only; no Windows adapter is approved.
+The separate [Windows adapter draft](p3-local-adapter-windows-draft.md) proposes a principal/logon-session-bound named-pipe candidate with explicit remote rejection, owner/DACL policy, mutual endpoint authentication, and fail-closed behavior. It does not identify an executable, and it is **not approved**. This note does not change the generic profile or enable SAS-free production pairing.
 
 ### Unix and mobile research notes
 
@@ -351,7 +351,7 @@ No vectors or implementation tests are produced by this draft.
 ## 19. Open same-device gates
 
 1. Concrete deployment-selected finite rates and burst/capacity values for both global limiters.
-2. Windows adapter.
+2. Windows adapter conformance, supported-release validation, and independent approval.
 3. Linux adapter.
 4. macOS adapter.
 5. Android adapter.
