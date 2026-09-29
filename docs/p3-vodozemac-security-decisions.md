@@ -331,7 +331,7 @@ These gates are based on the current candidate profile, P3 roadmap, and supporti
 - Application-context and expected-peer semantics are now defined as candidate local inputs, exact comparisons, and pre-exposure checks (profile §§4, 8, 10); their fit and enforcement still require independent review.
 - Local remote-admission semantics, the five-minute absolute timeout, 60-second inactivity timeout, global START limiter requirement, and global SAS-exposure limiter requirement are defined as candidate decisions (profile §11.1.1–§11.3, D15) and remain subject to independent review.
 - Exact numeric rates, cross-process/storage implementation, clock/suspend behavior, rate-state persistence needed for time-to-exhaustion claims, and multi-process coordination of admission, eight slots, both limiters, and the durable counter remain open (profile §§11.1.1–11.3, D15).
-- The separate same-device profile remains P3 work (P3 roadmap); it is not defined by this vodozemac candidate.
+- The separate abstract same-device profile is drafted in its own profile and decision log; platform adapters, local framing/identity mechanics, and independent review remain P3 work. It is not defined by this vodozemac candidate.
 - Deterministic vector values and conformance vectors remain deferred (profile §12).
 - Independent audit of the complete candidate remains open; internal research is not independent external security review.
 - P3 remains in progress; cross-document consistency and roadmap exit criteria are not complete (P3 roadmap). The repository does not record a completed full internal whole-profile re-review; informal/internal review cannot substitute for the independent external review required by P5.
