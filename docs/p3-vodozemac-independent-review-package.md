@@ -4,9 +4,35 @@
 
 **REVIEW PACKAGE READY — EXTERNAL REVIEW NOT YET OBTAINED.** This package describes a favored but unselected remote candidate. It is a request for independent analysis, not a claim of security or an owner selection decision. Candidate B was selected at P2 and later deliberately reopened by the owner because a concrete instantiation would require substantial project-owned cryptographic design and proof-mapping/maintenance. That engineering/security ownership decision does not disprove Candidate B. Vodozemac is favored for investigation because maintained primitives may reduce custom-crypto ownership; its use in this new composition does not inherit Matrix's protocol security argument.
 
+## Reproducible review target
+
+Review findings must identify the exact repository tree below. The branch name is informational; the commit is authoritative.
+
+| Item | Review target |
+|---|---|
+| Repository | `Soneka96/sas-pairing` |
+| Review commit | `67391ef1ee375a7022e7b8258d8da05ecaa4ce0b` (merged PR #7; `main` at handoff) |
+| Remote candidate profile/version | `sas-pairing-vodozemac-profile-draft-01`, version `u16be(1)` |
+| Dependency | `vodozemac = 0.11.0` (candidate documentation pin; not a production dependency) |
+| Upstream source commit | `db1b34820f3102307284e762f335b3f72c735bf0` |
+| Upstream tag/reference | `0.11.0`; annotated tag object `9cdcc49ec1b213570a3a59cdeb40e8310999ea9e` |
+| Crate archive SHA-256 | `ba935af014ca0ae5fb468daa51da81a8a0df7daad23c052c878b7c690cdf2574` |
+| Remote vector | `vectors/p3-remote-vodozemac-draft-01.json` |
+| Local vector | `vectors/p3-local-authenticated-draft-01.json` |
+| Threat model | `docs/threat-model.md` |
+| Review package | `docs/p3-vodozemac-independent-review-package.md` |
+
+The normative remote proposal is `docs/p3-vodozemac-ceremony-profile-draft.md`. Treat the threat model and that profile as normative candidate inputs; the security decisions, reuse assessment, vector documentation/data, conformance cases, protocol status, same-device profile, and Windows adapter draft are supporting evidence within their stated status boundaries. This package's review commit identifies the versions of all these files. If any reviewed profile, threat-model, dependency pin, security parameter, or vector changes after review begins, provide the exact diff and ask the reviewer which findings are affected and what requires re-review before relying on the conclusion. Do not assume a prior conclusion covers changed material.
+
 **Review question:** Under the stated threat model and exact draft profile, does the proposed vodozemac-based composition support the claimed active-network-MITM resistance and authenticated-bootstrap result, subject to the stated SAS human-comparison assumptions and aggregate attempt policy? Identify any attack, unsupported assumption, invalid reduction, missing protocol binding, or condition that must change before selection can be considered.
 
-The reviewer should give a finding for each question in §6, including a reasoned **go / no-go / conditional** conclusion, assumptions, attack preconditions, and any required profile change. This review does not itself select the candidate; owner selection remains a separate decision.
+For each finding, report a title, severity where appropriate, affected property, attack or failure scenario, assumptions/preconditions, evidence and reasoning, required change or recommendation, and whether it blocks selection. Conclude **GO**, **CONDITIONAL**, or **NO-GO**:
+
+- **GO:** The reviewed construction/profile is defensible enough to proceed to explicit owner selection and implementation, subject to documented limitations.
+- **CONDITIONAL:** It may be acceptable after specified required changes and review of those changes.
+- **NO-GO:** A fundamental or unresolved problem prevents responsible selection.
+
+The reviewer assesses the candidate; the reviewer does not select vodozemac. The owner makes a separate explicit selection decision after considering the review.
 
 ## Scope and threat model
 
@@ -44,7 +70,7 @@ Primary sources checked for this package:
 | RNG and ephemeral lifecycle | vodozemac `Sas::new()` and the candidate's one-run lifecycle | Exact upstream code is pinned. Entropy adequacy, platform behavior, fork/runtime interactions, and temporary-secret handling still need review. |
 | Same-device SAS bypass | Separate abstract profile requires an approved OS-authenticated adapter, mutual endpoint authentication, authorization, and remote exclusion | Not part of this remote-candidate selection. Generic predicate and Windows adapter remain candidate-only; zero adapters are approved. |
 
-## Concrete attack and composition questions
+## Remote construction review questions
 
 1. Does the full commit, key agreement, SAS, MAC, and completion composition provide the claimed active-MITM property under the stated ideal human-comparison model? Is the deterministic SHA-256 commitment adequately hiding and binding for this use, and what concrete assumption justifies that claim?
 2. Is the per-exposed-opportunity `≤ 2^-39` premise valid when the responder key is committed before the initiator key, and under adversarial abort, selective failure, retries, concurrency, and attacker-controlled session scheduling?
@@ -53,7 +79,12 @@ Primary sources checked for this package:
 5. Are bootstrap and completion MACs composed correctly? Can either party report local success without the exact peer evidence and same-ceremony human approval required by the contract? What happens under loss or replay of the final acknowledgement?
 6. Does the replay/duplicate/stale-message state machine preserve attempt accounting and prevent approval or result transfer across runs, after restart, or across active connections?
 7. Does the specified vodozemac API and its pinned RNG/key lifecycle actually provide the semantics the profile assumes on all supported platforms? What source or target-specific evidence is missing?
-8. For any v1 same-device SAS-free path, does the separate generic predicate establish mutual endpoint authenticity, authorization for this exact ceremony, and remote-peer exclusion? Does the Windows draft meet that predicate under its explicit principal/logon-session boundary? If not, recommend excluding that path from v1 rather than treating locality labels as evidence.
+## Separate same-device and Windows review scope
+
+The same-device profile and Windows adapter are not required to approve the remote construction. Review them as separate scopes only if the project proposes to include that path in v1; findings or lack of Windows expertise must not be treated as approval of the adapter. A reviewer qualified in applied cryptography may assess the generic same-device predicate, but Windows-specific approval requires a reviewer qualified in the Windows security model, named pipes, ACL/DACL semantics, impersonation, logon sessions, local-versus-remote IPC boundaries, and Windows release/platform behavior. If qualified Windows review is unavailable, recommend excluding the Windows SAS-free path from v1.
+
+1. **Generic same-device predicate:** Does the separate profile establish mutual endpoint authenticity, authorization for this exact ceremony, and remote-peer exclusion? Are its trust assumptions and connection-binding rules sufficient?
+2. **Windows adapter, only within reviewer expertise:** Does the adapter satisfy that predicate under its explicit principal/logon-session boundary, including named-pipe scope, ACL/DACL, impersonation, and remote-client exclusion? Identify platform/version assumptions and any missing evidence.
 
 ## Review artifacts
 

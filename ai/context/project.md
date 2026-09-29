@@ -22,7 +22,7 @@ Candidate B is Beskorovajnov–Müller-Quade mutual `π_SAS^×`: historically se
 
 ## Vodozemac candidate
 
-`sas-pairing-vodozemac-ceremony-profile-draft-01` is the **FAVORED CANDIDATE — NOT SELECTED**, concrete, vectorized, and reviewable. It pins vodozemac 0.11.0 as a candidate and specifies X25519, a SHA-256 responder commitment, canonical framing, transcript identity, Matrix decimal SAS, bootstrap/completion MACs, context and expected-peer semantics, accounting, resource controls, timeouts, and state handling. Its complete active-MITM composition, commitment hiding/binding, per-opportunity `≤ 2^-39` premise, aggregate `N = 5,497`, `ε = 10^-8` policy, and adaptive abort/retry/concurrency/grinding argument have not been independently established. The arithmetic is conditional on the per-opportunity premise. Matrix/vodozemac precedent and deterministic vectors are not a proof of this composition.
+`sas-pairing-vodozemac-profile-draft-01` is the **FAVORED CANDIDATE — NOT SELECTED**, concrete, vectorized, and reviewable. It pins vodozemac 0.11.0 as a candidate and specifies X25519, a SHA-256 responder commitment, canonical framing, transcript identity, Matrix decimal SAS, bootstrap/completion MACs, context and expected-peer semantics, accounting, resource controls, timeouts, and state handling. Its complete active-MITM composition, commitment hiding/binding, per-opportunity `≤ 2^-39` premise, aggregate `N = 5,497`, `ε = 10^-8` policy, and adaptive abort/retry/concurrency/grinding argument have not been independently established. The arithmetic is conditional on the per-opportunity premise. Matrix/vodozemac precedent and deterministic vectors are not a proof of this composition.
 
 ## Current construction status
 

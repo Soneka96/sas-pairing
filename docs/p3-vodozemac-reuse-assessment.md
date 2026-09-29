@@ -346,22 +346,9 @@ Candidate B remains valuable: it has a project-specific formal result for authen
 
 **Recommendation: B — promising but review required.** Continue research toward a single Rust pairing core that calls vodozemac. Prefer Matrix's existing decimal SAS unchanged. The API supports caller-supplied MAC input, making exact canonical bootstrap bytes mechanically feasible to authenticate. Whether a generic ceremony preserves the needed security properties remains unreviewed. Do not select the final architecture or begin production ceremony code until the exact profile is specified, independently reviewed, and the project resolves its P1 attempt, replay, and lifecycle gates.
 
-### Next task: P3.5 — exact generic vodozemac SAS ceremony/profile draft
+### P3.5 status: profile drafted; independent review pending
 
-P3.5 should produce one complete, language-neutral protocol/profile proposal for later review. At a minimum it must specify initiator/responder roles; exact message order; start/accept message fields and negotiation; the exact ephemeral-key commitment input, hash, and verification; canonical transcript encoding; ceremony identifier definition and freshness/uniqueness rules; version/profile/domain separation; exact SAS HKDF context and reuse of Matrix decimal SAS; canonical bootstrap structure; reciprocal MAC inputs and contexts; expected-peer validation; local confirmation/match/reject semantics; cancellation and timeout; replay, stale, and out-of-order handling; retry/attempt accounting; bilateral completion/done semantics; terminal states; and secret destruction. This list is conceptual: P3.5 must provide the exact definitions, but this assessment does not invent concrete fields, encodings, or values.
-
-The sequence is P3.4 reuse assessment → P3.5 exact ceremony/profile draft → independent protocol/security review → if accepted, select the vodozemac reuse architecture → implementation and bindings. Independent review remains mandatory and follows the complete P3.5 specification.
-
-The P3.5 draft must resolve:
-
-- Exact canonical bootstrap format and validation rules for identity, key, profile/version, ceremony ID, roles, and application context.
-- Exact commit input and hash behavior for generic start/transcript data; the Matrix primitive API does not supply the commit state machine.
-- Whether 39 bits satisfies the project's justified numeric comparison target, and the required global/peer attempt budget, cooldown, and persistence behavior.
-- Exact uniqueness/entropy and restart/replay rules for ceremony IDs, concurrent flows, expiration, cancellation, late messages, and terminal handles.
-- Whether P1's bilateral done/completion language should be implemented as a generic explicit final message rather than inferred from two local UI confirmations and MAC exchange.
-- Current 0.11.0 audit/release evidence and supported-upstream policy; current Matrix security context includes the 2026 Olm-path report.
-- Small stable C ABI prototype, Dart/Flutter Native Assets support floor, C# generator maturity, and supported runtime identifier matrix.
-- Binary reproducibility, signing/checksum and vulnerability-response process for native package releases.
+The language-neutral candidate profile and its supporting vectors, conformance cases, and review package are now present. The current P3.5 gate is independent review of that exact project-specific composition, not further protocol design or an AI review. The [review package](p3-vodozemac-independent-review-package.md) identifies the review target, unresolved security claims, and owner decision boundary. Binding, packaging, and release questions remain later implementation planning; they do not establish selection or authorize P4.
 
 ## 19. Sources
 
