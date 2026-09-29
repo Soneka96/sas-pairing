@@ -288,7 +288,7 @@ On restart, active state and pending approval are discarded; historical request 
 
 **Alternatives considered:** Post-success-only validation was rejected because a known mismatch must fail before SAS exposure. An expected-peer wire bit was rejected because mode is a local consumer decision. Always requiring an expected peer was rejected because deliberate first-contact bootstrap is supported. A universal/default context and mandatory nonempty context were rejected because empty can intentionally mean no additional separation and only the application knows relevant domains. Automatically deriving context from application identity was rejected because it neither independently binds other security domains nor supplies consumer-defined canonicalization.
 
-**Repository history:** The decision is recorded by the documentation commit identified in the branch history for this entry.
+**Repository history:** `2cc6ef3df867ae36a5d92f1bdea76b9e3c0dc7d6` records this decision on `security/p3-vodozemac-ceremony-profile`.
 
 **Vector/test implications:** Future conformance/state-machine coverage includes open success; expected identity and algorithm/key matches; each mismatch; partial expectations; responder mismatch before slot allocation; initiator mismatch before SAS-attempt reservation; no display/charge/result on pre-boundary mismatch; no expected-to-open downgrade; intentional empty context and independent-context mismatch; rejection of peer-copied context as local input; and preservation of authenticated K1 against lookup K2. No vectors or production tests are generated here.
 
