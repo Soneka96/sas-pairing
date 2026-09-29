@@ -244,17 +244,44 @@ On restart, active state and pending approval are discarded; historical request 
 
 **Independent-review status:** Transcript binding, MAC contexts, expected-peer boundary, and result compatibility remain for review.
 
+### D13 — Exact vodozemac dependency and secret lifecycle
+
+**Status:** Candidate dependency/lifecycle decision recorded; independent review remains open.
+
+**Decision:** Analyze this P3 candidate against exactly `vodozemac = 0.11.0 exact`. This is a documentation/specification pin, not a Cargo dependency. If advanced to P4, use `vodozemac = { version = "=0.11.0", default-features = false }`, implement and revalidate that choice, and capture/review the actual P4 workspace's resolved `Cargo.lock` graph. The 0.11.0 manifest uses semver-compatible ranges and does not freeze `rand`, `rand_core`, `getrandom`, `hmac`, `sha2`, `x25519-dalek`, or their transitives.
+
+**Rationale:** 0.11.0 is the current stable release; it exposes the required SAS API; comparison of the 0.10.0-to-0.11.0 `src/sas.rs` change found no material SAS semantic regression; the exact source uses contributory X25519 validation; and the tagged/released source can be reviewed precisely. The 0.11.0 release changes the SAS RNG call from `thread_rng()` to `rng()` while preserving the `ThreadRng` path.
+
+**Feature decision:** Disable defaults. `libolm-compat` is unnecessary and this candidate MUST use standard SAS MAC behavior, not its legacy invalid-Base64 compatibility path. `precomputed-tables` is unnecessary for correctness; disabling it is a binary-size/performance choice, not a security-strength gain, and does not change candidate SAS results or contributory validation. Do not enable `low-level-api`, `insecure-pk-encryption`, `experimental-session-config`, or `wasm_js` without a future target-specific analysis. The tagged `x25519-dalek` dependency disables its own defaults but explicitly enables `zeroize`; vodozemac's `default-features = false` does not remove that feature.
+
+**RNG and failure behavior:** Tagged source follows `Sas::new()` → `rand::rng()` → `ThreadRng` → `SysRng` → `rand_core`/`getrandom` → OS entropy → `EphemeralSecret::random_from_rng`. The candidate assumes the exact P4-locked Rand/getrandom path obtains cryptographically secure randomness from each supported OS; vodozemac does not implement an entropy source. `Sas::new()` returns `Sas`, not a `Result`; ThreadRng may panic on system seeding/reseeding failure. No success may follow failed entropy generation; depending on runtime panic policy the failure may unwind or terminate, so integration cannot promise a graceful protocol error. ThreadRng does not reseed after `fork()`: supported Unix/Linux deployments that fork after initialization must reseed the child before SAS key generation or avoid inherited state. Request IDs remain a separate core-generated 16-byte OS-CSPRNG operation.
+
+**X25519 and secret lifecycle:** The parser rejects peer-key lengths other than 32 bytes; vodozemac rejects non-contributory DH results. `Sas::diffie_hellman` consumes `Sas` and drops its `EphemeralSecret`; `EstablishedSas` owns the shared secret through SAS/MAC use. P4 MUST drop native SAS session state on every terminal path. The tagged manifest explicitly enables x25519-dalek's `zeroize` feature; the inspected published x25519-dalek 3.0.0 source zeroizes `EphemeralSecret` and `SharedSecret` in `Drop`. P4 must revalidate this against the actual resolved version in its lockfile.
+
+**Guarantee boundary and limitation:** This establishes the upstream zeroization-on-drop behavior for those X25519 secret types only. Derived SAS bytes, HKDF/HMAC key and state temporaries, MAC/input buffers, and other copies are not comprehensively guaranteed to zeroize. This is not complete memory sanitization or a guarantee about swap, dumps, compiler/runtime copies, or process termination. Independent review must determine whether this boundary and the temporary-material limitation are adequate; do not add unsafe freed-memory zeroization tests.
+
+**Supply-chain identity:** Crate `vodozemac`, version `0.11.0`, release date `2026-09-11`, Rust MSRV `1.89` (an integration/build requirement, not a cryptographic claim); upstream tag `0.11.0`; annotated tag object `9cdcc49ec1b213570a3a59cdeb40e8310999ea9e`; tagged source commit `db1b34820f3102307284e762f335b3f72c735bf0`; crates.io checksum `ba935af014ca0ae5fb468daa51da81a8a0df7daad23c052c878b7c690cdf2574`. GitHub reports the annotated tag signature valid. The project has not independently obtained or validated the maintainer signing key. The signed Git tag does not prove the crates.io archive is byte-identical to the tag; the checksum identifies the published archive and was verified against both crates.io index metadata and the downloaded package archive.
+
+**Alternatives considered:** Remain on 0.10.0; track latest/main; use a git dependency; or enable a broader/default feature set. The exact release is required for reproducibility; floating or git-source choices weaken release identity; the omitted features are not needed for this candidate.
+
+**Does not establish:** Production approval, selection of this protocol, complete memory sanitization, security of the generic sas-pairing ceremony, current independent audit of vodozemac 0.11.0, or review of future dependency upgrades.
+
+**Evidence:** [GitHub tag-signature verification record](https://api.github.com/repos/matrix-org/vodozemac/git/tags/9cdcc49ec1b213570a3a59cdeb40e8310999ea9e); [vodozemac 0.11.0 tagged SAS source](https://github.com/matrix-org/vodozemac/blob/db1b34820f3102307284e762f335b3f72c735bf0/src/sas.rs), [tagged manifest](https://github.com/matrix-org/vodozemac/blob/db1b34820f3102307284e762f335b3f72c735bf0/Cargo.toml), [tagged release notes](https://github.com/matrix-org/vodozemac/blob/db1b34820f3102307284e762f335b3f72c735bf0/CHANGELOG.md), [crates.io version metadata](https://crates.io/crates/vodozemac/0.11.0), [published archive](https://static.crates.io/crates/vodozemac/vodozemac-0.11.0.crate), [x25519-dalek 3.0.0 source](https://docs.rs/crate/x25519-dalek/3.0.0/source/src/x25519.rs), and [Rand 0.10.2 ThreadRng source](https://github.com/rust-random/rand/blob/0.10.2/src/rngs/thread.rs). The version/MSRV and manifest feature values were checked against the exact tag; the archive checksum was independently matched to the index metadata.
+
+**Independent-review status:** Open. Independent reviewers must accept the exact dependency, feature configuration, ThreadRng/getrandom path and target assumptions, fork integration where applicable, zeroization boundary, complete profile, and temporary-material limitations. The P4 consumer lockfile must resolve and capture the exact dependency graph; the upstream source repository's lockfile is not that graph.
+
 ## Current unresolved P3 gates
 
 These gates are based on the current candidate profile, P3 roadmap, and supporting assessments. They are not resolved by recording the decisions above.
 
 - Request-ID generation, active-local collision handling, and routing policy are defined as candidate decisions (profile §4, D12); they are not an undecided candidate-design gate, but remain subject to independent review as part of the complete profile. Incoming peer-selected IDs remain attacker-controlled within the 1–64-byte syntax.
-- Exact acceptable vodozemac release, complete RNG/key-generation path, unpredictability, and zeroization/lifecycle guarantees remain under-specified or review-dependent (profile §§5, 14; reuse assessment §18).
+- Exact vodozemac release, candidate feature selection, known RNG path, X25519 contributory behavior, and basic long-lived secret lifecycle are now specified as candidate decisions (profile §5, D13); they remain subject to independent review. Still open are independent acceptance of ThreadRng/getrandom and entropy adequacy, the actual P4 resolved dependency versions, supported target-platform RNG assumptions, Linux fork integration where applicable, and adequacy of temporary-material zeroization.
 - Application-context semantics and expected-peer validation are specified as byte equality and consumer responsibility, but whether these are the right generic semantics remains an independent-review question (profile §§4, 8, 14).
 - Exact monotonic timeout duration remains open (profile §11.3).
 - Global resource/rate thresholds and multi-process coordination of the eight-slot bound remain open (profile §§11.1.1, 14).
 - The separate same-device profile remains P3 work (P3 roadmap); it is not defined by this vodozemac candidate.
 - Deterministic vector values and conformance vectors remain deferred (profile §12).
+- Independent audit of the complete candidate remains open; internal research is not independent external security review.
 - P3 remains in progress; cross-document consistency and roadmap exit criteria are not complete (P3 roadmap). The repository does not record a completed full internal whole-profile re-review; informal/internal review cannot substitute for the independent external review required by P5.
 - Independent external security review of the complete candidate and its cryptographic assumptions remains mandatory before selection or any production-readiness claim.
 
@@ -278,4 +305,4 @@ The references below are the verified commits on `security/p3-vodozemac-ceremony
 - `875436e494c2cd407e80dd9018cd896232811ddd` — set aggregate SAS policy.
 - `2c02f7c346a077db6d7d90f7254eb724981e68c1` — set candidate resource bounds.
 
-Each record cites the commit that introduced or materially clarified its decision. Where a decision spans related changes, the record lists both rather than assigning a single commit artificially. The full branch diff is confined to the candidate profile and threat model; the decision log preserves traceability without copying prior review reports or treating commit subjects as the evidence.
+Each record cites the commit that introduced or materially clarified its decision. Where a decision spans related changes, the record lists both rather than assigning a single commit artificially. The branch also updates the vodozemac candidate decision log and P3 roadmap status; it preserves review boundaries without copying prior review reports or treating commit subjects as evidence.
