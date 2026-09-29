@@ -42,11 +42,43 @@ The assessment recommends the shared Rust-core direction only as promising reuse
 
 **Assumptions / evidence:** Fresh unpredictable Responder ephemeral material, canonical transcript equality, and SHA-256 collision resistance for the identity binding. Profile §§4, 9, and 11.2 describe the boundary; P1 separately requires freshness.
 
-**Does not establish:** Request-ID entropy, generation, or collision requirements; those remain unresolved. Nor is replayed `START` necessarily rejected or free of resource/attempt cost.
+**Does not establish:** Request-ID uniqueness or freshness from the ID alone, authentication, or freedom from resource/attempt cost when a replayed `START` begins a new run. The candidate generation/routing policy is recorded in D12 and remains subject to review as part of the complete profile.
 
 **Repository history:** `7d10cc8` bound authoritative ceremony identity to the transcript and distinguished it from the request handle.
 
 **Independent-review status:** Transcript/role/domain binding and replay reasoning remain for independent review.
+
+### D12 — Public request-ID generation and active routing uniqueness
+
+**Status:** Candidate policy decision; independent review of the complete profile remains required.
+
+**Decision:** For an honest Initiator, the shared security core generates exactly 16 raw request-ID bytes using its reviewed OS-backed CSPRNG. Before emitting `START`, it atomically checks and reserves the value in the applicable active local routing namespace; a collision with another active local request is regenerated before `START`. Incoming wire syntax remains any canonical opaque nonempty value of 1–64 bytes. Incoming values receive no entropy validation and are treated as attacker-controlled. The transport/session layer supplies connection/session identity for safe local dispatch; state is associated with that context plus request ID (or equivalent state-object binding). The core owns generation, reservation, state association, and the semantics that keep request ID from becoming ceremony authority. Applications receive the generated value for routing/correlation, diagnostics, or logs, but SHOULD NOT choose it.
+
+**Role and rationale:** The request ID is public, non-secret, network-observable diagnostic/routing context. It provides pre-establishment correlation and an active local collision-resistant handle. Sixteen uniformly random bytes provide an extremely strong accidental-collision margin, simple fixed generation without persistent counters, reduced trivial cross-session linkability, and fewer predictable pairing-volume/restart patterns. A counter could theoretically provide routing uniqueness if perfectly coordinated, but would complicate process/restart coordination, may need persistent state, expose activity patterns, and increase linkability without improving authentication. The CSPRNG requirement is the honest-generation mechanism; protocol authentication does not depend on request-ID unpredictability. It is separate from entropy requirements for ephemeral DH/SAS state.
+
+For `n` cumulative generations of 128 uniformly random bits, the birthday approximation is `P_collision ≈ n(n - 1) / (2 × 2^128)`. Illustrative values are:
+
+| Cumulative generations `n` | Approximate collision probability |
+|---:|---:|
+| 1,000 | `1.47 × 10^-33` |
+| 1,000,000 | `1.47 × 10^-27` |
+| 1,000,000,000 | `1.47 × 10^-21` |
+
+These examples are not a formal protocol security bound. The security-relevant scope for honest-local collision checking is smaller because it concerns only simultaneously active state in the applicable namespace.
+
+**Alternatives considered:** 64-bit random IDs (less collision margin); 96-bit random IDs (adequate in many scopes but no benefit over a fixed 16-byte handle); 256-bit random IDs (larger field/use without material need); UUIDv4 (unneeded UUID conventions and variant/version bits); a monotonically increasing counter (coordination, restart, persistence, activity-pattern, and linkability costs); and caller-provided opaque IDs (allows predictable/colliding inputs to drive local protocol starts and weakens core ownership of safe reservation). None improves the selected simple fixed-width routing handle. Incoming malicious IDs remain accepted within the parser's 1–64-byte bound, regardless of generation policy.
+
+**Security assumptions and state rules:** The OS-backed CSPRNG is required for honest generation, but request-ID unpredictability is **not** an authentication assumption. A predictable request ID alone MUST NOT break protocol authentication. The ID does not establish freshness, peer identity, authorization, ceremony identity, replay protection, secrecy, SAS security, or historical/global uniqueness. It MUST NOT alone authorize messages, state transitions, approval, result retrieval, reset, or SAS accounting. The honest local uniqueness requirement is only that two simultaneously active requests do not alias the same routing/state key within the applicable local namespace. No persistent historical-ID database is required. After a request becomes terminal and active state is gone, later ID reuse is not automatically a security failure: each run uses new cryptographic state and the transcript-derived `ceremony_identity` distinguishes established runs.
+
+Before establishment, state is bound to connection/session context plus request ID, or equivalent internal state-object binding; peer-controlled ID alone is not authoritative across multiple sessions. The same ID on different connections represents separate runs, consumes separate responder slots, and independently consumes an SAS attempt if it reaches exposure. Such runs MUST NOT share a state object. Within one active routing key, an exact duplicate `START` is ignored idempotently without new state or repeated output/key generation; a conflicting `START` fails closed under existing duplicate/illegal-state rules without overwrite, merge, restart, approval inheritance, or accounting reset. Cross-connection messages cannot dispatch into another state merely by matching its ID. After the transcript through `RESPONDER_KEY` is fixed, `ceremony_identity` remains authoritative for SAS display, approval, MACs, completion, and results; request ID remains optional routing/diagnostic context.
+
+On restart, active state and pending approval are discarded; historical request IDs are not persisted to prevent reuse. A replayed `START` may create a new policy-eligible run with fresh cryptographic state. If it reaches SAS exposure, it consumes a new attempt. Reuse cannot inherit approval/results or bypass resource or SAS accounting. Random generation reduces trivial linkability but does not establish anonymity or unlinkability; other metadata may correlate sessions.
+
+**Does not establish:** Authentication, freshness, peer identity, authorization, ceremony identity, replay security by itself, possession, secrecy, SAS security, anonymity/unlinkability, or global/historical uniqueness. Request-ID unpredictability is not relied upon for any protocol-authentication claim.
+
+**Repository history:** `cd788a6e863b7dce2ae1a27d7b4787f173377f29` records this candidate request-ID policy.
+
+**Independent-review status:** Candidate policy defined; generation, collision reservation, routing isolation, and the distinction from authentication/freshness remain subject to independent review as part of the complete profile. This internal decision is not an independent external security review.
 
 ### D3 — Local verified completion, not atomic bilateral success
 
@@ -216,7 +248,7 @@ The assessment recommends the shared Rust-core direction only as promising reuse
 
 These gates are based on the current candidate profile, P3 roadmap, and supporting assessments. They are not resolved by recording the decisions above.
 
-- Request-ID entropy, generation, and collision requirements remain **REVIEW REQUIRED** (profile §4).
+- Request-ID generation, active-local collision handling, and routing policy are defined as candidate decisions (profile §4, D12); they are not an undecided candidate-design gate, but remain subject to independent review as part of the complete profile. Incoming peer-selected IDs remain attacker-controlled within the 1–64-byte syntax.
 - Exact acceptable vodozemac release, complete RNG/key-generation path, unpredictability, and zeroization/lifecycle guarantees remain under-specified or review-dependent (profile §§5, 14; reuse assessment §18).
 - Application-context semantics and expected-peer validation are specified as byte equality and consumer responsibility, but whether these are the right generic semantics remains an independent-review question (profile §§4, 8, 14).
 - Exact monotonic timeout duration remains open (profile §11.3).
