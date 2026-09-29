@@ -65,7 +65,7 @@ P3 cannot complete its remote-profile exit criteria while Candidate B is not con
 
 ## Single next security action
 
-Obtain one focused independent cryptographic review of the complete vodozemac remote candidate. It must give a go/no-go view on SHA-256 commitment assumptions; the complete active-MITM composition; the per-opportunity `2^-39` premise; adaptive abort, retry, concurrency, and grinding; role/context/transcript/MAC composition; and whether the profile warrants reopening P2 and selecting it. This review does not preselect vodozemac.
+Obtain one focused independent cryptographic review of the complete vodozemac remote candidate before any remote-construction selection change. The review must give a go/no-go view on SHA-256 commitment assumptions; the complete active-MITM composition; the per-opportunity `2^-39` premise; adaptive abort, retry, concurrency, and grinding; role/context/transcript/MAC composition; and whether the profile warrants reopening P2 and selecting it. This review does not preselect vodozemac.
 
 ## Decisions that must not be silently changed
 
