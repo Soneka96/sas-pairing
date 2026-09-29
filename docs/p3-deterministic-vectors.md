@@ -4,7 +4,7 @@
 
 ## Status and scope
 
-These fixtures instantiate the documented remote vodozemac candidate and authenticated-local candidate. Candidate B remains the **prior P2 abstract construction selection**, with concrete instantiation unresolved. The vodozemac profile remains **CANDIDATE — NOT SELECTED — REQUIRES INDEPENDENT SECURITY REVIEW**; no remote construction is ready for final selection. The local profile remains candidate-only, and the Windows adapter remains **CANDIDATE — PRINCIPAL-BOUND ONLY — NOT APPROVED**. Nothing here selects a production profile, approves an adapter, or makes the project production-ready.
+These fixtures instantiate the documented remote vodozemac candidate and authenticated-local candidate. P2 historically selected Candidate B; the owner later reopened its implementation direction for custom cryptographic ownership reasons. Candidate B remains a formal reference and possible fallback, not disproven. Vodozemac is the **FAVORED CANDIDATE — NOT SELECTED — REQUIRES INDEPENDENT SECURITY REVIEW**; the review package is ready, but no external review has occurred. The local profile remains candidate-only, and the Windows adapter remains **CANDIDATE — PRINCIPAL-BOUND ONLY — NOT APPROVED**. Nothing here selects a production profile, approves an adapter, or makes the project production-ready.
 
 | Candidate fixture | Profile identifier | Version |
 |---|---|---:|

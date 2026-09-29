@@ -6,7 +6,7 @@ Language-neutral human-authenticated pairing for exchanging bootstrap data. The 
 
 ## Current repository phase
 
-**PRE-ALPHA. P3 IS BLOCKED for remote-profile completion. NO REMOTE CONSTRUCTION IS READY FOR FINAL SELECTION.** No production cryptography is implemented. Documentation consolidation does not clear the security gate.
+**PRE-ALPHA. P3 IS BLOCKED — REVIEW READY.** The independent-review package for the favored vodozemac remote candidate is prepared; no external review has occurred and no remote construction is selected. No production cryptography is implemented. Documentation consolidation does not clear the security gate.
 
 ## P1 result contract
 
@@ -14,21 +14,21 @@ P1 accepts mutual authentication of exact role-positioned bootstrap bytes and se
 
 ## P2 remote-construction state
 
-P2 historically selected Candidate B as the abstract remote construction. Later evidence reopened the project-level selection question because its concrete instantiation is unresolved. The separate vodozemac candidate has not replaced Candidate B. Current verdict: **NO REMOTE CONSTRUCTION READY FOR SELECTION — additional cryptographic review required.**
+P2 originally selected Candidate B as the abstract remote construction. P3 concrete-instantiation work exposed substantial project-owned cryptographic design and proof-mapping/maintenance for Candidate B. The owner decided that this was too much custom cryptographic ownership for the project and deliberately reopened the implementation-direction choice. This is an engineering/security ownership decision, not a finding that Candidate B or its paper is insecure. Candidate B remains an important formal reference and possible fallback. The project now **FAVORS INVESTIGATING** a ceremony built from maintained vodozemac primitives because it may reduce custom-crypto ownership. That candidate has not replaced Candidate B and is **NOT SELECTED**; project-specific security analysis and independent review are still required. Current verdict: **NO REMOTE CONSTRUCTION READY FOR SELECTION.**
 
 ## Candidate B
 
-Candidate B is Beskorovajnov–Müller-Quade mutual `π_SAS^×`: the prior P2 selection and strongest formal direction. Its abstract result fits the authenticated-bootstrap contract, without requiring a reusable pairing key. Concrete instantiation is blocked: the paper leaves the commitment formula/opening representation and byte encoding unspecified, uses a random-oracle SAS, and current evidence does not justify a real-hash security claim or complete faithful implementation. Preserve `STOP concrete cryptographic selection` in [the instantiation research](../../docs/p3-candidate-b-instantiation-research.md). Do not map Candidate B to SHA-256 or infer theorem preservation from a salted hash.
+Candidate B is Beskorovajnov–Müller-Quade mutual `π_SAS^×`: historically selected at P2 and the strongest formal reference. Its abstract result fits the authenticated-bootstrap contract, without requiring a reusable pairing key. Concrete instantiation remains unsupported on current evidence: the paper leaves the commitment formula/opening representation and byte encoding unspecified and uses a random-oracle SAS. The P3 `STOP concrete cryptographic selection` records the project's evidence and ownership boundary; it does not mean Candidate B was cryptographically disproven. Do not map Candidate B to SHA-256 or infer theorem preservation from a salted hash.
 
 ## Vodozemac candidate
 
-`sas-pairing-vodozemac-ceremony-profile-draft-01` is a **separate concrete, vectorized, reviewable candidate — NOT SELECTED**. It pins vodozemac 0.11.0 as a candidate and specifies X25519, a SHA-256 responder commitment, canonical framing, transcript identity, Matrix decimal SAS, bootstrap/completion MACs, context and expected-peer semantics, accounting, resource controls, timeouts, and state handling. Its complete active-MITM composition, commitment hiding/binding, per-opportunity `≤ 2^-39` premise, aggregate `N = 5,497`, `ε = 10^-8` policy, and adaptive abort/retry/concurrency/grinding argument have not been independently established. The arithmetic is conditional on the per-opportunity premise. Matrix/vodozemac precedent and deterministic vectors are not a proof of this composition.
+`sas-pairing-vodozemac-ceremony-profile-draft-01` is the **FAVORED CANDIDATE — NOT SELECTED**, concrete, vectorized, and reviewable. It pins vodozemac 0.11.0 as a candidate and specifies X25519, a SHA-256 responder commitment, canonical framing, transcript identity, Matrix decimal SAS, bootstrap/completion MACs, context and expected-peer semantics, accounting, resource controls, timeouts, and state handling. Its complete active-MITM composition, commitment hiding/binding, per-opportunity `≤ 2^-39` premise, aggregate `N = 5,497`, `ε = 10^-8` policy, and adaptive abort/retry/concurrency/grinding argument have not been independently established. The arithmetic is conditional on the per-opportunity premise. Matrix/vodozemac precedent and deterministic vectors are not a proof of this composition.
 
-## Why neither is selected today
+## Current construction status
 
-- Candidate B: strongest formal evidence and prior P2 selection; concrete instantiation unresolved.
-- Vodozemac: concrete and reviewable, with deterministic profile and vectors; complete project-specific security argument not independently established; not selected.
-- Therefore neither remote construction meets the evidence threshold for final selection.
+- Candidate B: historically selected at P2; remains a formal reference and possible fallback, not the current implementation direction. Its concrete instantiation remains unsupported, and the owner judged the custom cryptographic ownership too high for this project.
+- Vodozemac: favored candidate because maintained primitives may reduce custom-crypto ownership; complete project-specific security argument is not independently established; not selected.
+- Therefore neither remote construction meets the evidence threshold for final selection. A separate explicit owner selection remains required after review.
 
 ## P3 work completed
 
@@ -51,21 +51,13 @@ These artifacts remain useful candidate work; vectors demonstrate byte/derivatio
 
 Two fixture sets exist: remote vodozemac and authenticated-local. They demonstrate deterministic bytes and derivations only. The remote fixture covers commitment, transcript identity, SAS, bootstrap MACs, and completion MACs; the local fixture covers START, ACCEPT, transcript identity, APPROVE, REJECT, ACK, and outer record framing. The conformance matrix has 148 cases at the current branch head.
 
-## Known secondary cleanup
-
-- Correct stale project-wide wording about bilateral completion to the local verified-result contract.
-- Confirm endpoint-specific SAS accounting in R-WIRE-013 after the role/state clarification in this handoff.
-- Finish checking remaining historical references to deferred vectors after the current profile/log status notes.
-
-These are secondary consistency items, not the current remote-selection blocker.
-
 ## Current blocker
 
-P3 cannot complete its remote-profile exit criteria while Candidate B is not concretely instantiable on current evidence and vodozemac remains unselected. P3 must not be marked complete or treated as ready for P4.
+P3 cannot complete its remote-profile exit criteria while no remote construction is selected and required independent review remains outstanding. The review package is ready, but only an independent human review and subsequent explicit owner decision can advance selection. Local-profile/adapter gates also remain open. P3 must not be marked complete or treated as ready for P4.
 
 ## Single next security action
 
-Obtain one focused independent cryptographic review of the complete vodozemac remote candidate before any remote-construction selection change. The review must give a go/no-go view on SHA-256 commitment assumptions; the complete active-MITM composition; the per-opportunity `2^-39` premise; adaptive abort, retry, concurrency, and grinding; role/context/transcript/MAC composition; and whether the profile warrants reopening P2 and selecting it. This review does not preselect vodozemac.
+Use [the independent review package](../../docs/p3-vodozemac-independent-review-package.md) to obtain a focused external cryptographic review before any remote-construction selection change. Review the SHA-256 commitment assumptions; complete active-MITM composition; per-opportunity `2^-39` premise; adaptive abort, retry, concurrency, and grinding; role/context/transcript/MAC composition; and same-device predicate/adapter boundary if included in v1. The review does not preselect vodozemac; the owner must make a separate explicit selection decision afterward.
 
 ## Decisions that must not be silently changed
 
