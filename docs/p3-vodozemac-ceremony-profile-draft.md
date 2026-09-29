@@ -182,7 +182,7 @@ The tagged vodozemac manifest enables `x25519-dalek/zeroize`. In the inspected p
 
 ## 6. Exact message flow
 
-Only the following messages exist in this draft. Every network message has the global frame header and the exact fields shown. Sender role is implicit in message type, and a message received from the wrong role fails closed. Except for `START`, `ACCEPT`, and key-exchange messages, the message body is authenticated by a direction-specific vodozemac MAC as specified in §§8–11.3. For `CANCEL`, the wire message type is `0x09`; the separate non-wire `CancelAuthFrame / 0x34` defined in §11.3 is used only as MAC input/context. There are no transport-level acknowledgements that alter protocol state.
+Only the following messages exist in this draft. Every network message has the global frame header and the exact fields shown. Sender role is implicit only for message types that are direction-specific and can legally be sent by exactly one ceremony role. A message type valid in both directions carries its explicit sender-role field; the receiver MUST verify that the encoded sender role is the expected peer role for the active ceremony and reject a mismatch as a protocol error. Except for `START`, `ACCEPT`, and key-exchange messages, the message body is authenticated by a direction-specific vodozemac MAC as specified in §§8–11.3. For `CANCEL`, the wire message type is `0x09`; the separate non-wire `CancelAuthFrame / 0x34` defined in §11.3 is used only as MAC input/context. There are no transport-level acknowledgements that alter protocol state.
 
 | # | Message/type | Sender → receiver | Fields after header | Permitted state and effect |
 |---|---|---|---|---|
