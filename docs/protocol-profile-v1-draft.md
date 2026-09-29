@@ -89,7 +89,7 @@ The implementation profile MUST provide behavior equivalent to these states and 
 
 Candidate B models synchronous, immediate ideal OOB equality comparison, not arbitrary asynchronous UI callbacks or durable application state. The profile must preserve the theorem's conditions or provide separate evidence for any changed behavior.
 
-## 7. Remote Candidate B profile requirements
+## 7. Historical remote Candidate B profile requirements — not current selection
 
 The remote profile MUST use the same protocol semantics for Windows, Android, and future remote clients. Transport and user-interface integration may differ. Both participants display and compare the complete SAS for the exact ceremony without manual transcription, and pairing requires bilateral completion. It cannot silently select the same-device profile or downgrade on failure.
 
