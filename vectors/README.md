@@ -1,5 +1,5 @@
 # Deterministic vectors
 
-No protocol or test vectors have been selected yet. Once a protocol version is specified, this directory will contain authoritative deterministic vectors for messages, commitments, SAS values, transcript hashes, and derived material.
+Deterministic test vectors for the P3 vodozemac and authenticated-local candidate drafts are recorded in `p3-remote-vodozemac-draft-01.json` and `p3-local-authenticated-draft-01.json`, respectively. They instantiate candidate encodings and derivations only; they do not select either candidate for production or constitute security approval.
 
-Vectors will include positive cases and negative or mutation cases. They must be consumable by independent implementations and useful to reviewers. Do not add illustrative values that could be mistaken for protocol vectors.
+The conformance matrix is in `../docs/p3-conformance-cases.md`. Fixtures use synthetic public test values and must remain consumable by independent implementations. Do not add illustrative values that could be mistaken for protocol vectors.

@@ -2,7 +2,7 @@
 
 ## Status
 
-🟡 Planned; gated on a sufficiently precise P3 profile and vectors.
+🟡 Planned; gated on a completed P3.5 pre-implementation review and an explicit P3.6 owner selection/profile freeze.
 
 ## Goal
 
@@ -14,7 +14,7 @@ One security implementation keeps protocol behavior consistent and reviewable ac
 
 ## Inputs / prerequisites
 
-The P3 candidate profile, security rationale, and deterministic vectors.
+The explicitly selected, frozen profile, its reviewed security rationale, and deterministic vectors. A favored or review-ready candidate is not sufficient.
 
 ## Scope
 
@@ -42,4 +42,4 @@ Stop or return to P2/P3 if implementation reveals ambiguity, unsupported assumpt
 
 ## What this unlocks
 
-Preparation of a bounded, reproducible security-review package in P5.
+The P5 post-implementation review of whether the Rust core correctly and safely implements the reviewed construction/profile.

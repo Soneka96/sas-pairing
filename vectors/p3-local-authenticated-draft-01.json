@@ -1,0 +1,312 @@
+{
+  "metadata": {
+    "artifact": "p3-local-authenticated-draft-01",
+    "status": "DETERMINISTIC TEST VECTOR FOR CANDIDATE PROFILE \u2014 NOT PRODUCTION APPROVAL",
+    "profile_identifier": "sas-pairing-local-authenticated-profile-draft-01",
+    "profile_version": {
+      "value": 1,
+      "width_bits": 16,
+      "endian": "big"
+    },
+    "nonces_note": "Fixed nonces exist only for vectors; production generates each with the OS-backed CSPRNG."
+  },
+  "inputs": {
+    "initiator_nonce": {
+      "name": "initiator_nonce",
+      "semantic_description": "Exactly 16 bytes; TEST VECTOR ONLY.",
+      "hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+      "length": 16
+    },
+    "responder_nonce": {
+      "name": "responder_nonce",
+      "semantic_description": "Exactly 16 bytes; TEST VECTOR ONLY.",
+      "hex": "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "length": 16
+    },
+    "shared_context": {
+      "name": "shared_context",
+      "semantic_description": "Same opaque local context in both bootstraps.",
+      "hex": "7361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+      "length": 33
+    }
+  },
+  "bootstraps": {
+    "initiator": {
+      "name": "initiator_bootstrap",
+      "semantic_description": "Canonical type-0x20 bootstrap frame; field order is application_identity, key_algorithm, public_key, shared_context.",
+      "fields": {
+        "application_identity": {
+          "name": "application_identity",
+          "semantic_description": "Exact raw field bytes.",
+          "hex": "7361732d70616972696e67206c6f63616c2074657374206669787475726520696e69746961746f72",
+          "length": 40
+        },
+        "key_algorithm": {
+          "name": "key_algorithm",
+          "semantic_description": "Exact raw field bytes.",
+          "hex": "65643235353139",
+          "length": 7
+        },
+        "public_key": {
+          "name": "public_key",
+          "semantic_description": "Exact raw field bytes.",
+          "hex": "adc14011f82d1c56d956aa4f9d73d8858361a606048525e0d08c638dc75dd8c7",
+          "length": 32
+        },
+        "shared_context": {
+          "name": "shared_context",
+          "semantic_description": "Exact raw field bytes.",
+          "hex": "7361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+          "length": 33
+        }
+      },
+      "hex": "53415350414952000120000000287361732d70616972696e67206c6f63616c2074657374206669787475726520696e69746961746f72000000076564323535313900000020adc14011f82d1c56d956aa4f9d73d8858361a606048525e0d08c638dc75dd8c7000000217361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+      "length": 138
+    },
+    "responder": {
+      "name": "responder_bootstrap",
+      "semantic_description": "Canonical type-0x20 bootstrap frame; field order is application_identity, key_algorithm, public_key, shared_context.",
+      "fields": {
+        "application_identity": {
+          "name": "application_identity",
+          "semantic_description": "Exact raw field bytes.",
+          "hex": "7361732d70616972696e67206c6f63616c2074657374206669787475726520726573706f6e646572",
+          "length": 40
+        },
+        "key_algorithm": {
+          "name": "key_algorithm",
+          "semantic_description": "Exact raw field bytes.",
+          "hex": "65643235353139",
+          "length": 7
+        },
+        "public_key": {
+          "name": "public_key",
+          "semantic_description": "Exact raw field bytes.",
+          "hex": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd",
+          "length": 32
+        },
+        "shared_context": {
+          "name": "shared_context",
+          "semantic_description": "Exact raw field bytes.",
+          "hex": "7361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+          "length": 33
+        }
+      },
+      "hex": "53415350414952000120000000287361732d70616972696e67206c6f63616c2074657374206669787475726520726573706f6e646572000000076564323535313900000020882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd000000217361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+      "length": 138
+    }
+  },
+  "wire_payloads": {
+    "LOCAL_START": {
+      "name": "LOCAL_START",
+      "semantic_description": "Canonical payload type 0x40.",
+      "hex": "53415350414952000140000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d303100000010a0a1a2a3a4a5a6a7a8a9aaabacadaeaf000000010100000001020000008a53415350414952000120000000287361732d70616972696e67206c6f63616c2074657374206669787475726520696e69746961746f72000000076564323535313900000020adc14011f82d1c56d956aa4f9d73d8858361a606048525e0d08c638dc75dd8c7000000217361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+      "length": 234
+    },
+    "LOCAL_ACCEPT": {
+      "name": "LOCAL_ACCEPT",
+      "semantic_description": "Canonical payload type 0x41.",
+      "hex": "53415350414952000141000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d303100000010a0a1a2a3a4a5a6a7a8a9aaabacadaeaf00000010b0b1b2b3b4b5b6b7b8b9babbbcbdbebf000000010200000001010000008a53415350414952000120000000287361732d70616972696e67206c6f63616c2074657374206669787475726520726573706f6e646572000000076564323535313900000020882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd000000217361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+      "length": 254
+    },
+    "LOCAL_APPROVE": {
+      "name": "LOCAL_APPROVE",
+      "semantic_description": "Canonical payload type 0x42.",
+      "hex": "53415350414952000142000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d3031000000207af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a200000001020000000101",
+      "length": 108
+    },
+    "LOCAL_REJECT": {
+      "name": "LOCAL_REJECT",
+      "semantic_description": "Canonical payload type 0x43.",
+      "hex": "53415350414952000143000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d3031000000207af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a200000001020000000101",
+      "length": 108
+    },
+    "LOCAL_ACK": {
+      "name": "LOCAL_ACK",
+      "semantic_description": "Canonical payload type 0x44.",
+      "hex": "53415350414952000144000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d3031000000207af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a200000001010000000102",
+      "length": 108
+    }
+  },
+  "outer_records": {
+    "LOCAL_START": {
+      "name": "LOCAL_START_record",
+      "semantic_description": "u32be(payload_length)||canonical_payload; prefix excludes itself.",
+      "payload_length": {
+        "value": 234,
+        "width_bits": 32,
+        "endian": "big"
+      },
+      "prefix_hex": "000000ea",
+      "record": {
+        "name": "LOCAL_START_record",
+        "semantic_description": "Complete outer record including four-byte length prefix.",
+        "hex": "000000ea53415350414952000140000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d303100000010a0a1a2a3a4a5a6a7a8a9aaabacadaeaf000000010100000001020000008a53415350414952000120000000287361732d70616972696e67206c6f63616c2074657374206669787475726520696e69746961746f72000000076564323535313900000020adc14011f82d1c56d956aa4f9d73d8858361a606048525e0d08c638dc75dd8c7000000217361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+        "length": 238
+      }
+    },
+    "LOCAL_ACCEPT": {
+      "name": "LOCAL_ACCEPT_record",
+      "semantic_description": "u32be(payload_length)||canonical_payload; prefix excludes itself.",
+      "payload_length": {
+        "value": 254,
+        "width_bits": 32,
+        "endian": "big"
+      },
+      "prefix_hex": "000000fe",
+      "record": {
+        "name": "LOCAL_ACCEPT_record",
+        "semantic_description": "Complete outer record including four-byte length prefix.",
+        "hex": "000000fe53415350414952000141000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d303100000010a0a1a2a3a4a5a6a7a8a9aaabacadaeaf00000010b0b1b2b3b4b5b6b7b8b9babbbcbdbebf000000010200000001010000008a53415350414952000120000000287361732d70616972696e67206c6f63616c2074657374206669787475726520726573706f6e646572000000076564323535313900000020882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd000000217361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+        "length": 258
+      }
+    },
+    "LOCAL_APPROVE": {
+      "name": "LOCAL_APPROVE_record",
+      "semantic_description": "u32be(payload_length)||canonical_payload; prefix excludes itself.",
+      "payload_length": {
+        "value": 108,
+        "width_bits": 32,
+        "endian": "big"
+      },
+      "prefix_hex": "0000006c",
+      "record": {
+        "name": "LOCAL_APPROVE_record",
+        "semantic_description": "Complete outer record including four-byte length prefix.",
+        "hex": "0000006c53415350414952000142000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d3031000000207af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a200000001020000000101",
+        "length": 112
+      }
+    },
+    "LOCAL_REJECT": {
+      "name": "LOCAL_REJECT_record",
+      "semantic_description": "u32be(payload_length)||canonical_payload; prefix excludes itself.",
+      "payload_length": {
+        "value": 108,
+        "width_bits": 32,
+        "endian": "big"
+      },
+      "prefix_hex": "0000006c",
+      "record": {
+        "name": "LOCAL_REJECT_record",
+        "semantic_description": "Complete outer record including four-byte length prefix.",
+        "hex": "0000006c53415350414952000143000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d3031000000207af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a200000001020000000101",
+        "length": 112
+      }
+    },
+    "LOCAL_ACK": {
+      "name": "LOCAL_ACK_record",
+      "semantic_description": "u32be(payload_length)||canonical_payload; prefix excludes itself.",
+      "payload_length": {
+        "value": 108,
+        "width_bits": 32,
+        "endian": "big"
+      },
+      "prefix_hex": "0000006c",
+      "record": {
+        "name": "LOCAL_ACK_record",
+        "semantic_description": "Complete outer record including four-byte length prefix.",
+        "hex": "0000006c53415350414952000144000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d3031000000207af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a200000001010000000102",
+        "length": 112
+      }
+    },
+    "maximum_complete_record_bytes": 65536
+  },
+  "transcript": {
+    "domain": {
+      "name": "transcript_domain",
+      "semantic_description": "Exact ASCII local transcript domain.",
+      "hex": "7361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d30312f7472616e7363726970742f7631",
+      "length": 62
+    },
+    "start_payload_length": {
+      "value": 234,
+      "width_bits": 32,
+      "endian": "big"
+    },
+    "accept_payload_length": {
+      "value": 254,
+      "width_bits": 32,
+      "endian": "big"
+    },
+    "bytes": {
+      "name": "authoritative_transcript",
+      "semantic_description": "u32be(length(domain))||domain||u32be(length(START_payload))||START_payload||u32be(length(ACCEPT_payload))||ACCEPT_payload.",
+      "hex": "0000003e7361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d30312f7472616e7363726970742f7631000000ea53415350414952000140000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d303100000010a0a1a2a3a4a5a6a7a8a9aaabacadaeaf000000010100000001020000008a53415350414952000120000000287361732d70616972696e67206c6f63616c2074657374206669787475726520696e69746961746f72000000076564323535313900000020adc14011f82d1c56d956aa4f9d73d8858361a606048525e0d08c638dc75dd8c7000000217361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631000000fe53415350414952000141000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d303100000010a0a1a2a3a4a5a6a7a8a9aaabacadaeaf00000010b0b1b2b3b4b5b6b7b8b9babbbcbdbebf000000010200000001010000008a53415350414952000120000000287361732d70616972696e67206c6f63616c2074657374206669787475726520726573706f6e646572000000076564323535313900000020882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd000000217361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+      "length": 562
+    },
+    "sha256": {
+      "algorithm": "SHA-256",
+      "input_hex": "0000003e7361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d30312f7472616e7363726970742f7631000000ea53415350414952000140000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d303100000010a0a1a2a3a4a5a6a7a8a9aaabacadaeaf000000010100000001020000008a53415350414952000120000000287361732d70616972696e67206c6f63616c2074657374206669787475726520696e69746961746f72000000076564323535313900000020adc14011f82d1c56d956aa4f9d73d8858361a606048525e0d08c638dc75dd8c7000000217361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631000000fe53415350414952000141000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d303100000010a0a1a2a3a4a5a6a7a8a9aaabacadaeaf00000010b0b1b2b3b4b5b6b7b8b9babbbcbdbebf000000010200000001010000008a53415350414952000120000000287361732d70616972696e67206c6f63616c2074657374206669787475726520726573706f6e646572000000076564323535313900000020882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd000000217361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+      "output_hex": "7af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a2"
+    }
+  },
+  "ceremony_identity": {
+    "name": "ceremony_identity",
+    "semantic_description": "Authoritative 32-byte SHA-256 digest of local transcript.",
+    "hex": "7af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a2",
+    "length": 32
+  },
+  "approve": {
+    "payload": {
+      "name": "LOCAL_APPROVE",
+      "semantic_description": "Canonical approval payload carrying exact ceremony identity.",
+      "hex": "53415350414952000142000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d3031000000207af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a200000001020000000101",
+      "length": 108
+    },
+    "outer_record": {
+      "name": "LOCAL_APPROVE_record",
+      "semantic_description": "Complete record.",
+      "hex": "0000006c53415350414952000142000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d3031000000207af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a200000001020000000101",
+      "length": 112
+    },
+    "ceremony_identity": "7af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a2"
+  },
+  "reject": {
+    "payload": {
+      "name": "LOCAL_REJECT",
+      "semantic_description": "Canonical alternate rejection-branch payload carrying exact ceremony identity.",
+      "hex": "53415350414952000143000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d3031000000207af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a200000001020000000101",
+      "length": 108
+    },
+    "outer_record": {
+      "name": "LOCAL_REJECT_record",
+      "semantic_description": "Complete record.",
+      "hex": "0000006c53415350414952000143000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d3031000000207af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a200000001020000000101",
+      "length": 112
+    },
+    "ceremony_identity": "7af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a2"
+  },
+  "ack": {
+    "payload": {
+      "name": "LOCAL_ACK",
+      "semantic_description": "Canonical initiator-to-responder acknowledgement after approval.",
+      "hex": "53415350414952000144000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d3031000000207af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a200000001010000000102",
+      "length": 108
+    },
+    "outer_record": {
+      "name": "LOCAL_ACK_record",
+      "semantic_description": "Complete record.",
+      "hex": "0000006c53415350414952000144000000307361732d70616972696e672d6c6f63616c2d61757468656e746963617465642d70726f66696c652d64726166742d3031000000207af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a200000001010000000102",
+      "length": 112
+    },
+    "ceremony_identity": "7af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a2"
+  },
+  "result_semantics": {
+    "initiator": {
+      "ceremony_identity": "7af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a2",
+      "peer_role": "Responder",
+      "authenticated_peer_bootstrap": "53415350414952000120000000287361732d70616972696e67206c6f63616c2074657374206669787475726520726573706f6e646572000000076564323535313900000020882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd000000217361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+      "authenticated_shared_context": "7361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+      "profile_identifier": "sas-pairing-local-authenticated-profile-draft-01",
+      "profile_version": 1
+    },
+    "responder": {
+      "ceremony_identity": "7af1069f9b96f1c21d8eba7918bb4342ef42ecbb88c46450027f09628d3e51a2",
+      "peer_role": "Initiator",
+      "authenticated_peer_bootstrap": "53415350414952000120000000287361732d70616972696e67206c6f63616c2074657374206669787475726520696e69746961746f72000000076564323535313900000020adc14011f82d1c56d956aa4f9d73d8858361a606048525e0d08c638dc75dd8c7000000217361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+      "authenticated_shared_context": "7361732d70616972696e672f6c6f63616c2d636f6e746578742f746573742d7631",
+      "profile_identifier": "sas-pairing-local-authenticated-profile-draft-01",
+      "profile_version": 1
+    }
+  }
+}

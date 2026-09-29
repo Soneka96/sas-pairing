@@ -38,4 +38,4 @@ The threat model records the attacker model, accepted result contract, profile r
 
 ## What this unlocks
 
-P2 construction selection and formal mapping against the documented requirements; P2 selects Candidate B for the remote profile.
+P2 construction selection and formal mapping against the documented requirements; P2 historically selected Candidate B for the remote profile. The owner later reopened that direction during P3 for engineering/security ownership reasons.
