@@ -18,7 +18,7 @@ P2 construction selection is complete; the following remain gates before a produ
 
 - exact construction and security rationale
 - concrete Candidate B commitment/hash instantiation justified for its random-oracle assumptions
-- exact application-context encoding and mismatch rules
+- exact application-context encoding and mismatch rules for the production-selected concrete profile; the separate vodozemac candidate now defines local context/expected-peer semantics, but remains unselected and subject to independent review
 - SAS derivation and encoding
 - protocol-required attempt, cooldown, ceremony, lifetime, and persistent-counter constraints needed for the security bound; exact values and enforcement integration
 - canonical wire format and state machine
