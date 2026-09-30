@@ -7,6 +7,7 @@ use std::{
     },
 };
 
+mod ceremony;
 mod crypto;
 pub mod protocol;
 
@@ -249,11 +250,12 @@ impl CeremonyExecutor {
             .shared
             .lock()
             .map_err(|_| Error::OwnershipUncertain)?;
+        // Make terminal state irreversible before the authority-wide slot can be reused.
+        ceremony.authorization = None;
+        ceremony.terminal = true;
         if shared.active == Some(ceremony.id) {
             shared.active = None;
         }
-        ceremony.authorization = None;
-        ceremony.terminal = true;
         Ok(())
     }
 

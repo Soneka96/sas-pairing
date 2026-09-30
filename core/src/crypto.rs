@@ -17,7 +17,7 @@ const SAS_PREFIX: &[u8] = b"sas-pairing-vodozemac-profile-draft-01/sas/";
 const CRYPTO_INPUT_LIMIT: usize = 65_536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Error {
+pub(super) enum Error {
     InvalidMessage,
     RequestIdMismatch,
     InvalidPeerKeyLength,
@@ -27,18 +27,18 @@ enum Error {
     CommitmentMismatch,
 }
 
-struct EphemeralSas(Sas);
+pub(super) struct EphemeralSas(Sas);
 
 impl EphemeralSas {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self(Sas::new())
     }
 
-    fn public_key(&self) -> [u8; 32] {
+    pub(super) fn public_key(&self) -> [u8; 32] {
         self.0.public_key().to_bytes()
     }
 
-    fn establish(self, peer: &[u8]) -> Result<Established, Error> {
+    pub(super) fn establish(self, peer: &[u8]) -> Result<Established, Error> {
         let peer: [u8; 32] = peer.try_into().map_err(|_| Error::InvalidPeerKeyLength)?;
         self.0
             .diffie_hellman(Curve25519PublicKey::from_bytes(peer))
@@ -48,10 +48,10 @@ impl EphemeralSas {
 }
 
 #[derive(Debug)]
-struct Established(EstablishedSas);
+pub(super) struct Established(EstablishedSas);
 
 impl Established {
-    fn sas(&self, info: &str) -> (SasBytes, String) {
+    pub(super) fn sas(&self, info: &str) -> (SasBytes, String) {
         let bytes = self.0.bytes(info);
         let (first, second, third) = bytes.decimals();
         (bytes, format!("{first:04} {second:04} {third:04}"))
@@ -120,11 +120,14 @@ fn commitment_input(start: &DecodedMessage, responder_key: &[u8; 32]) -> Result<
     Ok(input)
 }
 
-fn commitment(start: &DecodedMessage, responder_key: &[u8; 32]) -> Result<[u8; 32], Error> {
+pub(super) fn commitment(
+    start: &DecodedMessage,
+    responder_key: &[u8; 32],
+) -> Result<[u8; 32], Error> {
     Ok(Sha256::digest(commitment_input(start, responder_key)?).into())
 }
 
-fn verify_commitment(
+pub(super) fn verify_commitment(
     start: &DecodedMessage,
     responder_key: &[u8; 32],
     expected: &[u8; 32],
@@ -192,7 +195,7 @@ fn transcript_bytes(
     Ok(bytes)
 }
 
-fn transcript_identity(
+pub(super) fn transcript_identity(
     start: &DecodedMessage,
     accept: &DecodedMessage,
     initiator_key: &DecodedMessage,
@@ -234,7 +237,7 @@ fn sas_info_from_context(context: &[u8]) -> Result<String, Error> {
     Ok(String::from_utf8(info).expect("ASCII context"))
 }
 
-fn sas_info(
+pub(super) fn sas_info(
     start: &DecodedMessage,
     accept: &DecodedMessage,
     initiator_key: &DecodedMessage,
