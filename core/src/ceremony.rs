@@ -1,7 +1,8 @@
-//! Crate-private remote ceremony through SAS establishment and local human comparison only.
+//! Crate-private remote ceremony through SAS establishment, local human comparison, and the
+//! authenticated BOOTSTRAP_MAC approval exchange only.
 //! Fixed request IDs are accepted only by this internal/test-scoped constructor;
 //! production request-ID generation and active routing reservation remain pending.
-//! BOOTSTRAP_MAC, authenticated CANCEL, completion, and PairingResult are not implemented.
+//! Finish/completion messages, authenticated CANCEL, and PairingResult are not implemented.
 #![allow(dead_code)] // The protocol remains internal until later P4 work defines its complete API.
 use crate::{
     Authorization, Ceremony, CeremonyExecutor, Error as OwnerError, Role, TrustedAuthority,
@@ -19,6 +20,10 @@ pub(crate) enum CeremonyError {
     NoLiveSas,
     /// A local comparison decision targeted a different `ceremony_identity`.
     CeremonyIdentityMismatch,
+    /// Own BOOTSTRAP_MAC requested before the local human MATCH was recorded.
+    NotLocallyApproved,
+    /// A bidirectional message carried a sender role other than the expected peer role.
+    UnexpectedSenderRole,
     InvalidRequestId,
     RequestIdMismatch,
     SharedContextMismatch,
@@ -77,19 +82,38 @@ enum State {
         authorization: Option<Authorization>,
     },
     /// The transcript and `ceremony_identity` are fixed; the complete SAS awaits a local decision.
+    /// A verified peer BOOTSTRAP_MAC authenticates only the peer's approval, never ours.
     AwaitLocalApproval {
         session: SasSession,
+        peer: PeerMac,
     },
-    /// Local human MATCH recorded for exactly this identity. Not protocol success: the
-    /// authenticated BOOTSTRAP_MAC exchange and completion remain unimplemented.
+    /// Local human MATCH recorded for exactly this identity; own BOOTSTRAP_MAC not yet emitted.
     LocallyApprovedAwaitingAuthentication {
+        session: SasSession,
+        peer: PeerMac,
+    },
+    /// Own BOOTSTRAP_MAC emitted once; the peer's approval MAC has not yet been verified.
+    LocalMacSentAwaitingPeerMac {
+        session: SasSession,
+    },
+    /// Local approval recorded, own BOOTSTRAP_MAC emitted, and peer BOOTSTRAP_MAC verified.
+    /// Not protocol success: the finish handshake and any result remain unimplemented, so the
+    /// session is retained for completion authentication and the guard stays held.
+    ApprovalsAuthenticatedAwaitingCompletion {
         session: SasSession,
     },
     Terminal,
 }
 
+/// Whether the peer's BOOTSTRAP_MAC has been verified while our own approval is incomplete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeerMac {
+    Pending,
+    Verified,
+}
+
 /// Established-ceremony material, owned only by its state variant so every terminal
-/// transition drops it. Retained for the later BOOTSTRAP_MAC increment; never exposed.
+/// transition drops it. Retained for approval and completion authentication; never exposed.
 struct SasSession {
     role: Role,
     ceremony_identity: [u8; 32],
@@ -165,6 +189,22 @@ impl SasPresentation {
 pub(crate) enum SasApproval {
     Recorded,
     AlreadyRecorded,
+}
+
+/// Own BOOTSTRAP_MAC output. The frame is produced exactly once; a repeated request is
+/// `AlreadyEmitted` with no bytes, no MAC calculation, and no state or accounting change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BootstrapMacEmission {
+    Emitted(Vec<u8>),
+    AlreadyEmitted,
+}
+
+/// Inbound peer BOOTSTRAP_MAC outcome. `AlreadyAuthenticated` is an exact duplicate of the
+/// accepted frame, ignored without MAC verification or any state change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PeerApproval {
+    Authenticated,
+    AlreadyAuthenticated,
 }
 
 pub(crate) struct RemoteCeremony {
@@ -292,14 +332,46 @@ impl RemoteCeremony {
         matches!(
             self.state,
             State::LocallyApprovedAwaitingAuthentication { .. }
+                | State::LocalMacSentAwaitingPeerMac { .. }
+                | State::ApprovalsAuthenticatedAwaitingCompletion { .. }
         )
     }
 
-    /// Available only while this exact SAS awaits a local decision (I2). It never exists
-    /// before `ceremony_identity` is fixed and is withdrawn by approval or any terminal path.
+    pub(crate) fn is_own_mac_emitted(&self) -> bool {
+        matches!(
+            self.state,
+            State::LocalMacSentAwaitingPeerMac { .. }
+                | State::ApprovalsAuthenticatedAwaitingCompletion { .. }
+        )
+    }
+
+    pub(crate) fn is_peer_approval_authenticated(&self) -> bool {
+        matches!(
+            self.state,
+            State::AwaitLocalApproval {
+                peer: PeerMac::Verified,
+                ..
+            } | State::LocallyApprovedAwaitingAuthentication {
+                peer: PeerMac::Verified,
+                ..
+            } | State::ApprovalsAuthenticatedAwaitingCompletion { .. }
+        )
+    }
+
+    /// Both approval conditions hold; the later finish handshake is still required.
+    pub(crate) fn is_ready_for_completion(&self) -> bool {
+        matches!(
+            self.state,
+            State::ApprovalsAuthenticatedAwaitingCompletion { .. }
+        )
+    }
+
+    /// Available only while this exact SAS awaits a local decision (I2), including after a
+    /// peer approval MAC is verified. It never exists before `ceremony_identity` is fixed and
+    /// is withdrawn by local approval or any terminal path.
     pub(crate) fn presentation(&self) -> Option<SasPresentation> {
         match &self.state {
-            State::AwaitLocalApproval { session } => Some(SasPresentation {
+            State::AwaitLocalApproval { session, .. } => Some(SasPresentation {
                 ceremony_identity: session.ceremony_identity,
                 decimal: session.decimal.clone(),
             }),
@@ -316,13 +388,114 @@ impl RemoteCeremony {
         if self.is_locally_approved() {
             return Ok(SasApproval::AlreadyRecorded);
         }
-        let State::AwaitLocalApproval { session } =
+        let State::AwaitLocalApproval { session, peer } =
             std::mem::replace(&mut self.state, State::Terminal)
         else {
             unreachable!()
         };
-        self.state = State::LocallyApprovedAwaitingAuthentication { session };
+        self.state = State::LocallyApprovedAwaitingAuthentication { session, peer };
         Ok(SasApproval::Recorded)
+    }
+
+    /// Produces own canonical BOOTSTRAP_MAC exactly once, only after local MATCH. Before local
+    /// approval, or with no live SAS, it fails without output or effect; it never approves.
+    pub(crate) fn emit_bootstrap_mac(&mut self) -> Result<BootstrapMacEmission, CeremonyError> {
+        match &self.state {
+            State::LocallyApprovedAwaitingAuthentication { .. } => {}
+            State::LocalMacSentAwaitingPeerMac { .. }
+            | State::ApprovalsAuthenticatedAwaitingCompletion { .. } => {
+                return Ok(BootstrapMacEmission::AlreadyEmitted);
+            }
+            State::AwaitLocalApproval { .. } => return Err(CeremonyError::NotLocallyApproved),
+            _ => return Err(CeremonyError::NoLiveSas),
+        }
+        let State::LocallyApprovedAwaitingAuthentication { session, peer } =
+            std::mem::replace(&mut self.state, State::Terminal)
+        else {
+            unreachable!()
+        };
+        let sender = wire_role(session.role);
+        let bytes = match own_bootstrap_mac(&session, sender) {
+            Ok(bytes) => bytes,
+            Err(error) => return self.fail(error),
+        };
+        self.state = match peer {
+            PeerMac::Pending => State::LocalMacSentAwaitingPeerMac { session },
+            PeerMac::Verified => State::ApprovalsAuthenticatedAwaitingCompletion { session },
+        };
+        Ok(BootstrapMacEmission::Emitted(bytes))
+    }
+
+    /// Verifies the peer's BOOTSTRAP_MAC against the expected approval statement reconstructed
+    /// from retained ceremony state: peer role, this `ceremony_identity`, the six raw SAS bytes,
+    /// and the peer's retained canonical bootstrap. It records only the peer's approval.
+    pub(crate) fn receive_bootstrap_mac(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<PeerApproval, CeremonyError> {
+        let msg = self.decode(bytes)?;
+        if !matches!(msg.message, Message::BootstrapMac { .. }) {
+            return self.reject_order();
+        }
+        if self.duplicate(5, bytes)? {
+            return Ok(PeerApproval::AlreadyAuthenticated);
+        }
+        let session = match &self.state {
+            State::AwaitLocalApproval {
+                session,
+                peer: PeerMac::Pending,
+            }
+            | State::LocallyApprovedAwaitingAuthentication {
+                session,
+                peer: PeerMac::Pending,
+            }
+            | State::LocalMacSentAwaitingPeerMac { session } => session,
+            _ => return self.reject_order(),
+        };
+        let Message::BootstrapMac {
+            request_id,
+            sender,
+            mac,
+        } = &msg.message
+        else {
+            unreachable!()
+        };
+        let expected_sender = wire_role(peer_of(session.role));
+        let verified = if *request_id != session.request_id {
+            Err(CeremonyError::RequestIdMismatch)
+        } else if *sender != expected_sender {
+            Err(CeremonyError::UnexpectedSenderRole)
+        } else {
+            crypto::bootstrap_mac_strings(
+                expected_sender,
+                &session.ceremony_identity,
+                &session.sas_bytes,
+                &session.peer_bootstrap,
+            )
+            .and_then(|(input, info)| session.established.verify_mac(&input, &info, mac))
+            .map_err(CeremonyError::from)
+        };
+        if let Err(error) = verified {
+            return self.fail(error);
+        }
+        self.seen.push((5, bytes.to_vec()));
+        self.state = match std::mem::replace(&mut self.state, State::Terminal) {
+            State::AwaitLocalApproval { session, .. } => State::AwaitLocalApproval {
+                session,
+                peer: PeerMac::Verified,
+            },
+            State::LocallyApprovedAwaitingAuthentication { session, .. } => {
+                State::LocallyApprovedAwaitingAuthentication {
+                    session,
+                    peer: PeerMac::Verified,
+                }
+            }
+            State::LocalMacSentAwaitingPeerMac { session } => {
+                State::ApprovalsAuthenticatedAwaitingCompletion { session }
+            }
+            _ => unreachable!(),
+        };
+        Ok(PeerApproval::Authenticated)
     }
 
     /// Local MISMATCH/REJECT: terminal failure. Sends nothing and refunds nothing.
@@ -340,24 +513,26 @@ impl RemoteCeremony {
     /// Callbacks for another identity, or for no live SAS, are rejected without any effect,
     /// so a stale callback can neither approve nor disturb this ceremony.
     fn live_session(&self, ceremony_identity: &[u8; 32]) -> Result<&SasSession, CeremonyError> {
-        let session = match &self.state {
-            State::AwaitLocalApproval { session }
-            | State::LocallyApprovedAwaitingAuthentication { session } => session,
-            _ => return Err(CeremonyError::NoLiveSas),
-        };
+        let session = self.session().ok_or(CeremonyError::NoLiveSas)?;
         if session.ceremony_identity != *ceremony_identity {
             return Err(CeremonyError::CeremonyIdentityMismatch);
         }
         Ok(session)
     }
 
-    #[cfg(test)]
-    fn sas_bytes_for_test(&self) -> Option<[u8; 6]> {
+    fn session(&self) -> Option<&SasSession> {
         match &self.state {
-            State::AwaitLocalApproval { session }
-            | State::LocallyApprovedAwaitingAuthentication { session } => Some(session.sas_bytes),
+            State::AwaitLocalApproval { session, .. }
+            | State::LocallyApprovedAwaitingAuthentication { session, .. }
+            | State::LocalMacSentAwaitingPeerMac { session }
+            | State::ApprovalsAuthenticatedAwaitingCompletion { session } => Some(session),
             _ => None,
         }
+    }
+
+    #[cfg(test)]
+    fn sas_bytes_for_test(&self) -> Option<[u8; 6]> {
+        self.session().map(|session| session.sas_bytes)
     }
 
     pub(crate) fn receive_accept(&mut self, bytes: &[u8]) -> Result<(), CeremonyError> {
@@ -484,7 +659,10 @@ impl RemoteCeremony {
                 Ok(value) => value,
                 Err(error) => return self.fail(error),
             };
-        self.state = State::AwaitLocalApproval { session };
+        self.state = State::AwaitLocalApproval {
+            session,
+            peer: PeerMac::Pending,
+        };
         Ok(())
     }
 
@@ -607,7 +785,10 @@ impl RemoteCeremony {
                     Ok(value) => value,
                     Err(error) => return self.fail(error),
                 };
-                self.state = State::AwaitLocalApproval { session };
+                self.state = State::AwaitLocalApproval {
+                    session,
+                    peer: PeerMac::Pending,
+                };
                 Ok(bytes)
             }
             other => {
@@ -663,6 +844,37 @@ impl Drop for RemoteCeremony {
     }
 }
 
+fn wire_role(role: Role) -> protocol::Role {
+    match role {
+        Role::Initiator => protocol::Role::Initiator,
+        Role::Responder => protocol::Role::Responder,
+    }
+}
+fn peer_of(role: Role) -> Role {
+    match role {
+        Role::Initiator => Role::Responder,
+        Role::Responder => Role::Initiator,
+    }
+}
+/// Own approval statement: our role, this identity and SAS, and OUR canonical bootstrap.
+fn own_bootstrap_mac(
+    session: &SasSession,
+    sender: protocol::Role,
+) -> Result<Vec<u8>, CeremonyError> {
+    let (input, info) = crypto::bootstrap_mac_strings(
+        sender,
+        &session.ceremony_identity,
+        &session.sas_bytes,
+        &session.local_bootstrap,
+    )?;
+    let mac = session.established.calculate_mac(&input, &info)?;
+    Ok(Message::BootstrapMac {
+        request_id: session.request_id.clone(),
+        sender,
+        mac,
+    }
+    .encode()?)
+}
 fn request_id_of(message: &DecodedMessage) -> Result<&[u8], CeremonyError> {
     match &message.message {
         Message::Start { request_id, .. } => Ok(request_id),
@@ -1444,7 +1656,8 @@ mod tests {
             assert!(run.admission.authorization.is_none() && !run.admission.terminal);
             assert_eq!(run.seen.len(), seen);
             match &run.state {
-                State::LocallyApprovedAwaitingAuthentication { session } => {
+                State::LocallyApprovedAwaitingAuthentication { session, peer } => {
+                    assert_eq!(*peer, PeerMac::Pending);
                     assert_eq!(session.role, role);
                     assert_eq!(session.ceremony_identity, id);
                     assert_eq!(Some(session.sas_bytes), bytes);
@@ -1673,6 +1886,566 @@ mod tests {
         assert_eq!(
             pair.i.reject_sas(&id),
             Err(CeremonyError::Owner(OwnerError::OwnershipUncertain))
+        );
+        assert_stale(&mut pair.i, &id);
+        // Fail closed: invalidation is complete, but the guard is never released uncertainly.
+        match a.ei.0.shared.lock() {
+            Err(poisoned) => assert!(poisoned.into_inner().active.is_some()),
+            Ok(_) => panic!("shared state unexpectedly recovered"),
+        }
+        drop(pair);
+        a.release();
+    }
+
+    fn emitted(run: &mut RemoteCeremony) -> Vec<u8> {
+        match run.emit_bootstrap_mac().unwrap() {
+            BootstrapMacEmission::Emitted(bytes) => bytes,
+            BootstrapMacEmission::AlreadyEmitted => panic!("expected a first emission"),
+        }
+    }
+
+    fn approve_and_emit(run: &mut RemoteCeremony, id: &[u8; 32]) -> Vec<u8> {
+        assert_eq!(run.approve_sas(id), Ok(SasApproval::Recorded));
+        emitted(run)
+    }
+
+    fn mac_fields(bytes: &[u8]) -> (Vec<u8>, protocol::Role, [u8; 32]) {
+        match protocol::decode(bytes).unwrap().message {
+            Message::BootstrapMac {
+                request_id,
+                sender,
+                mac,
+            } => (request_id, sender, mac),
+            _ => panic!("not a BOOTSTRAP_MAC"),
+        }
+    }
+
+    fn mac_frame(request_id: Vec<u8>, sender: protocol::Role, mac: [u8; 32]) -> Vec<u8> {
+        Message::BootstrapMac {
+            request_id,
+            sender,
+            mac,
+        }
+        .encode()
+        .unwrap()
+    }
+
+    /// Ready for the later finish handshake, but never success: the SAS session is retained,
+    /// no exposure authorization exists, the guard is Busy, and the opportunity stays spent.
+    fn assert_ready_not_success(run: &RemoteCeremony, executor: &CeremonyExecutor) {
+        assert!(run.is_ready_for_completion());
+        assert!(run.is_locally_approved() && run.is_own_mac_emitted());
+        assert!(run.is_peer_approval_authenticated());
+        assert_eq!(run.presentation(), None);
+        assert!(run.sas_bytes_for_test().is_some());
+        assert!(run.admission.authorization.is_none() && !run.admission.terminal);
+        assert_eq!(executor.status().unwrap(), Status::Busy);
+        assert_eq!(remaining(executor), 9);
+    }
+
+    #[test]
+    fn live_bootstrap_macs_local_approval_first_reach_completion_ready_only() {
+        let a = Authorities::new("mac-local-first");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let (i_seen, r_seen) = (pair.i.seen.len(), pair.r.seen.len());
+
+        let i_mac = approve_and_emit(&mut pair.i, &id);
+        let (i_request_id, i_sender, i_tag) = mac_fields(&i_mac);
+        assert_eq!(
+            (i_request_id, i_sender),
+            (vector_request_id(), protocol::Role::Initiator)
+        );
+        assert!(pair.i.is_own_mac_emitted() && !pair.i.is_peer_approval_authenticated());
+        assert!(!pair.i.is_ready_for_completion());
+        let ops = crypto::mac_operations();
+        assert_eq!(
+            pair.i.emit_bootstrap_mac(),
+            Ok(BootstrapMacEmission::AlreadyEmitted)
+        );
+        assert_eq!(crypto::mac_operations(), ops, "no second MAC calculation");
+
+        assert_eq!(
+            pair.r.receive_bootstrap_mac(&i_mac),
+            Ok(PeerApproval::Authenticated)
+        );
+        // R authenticated I's approval only; R's own human decision is still pending.
+        assert!(pair.r.is_awaiting_approval() && !pair.r.is_locally_approved());
+        assert!(pair.r.is_peer_approval_authenticated());
+        assert!(pair.r.presentation().is_some());
+        assert_eq!(
+            pair.r.emit_bootstrap_mac(),
+            Err(CeremonyError::NotLocallyApproved)
+        );
+
+        let r_mac = approve_and_emit(&mut pair.r, &id);
+        let (r_request_id, r_sender, r_tag) = mac_fields(&r_mac);
+        assert_eq!(
+            (r_request_id, r_sender),
+            (vector_request_id(), protocol::Role::Responder)
+        );
+        assert_ready_not_success(&pair.r, &a.er);
+        assert_eq!(
+            pair.i.receive_bootstrap_mac(&r_mac),
+            Ok(PeerApproval::Authenticated)
+        );
+        assert_ready_not_success(&pair.i, &a.ei);
+        assert_ne!(i_tag, r_tag);
+        // Each side retained exactly one accepted peer BOOTSTRAP_MAC and nothing else new.
+        assert_eq!(
+            (pair.i.seen.len(), pair.r.seen.len()),
+            (i_seen + 1, r_seen + 1)
+        );
+        drop(pair);
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
+        a.release();
+    }
+
+    #[test]
+    fn peer_mac_first_keeps_sas_displayed_and_never_approves_locally() {
+        let a = Authorities::new("mac-peer-first");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let r_mac = approve_and_emit(&mut pair.r, &id);
+        let displayed = pair.i.presentation();
+
+        assert_eq!(
+            pair.i.receive_bootstrap_mac(&r_mac),
+            Ok(PeerApproval::Authenticated)
+        );
+        assert_eq!(pair.i.presentation(), displayed, "SAS stays live (I2)");
+        assert!(pair.i.is_awaiting_approval() && !pair.i.is_locally_approved());
+        assert!(pair.i.is_peer_approval_authenticated() && !pair.i.is_own_mac_emitted());
+        assert!(!pair.i.is_ready_for_completion());
+        let ops = crypto::mac_operations();
+        assert_eq!(
+            pair.i.emit_bootstrap_mac(),
+            Err(CeremonyError::NotLocallyApproved)
+        );
+        assert_eq!(crypto::mac_operations(), ops);
+        assert_eq!(pair.i.presentation(), displayed);
+        assert_eq!(a.ei.status().unwrap(), Status::Busy);
+
+        assert_eq!(pair.i.approve_sas(&id), Ok(SasApproval::Recorded));
+        assert_eq!(pair.i.presentation(), None);
+        assert!(!pair.i.is_ready_for_completion(), "own MAC not yet emitted");
+        let i_mac = emitted(&mut pair.i);
+        assert_ready_not_success(&pair.i, &a.ei);
+        assert_eq!(
+            pair.r.receive_bootstrap_mac(&i_mac),
+            Ok(PeerApproval::Authenticated)
+        );
+        assert_ready_not_success(&pair.r, &a.er);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn own_bootstrap_mac_requires_live_local_approval() {
+        let a = Authorities::new("mac-no-approval");
+        let start = vector("START");
+        let mut pre = RemoteCeremony::initiator(
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            &start,
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap();
+        assert_eq!(pre.emit_bootstrap_mac(), Err(CeremonyError::NoLiveSas));
+        pre.start().unwrap();
+        assert_eq!(pre.emit_bootstrap_mac(), Err(CeremonyError::NoLiveSas));
+        drop(pre);
+
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let ops = crypto::mac_operations();
+        for run in [&mut pair.i, &mut pair.r] {
+            let seen = run.seen.len();
+            assert_eq!(
+                run.emit_bootstrap_mac(),
+                Err(CeremonyError::NotLocallyApproved)
+            );
+            assert!(run.is_awaiting_approval() && run.presentation().is_some());
+            assert!(!run.is_own_mac_emitted() && run.seen.len() == seen);
+        }
+        assert_eq!(crypto::mac_operations(), ops);
+        pair.i.cancel_sas(&id).unwrap();
+        assert_eq!(pair.i.emit_bootstrap_mac(), Err(CeremonyError::NoLiveSas));
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+        drop(pair);
+        a.release();
+    }
+
+    /// Delivers `mutate(valid R MAC)` to an approved I, then proves I1/I2: terminal, SAS and
+    /// session dropped, guard released with the opportunity kept, and nothing revives it.
+    fn assert_bad_peer_mac_is_terminal(
+        scope: &str,
+        mutate: impl Fn(&[u8]) -> Vec<u8>,
+        expected: CeremonyError,
+    ) {
+        let a = Authorities::new(scope);
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let r_mac = approve_and_emit(&mut pair.r, &id);
+        assert_eq!(pair.i.approve_sas(&id), Ok(SasApproval::Recorded));
+        let bad = mutate(&r_mac);
+        assert_ne!(bad, r_mac);
+        assert_eq!(pair.i.receive_bootstrap_mac(&bad), Err(expected));
+        assert_stale(&mut pair.i, &id);
+        assert!(pair.i.admission.terminal);
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        // A later valid MAC, a local approval, or an emission cannot revive the ceremony.
+        assert!(pair.i.receive_bootstrap_mac(&r_mac).is_err());
+        assert_eq!(pair.i.approve_sas(&id), Err(CeremonyError::NoLiveSas));
+        assert_eq!(pair.i.emit_bootstrap_mac(), Err(CeremonyError::NoLiveSas));
+        assert!(!pair.i.is_ready_for_completion() && !pair.i.is_peer_approval_authenticated());
+        assert_stale(&mut pair.i, &id);
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn wrong_role_request_id_tag_or_frame_is_terminal() {
+        // I's own role on an otherwise valid-looking frame.
+        assert_bad_peer_mac_is_terminal(
+            "mac-own-role",
+            |valid| {
+                let (request_id, _, mac) = mac_fields(valid);
+                mac_frame(request_id, protocol::Role::Initiator, mac)
+            },
+            CeremonyError::UnexpectedSenderRole,
+        );
+        assert_bad_peer_mac_is_terminal(
+            "mac-request-id",
+            |valid| {
+                let (mut request_id, sender, mac) = mac_fields(valid);
+                request_id[0] ^= 1;
+                mac_frame(request_id, sender, mac)
+            },
+            CeremonyError::RequestIdMismatch,
+        );
+        assert_bad_peer_mac_is_terminal(
+            "mac-bit-flip",
+            |valid| {
+                let (request_id, sender, mut mac) = mac_fields(valid);
+                mac[31] ^= 0x01;
+                mac_frame(request_id, sender, mac)
+            },
+            CeremonyError::Crypto(crypto::Error::MacMismatch),
+        );
+        assert_bad_peer_mac_is_terminal(
+            "mac-short-tag",
+            |valid| {
+                // Declare and carry a 31-byte tag: rejected by the codec before any MAC work.
+                let mut short = valid[..valid.len() - 1].to_vec();
+                let at = short.len() - 35;
+                short[at..at + 4].copy_from_slice(&31u32.to_be_bytes());
+                short
+            },
+            CeremonyError::Codec(protocol::CodecError::InvalidField("fixed_32")),
+        );
+        assert_bad_peer_mac_is_terminal(
+            "mac-other-type",
+            |_| vector("RESPONDER_KEY"),
+            CeremonyError::InvalidState,
+        );
+    }
+
+    #[test]
+    fn bootstrap_mac_from_another_ceremony_with_same_request_id_fails() {
+        let (first, second) = (
+            Authorities::new("mac-cross-a"),
+            Authorities::new("mac-cross-b"),
+        );
+        let mut a = establish(&first);
+        let mut b = establish(&second);
+        let (id_a, id_b) = (a.identity(), b.identity());
+        assert_ne!(id_a, id_b);
+        let foreign = approve_and_emit(&mut a.r, &id_a);
+        let own = approve_and_emit(&mut b.r, &id_b);
+        let (request_a, sender_a, _) = mac_fields(&foreign);
+        let (request_b, sender_b, _) = mac_fields(&own);
+        assert_eq!((request_a, sender_a), (request_b, sender_b));
+        assert_eq!(
+            b.i.receive_bootstrap_mac(&foreign),
+            Err(CeremonyError::Crypto(crypto::Error::MacMismatch))
+        );
+        assert_stale(&mut b.i, &id_b);
+        assert!(b.i.receive_bootstrap_mac(&own).is_err());
+        assert_eq!(second.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        // The foreign ceremony is unaffected and still authenticates its own peer MAC.
+        assert_eq!(
+            a.i.receive_bootstrap_mac(&foreign),
+            Ok(PeerApproval::Authenticated)
+        );
+        drop(a);
+        drop(b);
+        first.release();
+        second.release();
+    }
+
+    /// Verifies a received tag with the live session against caller-altered reconstruction.
+    fn verify_reconstructed(
+        run: &RemoteCeremony,
+        frame: Vec<u8>,
+        context: Vec<u8>,
+        tag: &[u8; 32],
+    ) -> Result<(), crypto::Error> {
+        let (input, info) = crypto::approval_mac_strings(&frame, &context).unwrap();
+        run.session()
+            .unwrap()
+            .established
+            .verify_mac(&input, &info, tag)
+    }
+
+    #[test]
+    fn peer_mac_binds_identity_sas_sender_bootstrap_roles_and_purpose() {
+        use protocol::Role::{Initiator as I, Responder as R};
+        const PURPOSE: &[u8] = b"match-approve-bootstrap";
+        let a = Authorities::new("mac-binding");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let frame = |role, id: &[u8; 32], sas: &[u8; 6], boot: &Bootstrap| {
+            crypto::approval_frame(role, id, sas, boot).unwrap()
+        };
+        let context = |purpose: &[u8], s, r, id: &[u8; 32]| {
+            crypto::approval_context(purpose, s, r, id).unwrap()
+        };
+        for (sender, receiver) in [(R, I), (I, R)] {
+            let (sender_run, receiver_run) = match sender {
+                R => (&mut pair.r, &pair.i),
+                I => (&mut pair.i, &pair.r),
+            };
+            let tag = mac_fields(&approve_and_emit(sender_run, &id)).2;
+            let session = receiver_run.session().unwrap();
+            let (sas, peer, local) = (
+                session.sas_bytes,
+                session.peer_bootstrap.clone(),
+                session.local_bootstrap.clone(),
+            );
+            assert_eq!(
+                verify_reconstructed(
+                    receiver_run,
+                    frame(sender, &id, &sas, &peer),
+                    context(PURPOSE, sender, receiver, &id),
+                    &tag
+                ),
+                Ok(())
+            );
+            let mut other_id = id;
+            other_id[0] ^= 1;
+            let mut other_sas = sas;
+            other_sas[5] ^= 1;
+            let good_frame = frame(sender, &id, &sas, &peer);
+            let good_context = context(PURPOSE, sender, receiver, &id);
+            for (frame, context) in [
+                // ceremony_identity in the approval frame and in the context.
+                (frame(sender, &other_id, &sas, &peer), good_context.clone()),
+                (
+                    good_frame.clone(),
+                    context(PURPOSE, sender, receiver, &other_id),
+                ),
+                // Six raw SAS bytes.
+                (frame(sender, &id, &other_sas, &peer), good_context.clone()),
+                // Sender bootstrap: the receiver's own bootstrap is the wrong statement.
+                (frame(sender, &id, &sas, &local), good_context.clone()),
+                // Sender role in the frame; sender and receiver roles in the context.
+                (frame(receiver, &id, &sas, &peer), good_context.clone()),
+                (
+                    good_frame.clone(),
+                    context(PURPOSE, receiver, receiver, &id),
+                ),
+                (good_frame.clone(), context(PURPOSE, sender, sender, &id)),
+                // Opposite direction and a different purpose.
+                (good_frame.clone(), context(PURPOSE, receiver, sender, &id)),
+                (
+                    good_frame.clone(),
+                    context(b"initiator-finish", sender, receiver, &id),
+                ),
+            ] {
+                assert_eq!(
+                    verify_reconstructed(receiver_run, frame, context, &tag),
+                    Err(crypto::Error::MacMismatch)
+                );
+            }
+        }
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn exact_duplicate_is_idempotent_and_changed_duplicate_is_terminal() {
+        let a = Authorities::new("mac-duplicates");
+        // Peer MAC accepted before local approval: duplicates keep the SAS displayed.
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let r_mac = approve_and_emit(&mut pair.r, &id);
+        pair.i.receive_bootstrap_mac(&r_mac).unwrap();
+        let (seen, ops, shown) = (
+            pair.i.seen.len(),
+            crypto::mac_operations(),
+            pair.i.presentation(),
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                pair.i.receive_bootstrap_mac(&r_mac),
+                Ok(PeerApproval::AlreadyAuthenticated)
+            );
+        }
+        assert_eq!(
+            (pair.i.seen.len(), crypto::mac_operations()),
+            (seen, ops),
+            "no retained copy and no repeated MAC verification"
+        );
+        assert_eq!(pair.i.presentation(), shown);
+        assert!(pair.i.is_awaiting_approval() && pair.i.is_peer_approval_authenticated());
+        let (request_id, sender, mut mac) = mac_fields(&r_mac);
+        mac[0] ^= 0x80;
+        assert_eq!(
+            pair.i
+                .receive_bootstrap_mac(&mac_frame(request_id, sender, mac)),
+            Err(CeremonyError::InvalidState)
+        );
+        assert_stale(&mut pair.i, &id);
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        drop(pair);
+
+        a.release();
+
+        // In the completion-ready state, an exact duplicate changes nothing; a changed one fails.
+        let a = Authorities::new("mac-duplicates-ready");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let r_mac = approve_and_emit(&mut pair.r, &id);
+        let i_mac = approve_and_emit(&mut pair.i, &id);
+        pair.i.receive_bootstrap_mac(&r_mac).unwrap();
+        pair.r.receive_bootstrap_mac(&i_mac).unwrap();
+        let ops = crypto::mac_operations();
+        assert_eq!(
+            pair.i.receive_bootstrap_mac(&r_mac),
+            Ok(PeerApproval::AlreadyAuthenticated)
+        );
+        assert_eq!(
+            pair.i.emit_bootstrap_mac(),
+            Ok(BootstrapMacEmission::AlreadyEmitted)
+        );
+        assert_eq!(pair.i.approve_sas(&id), Ok(SasApproval::AlreadyRecorded));
+        assert_eq!(crypto::mac_operations(), ops);
+        assert_ready_not_success(&pair.i, &a.ei);
+        let (request_id, sender, mut mac) = mac_fields(&r_mac);
+        mac[16] ^= 0x04;
+        assert_eq!(
+            pair.i
+                .receive_bootstrap_mac(&mac_frame(request_id, sender, mac)),
+            Err(CeremonyError::InvalidState)
+        );
+        assert_stale(&mut pair.i, &id);
+        assert!(!pair.i.is_ready_for_completion());
+        assert!(pair.i.receive_bootstrap_mac(&r_mac).is_err());
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        // The peer endpoint is independent and remains ready; nothing is sent to it.
+        assert!(pair.r.is_ready_for_completion());
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn local_reject_or_cancel_during_mac_stage_is_terminal() {
+        let a = Authorities::new("mac-cancel");
+        let mut expected = 10;
+        let stages: [fn(&mut Pair, &[u8; 32]); 4] = [
+            // Peer MAC verified, no local decision yet.
+            |p, id| {
+                let m = approve_and_emit(&mut p.r, id);
+                p.i.receive_bootstrap_mac(&m).unwrap();
+            },
+            // Locally approved, own MAC not emitted.
+            |p, id| {
+                p.i.approve_sas(id).unwrap();
+            },
+            // Own MAC emitted, awaiting the peer's.
+            |p, id| {
+                approve_and_emit(&mut p.i, id);
+            },
+            // Both approval conditions satisfied.
+            |p, id| {
+                let m = approve_and_emit(&mut p.r, id);
+                approve_and_emit(&mut p.i, id);
+                p.i.receive_bootstrap_mac(&m).unwrap();
+            },
+        ];
+        for (index, stage) in stages.iter().enumerate() {
+            for reject in [false, true] {
+                let mut pair = establish(&a);
+                expected -= 1;
+                let id = pair.identity();
+                stage(&mut pair, &id);
+                let seen = pair.i.seen.len();
+                let result = if reject {
+                    pair.i.reject_sas(&id)
+                } else {
+                    pair.i.cancel_sas(&id)
+                };
+                assert_eq!(result, Ok(()), "stage {index}");
+                assert_eq!(pair.i.seen.len(), seen);
+                assert_stale(&mut pair.i, &id);
+                assert!(!pair.i.is_ready_for_completion());
+                assert_eq!(pair.i.emit_bootstrap_mac(), Err(CeremonyError::NoLiveSas));
+                assert_eq!(
+                    a.ei.status().unwrap(),
+                    Status::Ready {
+                        remaining: expected
+                    }
+                );
+                drop(pair);
+            }
+        }
+        a.release();
+    }
+
+    #[test]
+    fn bootstrap_mac_before_sas_establishment_is_terminal_and_spends_nothing() {
+        let a = Authorities::new("mac-early");
+        let (mut r, _) = RemoteCeremony::responder(
+            a.er.clone(),
+            a.er.begin(Role::Responder).unwrap(),
+            &vector("START"),
+            bootstrap(&decoded("ACCEPT"), false),
+            None,
+        )
+        .unwrap();
+        let early = mac_frame(vector_request_id(), protocol::Role::Initiator, [7; 32]);
+        assert_eq!(
+            r.receive_bootstrap_mac(&early),
+            Err(CeremonyError::InvalidState)
+        );
+        assert!(r.admission.terminal);
+        assert!(r.expose_key().is_err());
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        drop(r);
+        a.release();
+    }
+
+    #[test]
+    fn bad_peer_mac_invalidates_sas_even_when_guard_release_is_uncertain() {
+        let a = Authorities::new("mac-uncertain-release");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let (request_id, sender, mut mac) = mac_fields(&approve_and_emit(&mut pair.r, &id));
+        mac[3] ^= 0x20;
+        let poisoned = a.ei.clone();
+        let _ = std::thread::spawn(move || {
+            let _shared = poisoned.0.shared.lock().unwrap();
+            panic!("simulate uncertain guard state");
+        })
+        .join();
+        assert_eq!(
+            pair.i
+                .receive_bootstrap_mac(&mac_frame(request_id, sender, mac)),
+            Err(CeremonyError::Crypto(crypto::Error::MacMismatch))
         );
         assert_stale(&mut pair.i, &id);
         // Fail closed: invalidation is complete, but the guard is never released uncertainly.

@@ -6,14 +6,17 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 use vodozemac::{
     Curve25519PublicKey,
-    sas::{EstablishedSas, Sas, SasBytes},
+    sas::{EstablishedSas, Mac, Sas, SasBytes},
 };
 
-use crate::protocol::{DecodedMessage, MAX_FRAME, Message, PROFILE_ID};
+use crate::protocol::{Bootstrap, DecodedMessage, MAX_FRAME, Message, PROFILE_ID, Role};
 
+const DOMAIN: &[u8] = b"org.sas-pairing";
 const COMMIT_DOMAIN: &[u8] = b"sas-pairing-vodozemac-profile-draft-01/commit/v1";
 const TRANSCRIPT_DOMAIN: &[u8] = b"sas-pairing-vodozemac-profile-draft-01/transcript/v1";
 const SAS_PREFIX: &[u8] = b"sas-pairing-vodozemac-profile-draft-01/sas/";
+const MAC_PREFIX: &[u8] = b"sas-pairing-vodozemac-profile-draft-01/mac/";
+const APPROVAL_PURPOSE: &[u8] = b"match-approve-bootstrap";
 const CRYPTO_INPUT_LIMIT: usize = 65_536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +28,18 @@ pub(super) enum Error {
     Oversized,
     LengthOverflow,
     CommitmentMismatch,
+    MacMismatch,
+}
+
+#[cfg(test)]
+thread_local! {
+    static MAC_OPERATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Test-only count of vodozemac MAC calculations and verifications on this thread.
+#[cfg(test)]
+pub(super) fn mac_operations() -> usize {
+    MAC_OPERATIONS.with(std::cell::Cell::get)
 }
 
 pub(super) struct EphemeralSas(Sas);
@@ -55,6 +70,26 @@ impl Established {
         let bytes = self.0.bytes(info);
         let (first, second, third) = bytes.decimals();
         (bytes, format!("{first:04} {second:04} {third:04}"))
+    }
+
+    /// vodozemac HKDF/HMAC-SHA-256 over the exact Base64url `input` under `info`.
+    pub(super) fn calculate_mac(&self, input: &str, info: &str) -> Result<[u8; 32], Error> {
+        #[cfg(test)]
+        MAC_OPERATIONS.with(|count| count.set(count.get() + 1));
+        self.0
+            .calculate_mac(input, info)
+            .as_bytes()
+            .try_into()
+            .map_err(|_| Error::MacMismatch)
+    }
+
+    /// vodozemac's own tag comparison; no project-owned MAC or comparison code.
+    pub(super) fn verify_mac(&self, input: &str, info: &str, tag: &[u8; 32]) -> Result<(), Error> {
+        #[cfg(test)]
+        MAC_OPERATIONS.with(|count| count.set(count.get() + 1));
+        self.0
+            .verify_mac(input, info, &Mac::from_slice(tag))
+            .map_err(|_| Error::MacMismatch)
     }
 }
 
@@ -211,30 +246,36 @@ pub(super) fn transcript_identity(
     Ok((Sha256::digest(&bytes).into(), bytes))
 }
 
-fn sas_info_from_context(context: &[u8]) -> Result<String, Error> {
-    let encoded_len = context
+/// `prefix || unpadded_Base64url(bytes)`, sized with checked arithmetic and capped as a
+/// whole at the P3 3.1 65,536-byte generated cryptographic-input maximum.
+fn capped_base64url(prefix: &[u8], bytes: &[u8]) -> Result<String, Error> {
+    let encoded_len = bytes
         .len()
         .checked_div(3)
         .and_then(|len| len.checked_mul(4))
         .and_then(|len| {
-            len.checked_add(match context.len() % 3 {
+            len.checked_add(match bytes.len() % 3 {
                 0 => 0,
                 1 => 2,
                 _ => 3,
             })
         })
         .ok_or(Error::LengthOverflow)?;
-    let total_len = SAS_PREFIX
+    let total_len = prefix
         .len()
         .checked_add(encoded_len)
         .ok_or(Error::LengthOverflow)?;
     if total_len > CRYPTO_INPUT_LIMIT {
         return Err(Error::Oversized);
     }
-    let mut info = Vec::with_capacity(total_len);
-    info.extend_from_slice(SAS_PREFIX);
-    info.extend_from_slice(URL_SAFE_NO_PAD.encode(context).as_bytes());
-    Ok(String::from_utf8(info).expect("ASCII context"))
+    let mut out = Vec::with_capacity(total_len);
+    out.extend_from_slice(prefix);
+    out.extend_from_slice(URL_SAFE_NO_PAD.encode(bytes).as_bytes());
+    Ok(String::from_utf8(out).expect("ASCII prefix and Base64url"))
+}
+
+fn sas_info_from_context(context: &[u8]) -> Result<String, Error> {
+    capped_base64url(SAS_PREFIX, context)
 }
 
 pub(super) fn sas_info(
@@ -276,7 +317,7 @@ pub(super) fn sas_info(
     let context = frame(
         0x30,
         &[
-            b"org.sas-pairing",
+            DOMAIN,
             PROFILE_ID,
             &version,
             request_id,
@@ -288,6 +329,84 @@ pub(super) fn sas_info(
     )?;
     let info = sas_info_from_context(&context)?;
     Ok((context, info))
+}
+
+fn peer_of(role: Role) -> Role {
+    match role {
+        Role::Initiator => Role::Responder,
+        Role::Responder => Role::Initiator,
+    }
+}
+
+/// Non-wire P3 8 approval frame `0x33`: the sender approves this full SAS for this exact
+/// established transcript and authenticates the sender's own complete canonical bootstrap.
+pub(super) fn approval_frame(
+    sender: Role,
+    ceremony_identity: &[u8; 32],
+    sas_bytes: &[u8; 6],
+    sender_bootstrap: &Bootstrap,
+) -> Result<Vec<u8>, Error> {
+    let version = 1u16.to_be_bytes();
+    frame(
+        0x33,
+        &[
+            DOMAIN,
+            PROFILE_ID,
+            &version,
+            &[sender as u8],
+            ceremony_identity,
+            sas_bytes,
+            sender_bootstrap.canonical_bytes(),
+        ],
+    )
+}
+
+/// P3 8 MAC context frame `0x31`; `purpose` is a parameter only so tests can prove its binding.
+pub(super) fn approval_context(
+    purpose: &[u8],
+    sender: Role,
+    receiver: Role,
+    ceremony_identity: &[u8; 32],
+) -> Result<Vec<u8>, Error> {
+    let version = 1u16.to_be_bytes();
+    frame(
+        0x31,
+        &[
+            DOMAIN,
+            PROFILE_ID,
+            &version,
+            purpose,
+            &[sender as u8],
+            &[receiver as u8],
+            ceremony_identity,
+        ],
+    )
+}
+
+/// Exact vodozemac `(input, info)` strings for one direction's BOOTSTRAP_MAC: input is
+/// unpadded Base64url of the complete approval frame; info is the P3 3.2 `mac` context string.
+pub(super) fn approval_mac_strings(
+    approval_frame: &[u8],
+    context: &[u8],
+) -> Result<(String, String), Error> {
+    Ok((
+        capped_base64url(b"", approval_frame)?,
+        capped_base64url(MAC_PREFIX, context)?,
+    ))
+}
+
+/// The BOOTSTRAP_MAC inputs for `sender` -> its peer. Senders pass their own bootstrap;
+/// receivers pass the retained peer bootstrap and the peer's role.
+pub(super) fn bootstrap_mac_strings(
+    sender: Role,
+    ceremony_identity: &[u8; 32],
+    sas_bytes: &[u8; 6],
+    sender_bootstrap: &Bootstrap,
+) -> Result<(String, String), Error> {
+    approval_mac_strings(
+        &approval_frame(sender, ceremony_identity, sas_bytes, sender_bootstrap)?,
+        &approval_context(APPROVAL_PURPOSE, sender, peer_of(sender), ceremony_identity)?,
+    )
 }
 
 #[cfg(test)]
@@ -484,6 +603,298 @@ mod tests {
         );
         let sas = EphemeralSas::new();
         assert_eq!(sas.establish(&[0; 32]).unwrap_err(), Error::NonContributory);
+    }
+
+    fn vector_bootstraps() -> (Bootstrap, Bootstrap) {
+        let initiator = match vector_frame("START").message {
+            Message::Start { bootstrap, .. } => bootstrap,
+            _ => unreachable!(),
+        };
+        let responder = match vector_frame("ACCEPT").message {
+            Message::Accept { bootstrap, .. } => bootstrap,
+            _ => unreachable!(),
+        };
+        (initiator, responder)
+    }
+
+    #[test]
+    fn bootstrap_mac_encodings_match_authoritative_vector_in_both_directions() {
+        let json = fixture();
+        let identity: [u8; 32] = hex(string(&json, &["ceremony_identity", "hex"]))
+            .try_into()
+            .unwrap();
+        let sas: [u8; 6] = hex(string(&json, &["sas", "raw_bytes", "hex"]))
+            .try_into()
+            .unwrap();
+        let (initiator, responder) = vector_bootstraps();
+        assert_eq!(
+            initiator.canonical_bytes(),
+            hex(string(&json, &["bootstraps", "initiator", "hex"]))
+        );
+        assert_eq!(
+            responder.canonical_bytes(),
+            hex(string(&json, &["bootstraps", "responder", "hex"]))
+        );
+        let request_id = hex(string(&json, &["inputs", "request_id", "hex"]));
+        for (name, sender, receiver, own, other) in [
+            (
+                "initiator",
+                Role::Initiator,
+                Role::Responder,
+                &initiator,
+                &responder,
+            ),
+            (
+                "responder",
+                Role::Responder,
+                Role::Initiator,
+                &responder,
+                &initiator,
+            ),
+        ] {
+            let d = |path: &[&str]| {
+                let mut full = vec!["bootstrap_macs", "directions", name];
+                full.extend_from_slice(path);
+                string(&json, &full).to_owned()
+            };
+            assert_eq!(hex(&d(&["sender_role_code"])), [sender as u8]);
+            assert_eq!(hex(&d(&["receiver_role_code"])), [receiver as u8]);
+
+            let approval = approval_frame(sender, &identity, &sas, own).unwrap();
+            assert_eq!(approval, hex(&d(&["approval_frame", "hex"])));
+            assert_eq!(
+                approval,
+                hex(string(
+                    &json,
+                    &["bootstrap_approval", "directions", name, "hex"]
+                ))
+            );
+            // Directionality: the statement binds the sender's own bootstrap, never the peer's.
+            assert!(approval.ends_with(own.canonical_bytes()));
+            assert!(!approval.ends_with(other.canonical_bytes()));
+            assert_ne!(
+                approval,
+                approval_frame(sender, &identity, &sas, other).unwrap()
+            );
+
+            let context = approval_context(APPROVAL_PURPOSE, sender, receiver, &identity).unwrap();
+            assert_eq!(context, hex(&d(&["context_frame", "hex"])));
+            assert_eq!(context, hex(&d(&["mac_context", "canonical_binary_hex"])));
+
+            let (input, info) = bootstrap_mac_strings(sender, &identity, &sas, own).unwrap();
+            assert_eq!(input, d(&["approval_input_base64url_unpadded"]));
+            assert_eq!(input, d(&["mac_input", "base64url_unpadded"]));
+            assert_eq!(input.as_bytes(), hex(&d(&["approval_input_hex"])));
+            assert_eq!(input.as_bytes(), hex(&d(&["mac", "input_hex"])));
+            assert_eq!(URL_SAFE_NO_PAD.decode(&input).unwrap(), approval);
+            assert_eq!(info, d(&["info_string"]));
+            assert_eq!(info, d(&["mac_context", "info_string"]));
+            assert_eq!(
+                info.strip_prefix("sas-pairing-vodozemac-profile-draft-01/mac/")
+                    .unwrap(),
+                d(&["mac_context", "base64url_unpadded"])
+            );
+            assert!(!input.contains('=') && !info.contains('='));
+
+            // Wire framing of the fixture's fixed-secret tag; the tag itself is not recomputed.
+            let tag: [u8; 32] = hex(&d(&["raw_mac", "hex"])).try_into().unwrap();
+            assert_eq!(tag.as_slice(), hex(&d(&["mac", "output_hex"])));
+            let wire = Message::BootstrapMac {
+                request_id: request_id.clone(),
+                sender,
+                mac: tag,
+            }
+            .encode()
+            .unwrap();
+            assert_eq!(
+                wire,
+                hex(string(
+                    &json,
+                    &["wire_messages", "BOOTSTRAP_MAC", name, "hex"]
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn live_bootstrap_mac_verifies_only_the_exact_bound_statement() {
+        let (initiator_state, responder_state) = (EphemeralSas::new(), EphemeralSas::new());
+        let (initiator_public, responder_public) =
+            (initiator_state.public_key(), responder_state.public_key());
+        let i = initiator_state.establish(&responder_public).unwrap();
+        let r = responder_state.establish(&initiator_public).unwrap();
+        let identity = [0x3c; 32];
+        let sas = [1, 2, 3, 4, 5, 6];
+        let (own, other) = vector_bootstraps();
+        let (input, info) = bootstrap_mac_strings(Role::Initiator, &identity, &sas, &own).unwrap();
+        let tag = i.calculate_mac(&input, &info).unwrap();
+        assert_eq!(r.verify_mac(&input, &info, &tag), Ok(()));
+
+        let reject = |frame: Vec<u8>, context: Vec<u8>| {
+            let (input, info) = approval_mac_strings(&frame, &context).unwrap();
+            assert_eq!(r.verify_mac(&input, &info, &tag), Err(Error::MacMismatch));
+        };
+        let context = |purpose: &[u8], sender, receiver, id: &[u8; 32]| {
+            approval_context(purpose, sender, receiver, id).unwrap()
+        };
+        let good_context = context(
+            APPROVAL_PURPOSE,
+            Role::Initiator,
+            Role::Responder,
+            &identity,
+        );
+        let mut other_identity = identity;
+        other_identity[31] ^= 1;
+        let mut other_sas = sas;
+        other_sas[0] ^= 0x80;
+        // ceremony_identity in the approval frame, in the context, and in both.
+        reject(
+            approval_frame(Role::Initiator, &other_identity, &sas, &own).unwrap(),
+            good_context.clone(),
+        );
+        reject(
+            approval_frame(Role::Initiator, &identity, &sas, &own).unwrap(),
+            context(
+                APPROVAL_PURPOSE,
+                Role::Initiator,
+                Role::Responder,
+                &other_identity,
+            ),
+        );
+        let (moved_input, moved_info) =
+            bootstrap_mac_strings(Role::Initiator, &other_identity, &sas, &own).unwrap();
+        assert_eq!(
+            r.verify_mac(&moved_input, &moved_info, &tag),
+            Err(Error::MacMismatch)
+        );
+        // Six raw SAS bytes.
+        reject(
+            approval_frame(Role::Initiator, &identity, &other_sas, &own).unwrap(),
+            good_context.clone(),
+        );
+        // Sender bootstrap: the peer's bootstrap, or a one-byte change to the sender's.
+        reject(
+            approval_frame(Role::Initiator, &identity, &sas, &other).unwrap(),
+            good_context.clone(),
+        );
+        let altered = Bootstrap::new(
+            own.application_identity().to_vec(),
+            own.key_algorithm().to_vec(),
+            own.public_key().to_vec(),
+            [own.shared_context(), b"!"].concat(),
+        )
+        .unwrap();
+        reject(
+            approval_frame(Role::Initiator, &identity, &sas, &altered).unwrap(),
+            good_context.clone(),
+        );
+        // Sender role in the approval frame; sender and receiver roles in the context.
+        reject(
+            approval_frame(Role::Responder, &identity, &sas, &own).unwrap(),
+            good_context.clone(),
+        );
+        let frame = approval_frame(Role::Initiator, &identity, &sas, &own).unwrap();
+        reject(
+            frame.clone(),
+            context(
+                APPROVAL_PURPOSE,
+                Role::Responder,
+                Role::Responder,
+                &identity,
+            ),
+        );
+        reject(
+            frame.clone(),
+            context(
+                APPROVAL_PURPOSE,
+                Role::Initiator,
+                Role::Initiator,
+                &identity,
+            ),
+        );
+        // Opposite direction (swapped sender/receiver) and a different purpose.
+        reject(
+            frame.clone(),
+            context(
+                APPROVAL_PURPOSE,
+                Role::Responder,
+                Role::Initiator,
+                &identity,
+            ),
+        );
+        reject(
+            frame.clone(),
+            context(
+                b"initiator-finish",
+                Role::Initiator,
+                Role::Responder,
+                &identity,
+            ),
+        );
+        // The MAC input is Base64url of the frame, not its hex or a lossy text rendering.
+        let (_, info) = approval_mac_strings(&frame, &good_context).unwrap();
+        let hex_input: String = frame.iter().map(|b| format!("{b:02x}")).collect();
+        let lossy_input = String::from_utf8_lossy(&frame).into_owned();
+        for wrong in [hex_input, lossy_input] {
+            assert_eq!(r.verify_mac(&wrong, &info, &tag), Err(Error::MacMismatch));
+        }
+        // One flipped tag bit.
+        let mut flipped = tag;
+        flipped[7] ^= 0x10;
+        assert_eq!(
+            r.verify_mac(&input, &info, &flipped),
+            Err(Error::MacMismatch)
+        );
+        // Another live session cannot verify this session's tag.
+        let (x, y) = (EphemeralSas::new(), EphemeralSas::new());
+        let unrelated = x.establish(&y.public_key()).unwrap();
+        assert_eq!(
+            unrelated.verify_mac(&input, &info, &tag),
+            Err(Error::MacMismatch)
+        );
+    }
+
+    #[test]
+    fn generated_mac_strings_are_capped_including_prefix() {
+        let encoded = |n: usize| n / 3 * 4 + [0, 2, 3][n % 3];
+        for prefix in [&b""[..], MAC_PREFIX] {
+            let (mut accepted, mut rejected) = (false, false);
+            for n in 49_100..49_160 {
+                let fits = prefix.len() + encoded(n) <= CRYPTO_INPUT_LIMIT;
+                match capped_base64url(prefix, &vec![0; n]) {
+                    Ok(value) => {
+                        assert!(fits);
+                        assert_eq!(value.len(), prefix.len() + encoded(n));
+                        accepted = true;
+                    }
+                    Err(error) => {
+                        assert!(!fits);
+                        assert_eq!(error, Error::Oversized);
+                        rejected = true;
+                    }
+                }
+            }
+            assert!(accepted && rejected);
+        }
+        assert_eq!(
+            capped_base64url(b"", &vec![0; 49_152]).unwrap().len(),
+            CRYPTO_INPUT_LIMIT
+        );
+        assert_eq!(
+            capped_base64url(b"", &vec![0; 49_153]),
+            Err(Error::Oversized)
+        );
+        // The largest valid bootstrap still yields approval inputs well within the cap.
+        let largest = Bootstrap::new(
+            vec![b'a'; 1024],
+            vec![b'a'; 64],
+            vec![0; 4096],
+            vec![0; 8192],
+        )
+        .unwrap();
+        let (input, info) =
+            bootstrap_mac_strings(Role::Responder, &[0; 32], &[0; 6], &largest).unwrap();
+        assert!(input.len() <= CRYPTO_INPUT_LIMIT && info.len() <= CRYPTO_INPUT_LIMIT);
     }
 
     #[test]
