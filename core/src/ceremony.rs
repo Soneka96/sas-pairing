@@ -1,12 +1,13 @@
-//! Crate-private remote ceremony through SAS establishment, local human comparison, and the
-//! authenticated BOOTSTRAP_MAC approval exchange only.
+//! Crate-private remote ceremony through SAS establishment, local human comparison, the
+//! authenticated BOOTSTRAP_MAC approval exchange, and the three-message authenticated finish
+//! handshake that yields a local, ceremony-scoped `PairingResult`.
 //! Fixed request IDs are accepted only by this internal/test-scoped constructor;
 //! production request-ID generation and active routing reservation remain pending.
-//! Finish/completion messages, authenticated CANCEL, and PairingResult are not implemented.
+//! Authenticated CANCEL, deadlines, and transport/resource admission are not implemented.
 #![allow(dead_code)] // The protocol remains internal until later P4 work defines its complete API.
 use crate::{
     Authorization, Ceremony, CeremonyExecutor, Error as OwnerError, Role, TrustedAuthority,
-    crypto::{self, EphemeralSas, Established},
+    crypto::{self, Completion, EphemeralSas, Established},
     protocol::{self, Bootstrap, DecodedMessage, Message},
 };
 
@@ -28,6 +29,14 @@ pub(crate) enum CeremonyError {
     RequestIdMismatch,
     SharedContextMismatch,
     ExpectedPeerMismatch,
+    /// INITIATOR_FINISH requested before both approvals were authenticated.
+    ApprovalsNotAuthenticated,
+    /// Only the Initiator may start the completion handshake.
+    NotInitiator,
+    /// A completion message carried a transcript digest other than our `ceremony_identity`.
+    TranscriptMismatch,
+    /// The run already reached local success; later input is rejected without any effect.
+    Completed,
 }
 impl From<OwnerError> for CeremonyError {
     fn from(e: OwnerError) -> Self {
@@ -83,25 +92,23 @@ enum State {
     },
     /// The transcript and `ceremony_identity` are fixed; the complete SAS awaits a local decision.
     /// A verified peer BOOTSTRAP_MAC authenticates only the peer's approval, never ours.
-    AwaitLocalApproval {
-        session: SasSession,
-        peer: PeerMac,
-    },
+    AwaitLocalApproval { session: SasSession, peer: PeerMac },
     /// Local human MATCH recorded for exactly this identity; own BOOTSTRAP_MAC not yet emitted.
-    LocallyApprovedAwaitingAuthentication {
-        session: SasSession,
-        peer: PeerMac,
-    },
+    LocallyApprovedAwaitingAuthentication { session: SasSession, peer: PeerMac },
     /// Own BOOTSTRAP_MAC emitted once; the peer's approval MAC has not yet been verified.
-    LocalMacSentAwaitingPeerMac {
-        session: SasSession,
-    },
+    LocalMacSentAwaitingPeerMac { session: SasSession },
     /// Local approval recorded, own BOOTSTRAP_MAC emitted, and peer BOOTSTRAP_MAC verified.
-    /// Not protocol success: the finish handshake and any result remain unimplemented, so the
-    /// session is retained for completion authentication and the guard stays held.
-    ApprovalsAuthenticatedAwaitingCompletion {
-        session: SasSession,
-    },
+    /// Not success. I may now emit INITIATOR_FINISH; R emits nothing and awaits it (P3
+    /// `AwaitInitiatorFinish`). The session is retained and the guard stays held.
+    ApprovalsAuthenticatedAwaitingCompletion { session: SasSession },
+    /// I emitted INITIATOR_FINISH once and awaits RESPONDER_FINISH_ACK.
+    AwaitResponderFinish { session: SasSession },
+    /// R verified INITIATOR_FINISH, emitted RESPONDER_FINISH_ACK once, and awaits the final ACK.
+    AwaitInitiatorFinishAck { session: SasSession },
+    /// Local verified completion. Only the immutable result remains: no SAS, session, approval,
+    /// or guard. Irrevocably terminal; later input cannot alter it.
+    Succeeded(PairingResult),
+    /// Failed, rejected, cancelled, or otherwise terminated without a result.
     Terminal,
 }
 
@@ -207,6 +214,90 @@ pub(crate) enum PeerApproval {
     AlreadyAuthenticated,
 }
 
+/// Own INITIATOR_FINISH output. The frame is produced exactly once; a repeated request is
+/// `AlreadyEmitted` with no bytes, no MAC calculation, and no state or accounting change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FinishEmission {
+    Emitted(Vec<u8>),
+    AlreadyEmitted,
+}
+
+/// Outcome of one verified inbound completion message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CompletionReceipt {
+    /// R verified INITIATOR_FINISH: send this RESPONDER_FINISH_ACK. R has no result yet.
+    SendResponderFinishAck(Vec<u8>),
+    /// I verified RESPONDER_FINISH_ACK and reached LOCAL success: send this final
+    /// INITIATOR_FINISH_ACK. Nothing will ever confirm that R receives it.
+    SendInitiatorFinishAck(Vec<u8>),
+    /// R verified INITIATOR_FINISH_ACK and reached local success. Nothing is sent.
+    Succeeded,
+    /// Exact duplicate of the accepted INITIATOR_FINISH, ignored without MAC work or output.
+    AlreadyAccepted,
+}
+
+/// P3 9 local verified completion for exactly one ceremony. It is NOT bilateral success: it
+/// does not mean the peer received the final message, returned its own result, or durably
+/// stored trust, and no distributed commit or common knowledge exists. The Initiator's final
+/// INITIATOR_FINISH_ACK may be lost after the Initiator holds this result.
+///
+/// It reports the exact bootstrap bytes the peer supplied in this ceremony under the approved
+/// SAS flow. It is not an identity-truth, authorization, trust, or proof-of-possession verdict,
+/// and holds no DH secret, session, ephemeral key, reusable secret, or local authorization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PairingResult {
+    request_id: Vec<u8>,
+    ceremony_identity: [u8; 32],
+    peer_role: Role,
+    authenticated_peer_bootstrap: Vec<u8>,
+    authenticated_shared_context: Vec<u8>,
+    profile_identifier: &'static [u8],
+    profile_version: u16,
+}
+
+impl PairingResult {
+    fn new(
+        role: Role,
+        request_id: &[u8],
+        ceremony_identity: [u8; 32],
+        peer_bootstrap: &Bootstrap,
+    ) -> Self {
+        Self {
+            request_id: request_id.to_vec(),
+            ceremony_identity,
+            peer_role: peer_of(role),
+            // Exact retained canonical frame as received, never re-serialized from fields.
+            authenticated_peer_bootstrap: peer_bootstrap.canonical_bytes().to_vec(),
+            // Byte-equal to our independently supplied context by the pre-exposure check.
+            authenticated_shared_context: peer_bootstrap.shared_context().to_vec(),
+            profile_identifier: protocol::PROFILE_ID,
+            profile_version: protocol::VERSION,
+        }
+    }
+    /// Original routing/diagnostic handle only; never the ceremony identity.
+    pub(crate) fn request_id(&self) -> &[u8] {
+        &self.request_id
+    }
+    pub(crate) fn ceremony_identity(&self) -> &[u8; 32] {
+        &self.ceremony_identity
+    }
+    pub(crate) fn peer_role(&self) -> Role {
+        self.peer_role
+    }
+    pub(crate) fn authenticated_peer_bootstrap(&self) -> &[u8] {
+        &self.authenticated_peer_bootstrap
+    }
+    pub(crate) fn authenticated_shared_context(&self) -> &[u8] {
+        &self.authenticated_shared_context
+    }
+    pub(crate) fn profile_identifier(&self) -> &[u8] {
+        self.profile_identifier
+    }
+    pub(crate) fn profile_version(&self) -> u16 {
+        self.profile_version
+    }
+}
+
 pub(crate) struct RemoteCeremony {
     executor: CeremonyExecutor,
     admission: Ceremony,
@@ -295,6 +386,9 @@ impl RemoteCeremony {
     }
 
     pub(crate) fn start(&mut self) -> Result<Vec<u8>, CeremonyError> {
+        if !matches!(self.state, State::InitiatorCreated { .. }) {
+            return self.reject_order();
+        }
         let State::InitiatorCreated {
             start,
             local,
@@ -332,16 +426,20 @@ impl RemoteCeremony {
         matches!(
             self.state,
             State::LocallyApprovedAwaitingAuthentication { .. }
-                | State::LocalMacSentAwaitingPeerMac { .. }
-                | State::ApprovalsAuthenticatedAwaitingCompletion { .. }
-        )
+        ) || self.is_own_mac_emitted()
     }
 
     pub(crate) fn is_own_mac_emitted(&self) -> bool {
+        matches!(self.state, State::LocalMacSentAwaitingPeerMac { .. }) || self.in_completion()
+    }
+
+    /// Both approvals authenticated and the run is inside the live finish handshake.
+    fn in_completion(&self) -> bool {
         matches!(
             self.state,
-            State::LocalMacSentAwaitingPeerMac { .. }
-                | State::ApprovalsAuthenticatedAwaitingCompletion { .. }
+            State::ApprovalsAuthenticatedAwaitingCompletion { .. }
+                | State::AwaitResponderFinish { .. }
+                | State::AwaitInitiatorFinishAck { .. }
         )
     }
 
@@ -354,16 +452,25 @@ impl RemoteCeremony {
             } | State::LocallyApprovedAwaitingAuthentication {
                 peer: PeerMac::Verified,
                 ..
-            } | State::ApprovalsAuthenticatedAwaitingCompletion { .. }
-        )
+            }
+        ) || self.in_completion()
     }
 
-    /// Both approval conditions hold; the later finish handshake is still required.
+    /// Both approval conditions hold and no finish message has been sent or accepted yet.
     pub(crate) fn is_ready_for_completion(&self) -> bool {
         matches!(
             self.state,
             State::ApprovalsAuthenticatedAwaitingCompletion { .. }
         )
+    }
+
+    /// The immutable local result, only after this role's own success point. Repeated calls
+    /// return the same data and cause no transition.
+    pub(crate) fn result(&self) -> Option<&PairingResult> {
+        match &self.state {
+            State::Succeeded(result) => Some(result),
+            _ => None,
+        }
     }
 
     /// Available only while this exact SAS awaits a local decision (I2), including after a
@@ -403,7 +510,9 @@ impl RemoteCeremony {
         match &self.state {
             State::LocallyApprovedAwaitingAuthentication { .. } => {}
             State::LocalMacSentAwaitingPeerMac { .. }
-            | State::ApprovalsAuthenticatedAwaitingCompletion { .. } => {
+            | State::ApprovalsAuthenticatedAwaitingCompletion { .. }
+            | State::AwaitResponderFinish { .. }
+            | State::AwaitInitiatorFinishAck { .. } => {
                 return Ok(BootstrapMacEmission::AlreadyEmitted);
             }
             State::AwaitLocalApproval { .. } => return Err(CeremonyError::NotLocallyApproved),
@@ -498,6 +607,137 @@ impl RemoteCeremony {
         Ok(PeerApproval::Authenticated)
     }
 
+    /// Initiator-only start of the P3 9 finish handshake, legal only once both approvals are
+    /// authenticated. Produces exactly one INITIATOR_FINISH (`0x06`: exact request ID, our
+    /// `ceremony_identity` as transcript digest, vodozemac tag over the `0x35` auth frame) and
+    /// enters `AwaitResponderFinish`. A repeat is `AlreadyEmitted` without MAC work. Every
+    /// refusal is non-terminal and has no effect. Consumes no opportunity, needs no new
+    /// exposure authorization, and keeps the one guard already held.
+    pub(crate) fn emit_initiator_finish(&mut self) -> Result<FinishEmission, CeremonyError> {
+        if matches!(self.state, State::Succeeded(_)) {
+            return Err(CeremonyError::Completed);
+        }
+        if self.admission.role() != Role::Initiator {
+            return Err(CeremonyError::NotInitiator);
+        }
+        match &self.state {
+            State::ApprovalsAuthenticatedAwaitingCompletion { .. } => {}
+            State::AwaitResponderFinish { .. } => return Ok(FinishEmission::AlreadyEmitted),
+            _ if self.session().is_some() => {
+                return Err(CeremonyError::ApprovalsNotAuthenticated);
+            }
+            _ => return Err(CeremonyError::NoLiveSas),
+        }
+        let State::ApprovalsAuthenticatedAwaitingCompletion { session } =
+            std::mem::replace(&mut self.state, State::Terminal)
+        else {
+            unreachable!()
+        };
+        let bytes = match completion_frame(&session, Completion::InitiatorFinish) {
+            Ok(bytes) => bytes,
+            Err(error) => return self.fail(error),
+        };
+        self.state = State::AwaitResponderFinish { session };
+        Ok(FinishEmission::Emitted(bytes))
+    }
+
+    /// Receives INITIATOR_FINISH (R), RESPONDER_FINISH_ACK (I), or INITIATOR_FINISH_ACK (R).
+    /// Before any transition it applies the exact/changed-duplicate rules and checks that this
+    /// role and state expect exactly this step, the request ID, the transcript digest against
+    /// our `ceremony_identity`, and the vodozemac tag over the auth frame and context
+    /// reconstructed from local state. Anything else is terminal with no result. Messages are
+    /// never queued. After local success every later input is rejected as `Completed`
+    /// without touching the result.
+    pub(crate) fn receive_completion(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<CompletionReceipt, CeremonyError> {
+        if matches!(self.state, State::Succeeded(_)) {
+            return Err(CeremonyError::Completed);
+        }
+        let msg = self.decode(bytes)?;
+        let Some((step, request_id, transcript, mac)) = completion_fields(&msg.message) else {
+            return self.reject_order();
+        };
+        if self.duplicate(completion_wire_type(step), bytes)? {
+            return Ok(CompletionReceipt::AlreadyAccepted);
+        }
+        let session = match (&self.state, step) {
+            (
+                State::ApprovalsAuthenticatedAwaitingCompletion { session },
+                Completion::InitiatorFinish,
+            )
+            | (State::AwaitResponderFinish { session }, Completion::ResponderFinishAck)
+            | (State::AwaitInitiatorFinishAck { session }, Completion::InitiatorFinishAck)
+                if wire_role(session.role) == step.receiver() =>
+            {
+                session
+            }
+            _ => return self.reject_order(),
+        };
+        let verified = if request_id != session.request_id {
+            Err(CeremonyError::RequestIdMismatch)
+        } else if *transcript != session.ceremony_identity {
+            Err(CeremonyError::TranscriptMismatch)
+        } else {
+            crypto::completion_mac_strings(step, &session.ceremony_identity)
+                .and_then(|(input, info)| session.established.verify_mac(&input, &info, mac))
+                .map_err(CeremonyError::from)
+        };
+        if let Err(error) = verified {
+            return self.fail(error);
+        }
+        let session = match std::mem::replace(&mut self.state, State::Terminal) {
+            State::ApprovalsAuthenticatedAwaitingCompletion { session }
+            | State::AwaitResponderFinish { session }
+            | State::AwaitInitiatorFinishAck { session } => session,
+            _ => unreachable!(),
+        };
+        match step {
+            Completion::InitiatorFinish => {
+                let ack = match completion_frame(&session, Completion::ResponderFinishAck) {
+                    Ok(bytes) => bytes,
+                    Err(error) => return self.fail(error),
+                };
+                self.seen.push((completion_wire_type(step), bytes.to_vec()));
+                self.state = State::AwaitInitiatorFinishAck { session };
+                Ok(CompletionReceipt::SendResponderFinishAck(ack))
+            }
+            Completion::ResponderFinishAck => {
+                let ack = match completion_frame(&session, Completion::InitiatorFinishAck) {
+                    Ok(bytes) => bytes,
+                    Err(error) => return self.fail(error),
+                };
+                // I's success point: RESPONDER_FINISH_ACK verified and the final ACK produced.
+                self.succeed(session)?;
+                Ok(CompletionReceipt::SendInitiatorFinishAck(ack))
+            }
+            Completion::InitiatorFinishAck => {
+                self.succeed(session)?;
+                Ok(CompletionReceipt::Succeeded)
+            }
+        }
+    }
+
+    /// Success cleanup: build the immutable result, drop the session (vodozemac state, SAS
+    /// bytes, approval) and duplicate-tracking state, and only then release the guard. The
+    /// consumed opportunity stays consumed. An uncertain guard release fails closed: the run
+    /// ends without a result and nothing further is emitted.
+    fn succeed(&mut self, session: SasSession) -> Result<(), CeremonyError> {
+        let result = PairingResult::new(
+            session.role,
+            &session.request_id,
+            session.ceremony_identity,
+            &session.peer_bootstrap,
+        );
+        drop(session);
+        self.seen = Vec::new();
+        self.state = State::Terminal;
+        self.executor.terminate(&mut self.admission)?;
+        self.state = State::Succeeded(result);
+        Ok(())
+    }
+
     /// Local MISMATCH/REJECT: terminal failure. Sends nothing and refunds nothing.
     pub(crate) fn reject_sas(&mut self, ceremony_identity: &[u8; 32]) -> Result<(), CeremonyError> {
         self.live_session(ceremony_identity)?;
@@ -525,7 +765,9 @@ impl RemoteCeremony {
             State::AwaitLocalApproval { session, .. }
             | State::LocallyApprovedAwaitingAuthentication { session, .. }
             | State::LocalMacSentAwaitingPeerMac { session }
-            | State::ApprovalsAuthenticatedAwaitingCompletion { session } => Some(session),
+            | State::ApprovalsAuthenticatedAwaitingCompletion { session }
+            | State::AwaitResponderFinish { session }
+            | State::AwaitInitiatorFinishAck { session } => Some(session),
             _ => None,
         }
     }
@@ -800,8 +1042,9 @@ impl RemoteCeremony {
 
     /// I1/I2: the assignment drops any SAS session and local approval before the
     /// executor releases the authority guard. Opportunities are never refunded.
+    /// A locally succeeded run is already terminal; its result is left untouched.
     pub(crate) fn terminate(&mut self) -> Result<(), CeremonyError> {
-        if matches!(self.state, State::Terminal) {
+        if matches!(self.state, State::Terminal | State::Succeeded(_)) {
             return Ok(());
         }
         self.state = State::Terminal;
@@ -816,6 +1059,9 @@ impl RemoteCeremony {
         }
     }
     fn duplicate(&mut self, kind: u8, bytes: &[u8]) -> Result<bool, CeremonyError> {
+        if matches!(self.state, State::Succeeded(_)) {
+            return Err(CeremonyError::Completed);
+        }
         if matches!(self.state, State::Terminal) {
             return self.fail(CeremonyError::InvalidState);
         }
@@ -831,6 +1077,10 @@ impl RemoteCeremony {
         self.fail(CeremonyError::InvalidState)
     }
     fn fail<T>(&mut self, error: CeremonyError) -> Result<T, CeremonyError> {
+        // Success is terminal too: later input is rejected without replacing the result.
+        if matches!(self.state, State::Succeeded(_)) {
+            return Err(error);
+        }
         self.state = State::Terminal;
         let _ = self.executor.terminate(&mut self.admission);
         Err(error)
@@ -874,6 +1124,74 @@ fn own_bootstrap_mac(
         mac,
     }
     .encode()?)
+}
+/// Own completion frame for `step`: exact request ID, `ceremony_identity` as the transcript
+/// digest, and the vodozemac tag over the fixed-mapping auth frame and `0x32` context.
+fn completion_frame(session: &SasSession, step: Completion) -> Result<Vec<u8>, CeremonyError> {
+    debug_assert_eq!(step.sender(), wire_role(session.role));
+    let (input, info) = crypto::completion_mac_strings(step, &session.ceremony_identity)?;
+    let mac = session.established.calculate_mac(&input, &info)?;
+    let message = completion_message(
+        step,
+        session.request_id.clone(),
+        session.ceremony_identity,
+        mac,
+    );
+    Ok(message.encode()?)
+}
+fn completion_message(
+    step: Completion,
+    request_id: Vec<u8>,
+    transcript: [u8; 32],
+    mac: [u8; 32],
+) -> Message {
+    match step {
+        Completion::InitiatorFinish => Message::InitiatorFinish {
+            request_id,
+            transcript,
+            mac,
+        },
+        Completion::ResponderFinishAck => Message::ResponderFinishAck {
+            request_id,
+            transcript,
+            mac,
+        },
+        Completion::InitiatorFinishAck => Message::InitiatorFinishAck {
+            request_id,
+            transcript,
+            mac,
+        },
+    }
+}
+/// A completion message's step, request ID, transcript digest, and raw tag.
+type CompletionFields<'a> = (Completion, &'a [u8], &'a [u8; 32], &'a [u8; 32]);
+/// Splits a completion wire message into its step and fields; `None` for every other type.
+fn completion_fields(message: &Message) -> Option<CompletionFields<'_>> {
+    match message {
+        Message::InitiatorFinish {
+            request_id,
+            transcript,
+            mac,
+        } => Some((Completion::InitiatorFinish, request_id, transcript, mac)),
+        Message::ResponderFinishAck {
+            request_id,
+            transcript,
+            mac,
+        } => Some((Completion::ResponderFinishAck, request_id, transcript, mac)),
+        Message::InitiatorFinishAck {
+            request_id,
+            transcript,
+            mac,
+        } => Some((Completion::InitiatorFinishAck, request_id, transcript, mac)),
+        _ => None,
+    }
+}
+fn completion_wire_type(step: Completion) -> u8 {
+    match step {
+        Completion::InitiatorFinish => 6,
+        Completion::ResponderFinishAck => 7,
+        Completion::InitiatorFinishAck => 8,
+    }
 }
 fn request_id_of(message: &DecodedMessage) -> Result<&[u8], CeremonyError> {
     match &message.message {
@@ -2194,7 +2512,7 @@ mod tests {
         context: Vec<u8>,
         tag: &[u8; 32],
     ) -> Result<(), crypto::Error> {
-        let (input, info) = crypto::approval_mac_strings(&frame, &context).unwrap();
+        let (input, info) = crypto::mac_strings(&frame, &context).unwrap();
         run.session()
             .unwrap()
             .established
@@ -2449,6 +2767,863 @@ mod tests {
         );
         assert_stale(&mut pair.i, &id);
         // Fail closed: invalidation is complete, but the guard is never released uncertainly.
+        match a.ei.0.shared.lock() {
+            Err(poisoned) => assert!(poisoned.into_inner().active.is_some()),
+            Ok(_) => panic!("shared state unexpectedly recovered"),
+        }
+        drop(pair);
+        a.release();
+    }
+
+    // ---- Authenticated finish handshake and local PairingResult ----
+
+    const STEPS: [Completion; 3] = [
+        Completion::InitiatorFinish,
+        Completion::ResponderFinishAck,
+        Completion::InitiatorFinishAck,
+    ];
+
+    /// Exchanges both BOOTSTRAP_MACs so each side is ready for the finish handshake.
+    fn authenticate(pair: &mut Pair, id: &[u8; 32]) {
+        let r_mac = approve_and_emit(&mut pair.r, id);
+        let i_mac = approve_and_emit(&mut pair.i, id);
+        pair.i.receive_bootstrap_mac(&r_mac).unwrap();
+        pair.r.receive_bootstrap_mac(&i_mac).unwrap();
+        assert!(pair.i.is_ready_for_completion() && pair.r.is_ready_for_completion());
+    }
+
+    fn approvals_authenticated(a: &Authorities) -> (Pair, [u8; 32]) {
+        let mut pair = establish(a);
+        let id = pair.identity();
+        authenticate(&mut pair, &id);
+        assert_ready_not_success(&pair.i, &a.ei);
+        assert_ready_not_success(&pair.r, &a.er);
+        (pair, id)
+    }
+
+    fn finish(run: &mut RemoteCeremony) -> Vec<u8> {
+        match run.emit_initiator_finish().unwrap() {
+            FinishEmission::Emitted(bytes) => bytes,
+            FinishEmission::AlreadyEmitted => panic!("expected a first INITIATOR_FINISH"),
+        }
+    }
+
+    fn responder_ack(run: &mut RemoteCeremony, initiator_finish: &[u8]) -> Vec<u8> {
+        match run.receive_completion(initiator_finish).unwrap() {
+            CompletionReceipt::SendResponderFinishAck(bytes) => bytes,
+            other => panic!("expected RESPONDER_FINISH_ACK, got {other:?}"),
+        }
+    }
+
+    fn initiator_ack(run: &mut RemoteCeremony, responder_finish_ack: &[u8]) -> Vec<u8> {
+        match run.receive_completion(responder_finish_ack).unwrap() {
+            CompletionReceipt::SendInitiatorFinishAck(bytes) => bytes,
+            other => panic!("expected INITIATOR_FINISH_ACK, got {other:?}"),
+        }
+    }
+
+    fn finish_parts(bytes: &[u8]) -> (Completion, Vec<u8>, [u8; 32], [u8; 32]) {
+        let msg = protocol::decode(bytes).unwrap();
+        let (step, request_id, transcript, mac) = completion_fields(&msg.message).unwrap();
+        (step, request_id.to_vec(), *transcript, *mac)
+    }
+
+    fn finish_wire(step: Completion, request_id: Vec<u8>, id: [u8; 32], mac: [u8; 32]) -> Vec<u8> {
+        completion_message(step, request_id, id, mac)
+            .encode()
+            .unwrap()
+    }
+
+    fn endpoint(pair: &mut Pair, role: protocol::Role) -> &mut RemoteCeremony {
+        match role {
+            protocol::Role::Initiator => &mut pair.i,
+            protocol::Role::Responder => &mut pair.r,
+        }
+    }
+
+    fn endpoint_executor(a: &Authorities, role: protocol::Role) -> &CeremonyExecutor {
+        match role {
+            protocol::Role::Initiator => &a.ei,
+            protocol::Role::Responder => &a.er,
+        }
+    }
+
+    /// Drives a fresh pair until `step`'s receiver awaits it; returns that valid frame.
+    fn drive_to(a: &Authorities, step: Completion) -> (Pair, [u8; 32], Vec<u8>) {
+        let (mut pair, id) = approvals_authenticated(a);
+        let i_finish = finish(&mut pair.i);
+        if step == Completion::InitiatorFinish {
+            return (pair, id, i_finish);
+        }
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        if step == Completion::ResponderFinishAck {
+            return (pair, id, r_ack);
+        }
+        let i_ack = initiator_ack(&mut pair.i, &r_ack);
+        (pair, id, i_ack)
+    }
+
+    /// Local success: an immutable result, no live SAS, session, approval, or duplicate state,
+    /// inert callbacks, the guard released, and the one consumed opportunity kept.
+    fn assert_succeeded(run: &mut RemoteCeremony, executor: &CeremonyExecutor, id: &[u8; 32]) {
+        let result = run.result().cloned().expect("local result");
+        assert_eq!(result.ceremony_identity(), id);
+        assert_stale(run, id);
+        assert!(run.session().is_none() && run.seen.is_empty());
+        assert!(!run.is_ready_for_completion() && !run.is_peer_approval_authenticated());
+        assert!(run.admission.terminal && run.admission.authorization.is_none());
+        assert_eq!(executor.status().unwrap(), Status::Ready { remaining: 9 });
+        assert_eq!(run.result(), Some(&result));
+    }
+
+    /// Terminal failure: no result, SAS and session dropped, guard released, opportunity kept.
+    fn assert_failed(run: &mut RemoteCeremony, executor: &CeremonyExecutor, id: &[u8; 32]) {
+        assert!(matches!(run.state, State::Terminal));
+        assert_eq!(run.result(), None);
+        assert_stale(run, id);
+        assert!(run.admission.terminal);
+        assert_eq!(executor.status().unwrap(), Status::Ready { remaining: 9 });
+    }
+
+    fn assert_matches_fixture_result(result: &PairingResult, name: &str, with_identity: bool) {
+        let json = fixture();
+        let r = &json["result_semantics"][name];
+        let h = |key: &str| hex(r[key].as_str().unwrap());
+        assert_eq!(result.request_id(), h("request_id"));
+        if with_identity {
+            assert_eq!(
+                result.ceremony_identity().as_slice(),
+                h("ceremony_identity")
+            );
+        }
+        assert_eq!(
+            format!("{:?}", result.peer_role()),
+            r["peer_role"].as_str().unwrap()
+        );
+        assert_eq!(
+            result.authenticated_peer_bootstrap(),
+            h("authenticated_peer_bootstrap")
+        );
+        assert_eq!(
+            result.authenticated_shared_context(),
+            h("authenticated_shared_context")
+        );
+        assert_eq!(
+            result.profile_identifier(),
+            r["profile_identifier"].as_str().unwrap().as_bytes()
+        );
+        assert_eq!(
+            u64::from(result.profile_version()),
+            r["profile_version"].as_u64().unwrap()
+        );
+    }
+
+    #[test]
+    fn completion_wire_frames_and_result_shape_match_authoritative_vector() {
+        let json = fixture();
+        let id: [u8; 32] = hex(json["ceremony_identity"]["hex"].as_str().unwrap())
+            .try_into()
+            .unwrap();
+        let rid = vector_request_id();
+        for (name, wire, step) in [
+            ("initiator_finish", "INITIATOR_FINISH", STEPS[0]),
+            ("responder_finish_ack", "RESPONDER_FINISH_ACK", STEPS[1]),
+            ("initiator_finish_ack", "INITIATOR_FINISH_ACK", STEPS[2]),
+        ] {
+            // Fixture tags come from fixed test-only secrets; they are framed, not recomputed.
+            let tag: [u8; 32] = hex(
+                json["completion"]["authentications"][name]["raw_mac"]["hex"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .try_into()
+            .unwrap();
+            let bytes = finish_wire(step, rid.clone(), id, tag);
+            assert_eq!(bytes, vector(wire));
+            assert_eq!(bytes[9], completion_wire_type(step));
+            assert_eq!(finish_parts(&vector(wire)), (step, rid.clone(), id, tag));
+        }
+        assert_eq!(
+            STEPS.map(completion_wire_type),
+            [0x06, 0x07, 0x08],
+            "wire types differ from the 0x35-0x37 auth-frame types"
+        );
+        // Result fields derive from the vector ceremony inputs for each role.
+        let (initiator, responder) = (
+            bootstrap(&decoded("START"), true),
+            bootstrap(&decoded("ACCEPT"), false),
+        );
+        for (role, peer, name) in [
+            (Role::Initiator, &responder, "initiator"),
+            (Role::Responder, &initiator, "responder"),
+        ] {
+            let result = PairingResult::new(role, &rid, id, peer);
+            assert_matches_fixture_result(&result, name, true);
+        }
+    }
+
+    #[test]
+    fn live_three_message_completion_yields_reciprocal_local_results() {
+        let a = Authorities::new("finish-full");
+        let (mut pair, id) = approvals_authenticated(&a);
+        let ops = crypto::mac_operations();
+
+        let i_finish = finish(&mut pair.i);
+        assert_eq!(crypto::mac_operations(), ops + 1);
+        assert_eq!(i_finish[9], 0x06);
+        let (step, rid, digest, _) = finish_parts(&i_finish);
+        assert_eq!((step, rid, digest), (STEPS[0], vector_request_id(), id));
+        assert!(matches!(pair.i.state, State::AwaitResponderFinish { .. }));
+        assert!(pair.i.result().is_none() && pair.i.sas_bytes_for_test().is_some());
+        // Completion needs no new exposure authorization, second guard, or opportunity.
+        assert!(pair.i.admission.authorization.is_none() && !pair.i.admission.terminal);
+        assert_eq!(a.ei.status().unwrap(), Status::Busy);
+
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        assert_eq!(
+            crypto::mac_operations(),
+            ops + 3,
+            "one verify, one calculate"
+        );
+        assert_eq!(r_ack[9], 0x07);
+        let (step, rid, digest, _) = finish_parts(&r_ack);
+        assert_eq!((step, rid, digest), (STEPS[1], vector_request_id(), id));
+        // R verified I's progress but has no result until the final ACK verifies.
+        assert!(matches!(
+            pair.r.state,
+            State::AwaitInitiatorFinishAck { .. }
+        ));
+        assert!(pair.r.result().is_none() && pair.r.sas_bytes_for_test().is_some());
+        assert_eq!(a.er.status().unwrap(), Status::Busy);
+
+        let i_ack = initiator_ack(&mut pair.i, &r_ack);
+        assert_eq!(crypto::mac_operations(), ops + 5);
+        assert_eq!(i_ack[9], 0x08);
+        let (step, rid, digest, _) = finish_parts(&i_ack);
+        assert_eq!((step, rid, digest), (STEPS[2], vector_request_id(), id));
+        assert_succeeded(&mut pair.i, &a.ei, &id);
+
+        assert_eq!(
+            pair.r.receive_completion(&i_ack),
+            Ok(CompletionReceipt::Succeeded)
+        );
+        assert_eq!(crypto::mac_operations(), ops + 6);
+        assert_succeeded(&mut pair.r, &a.er, &id);
+
+        let (ri, rr) = (pair.i.result().unwrap(), pair.r.result().unwrap());
+        assert_eq!((ri.ceremony_identity(), rr.ceremony_identity()), (&id, &id));
+        assert_eq!(
+            (ri.peer_role(), rr.peer_role()),
+            (Role::Responder, Role::Initiator)
+        );
+        // Each holds the OTHER endpoint's exact canonical bootstrap frame.
+        let (initiator, responder) = (
+            bootstrap(&decoded("START"), true),
+            bootstrap(&decoded("ACCEPT"), false),
+        );
+        assert_eq!(
+            ri.authenticated_peer_bootstrap(),
+            responder.canonical_bytes()
+        );
+        assert_eq!(
+            rr.authenticated_peer_bootstrap(),
+            initiator.canonical_bytes()
+        );
+        assert_eq!(
+            ri.authenticated_shared_context(),
+            rr.authenticated_shared_context()
+        );
+        assert_eq!(
+            ri.authenticated_shared_context(),
+            initiator.shared_context()
+        );
+        assert_eq!(ri.request_id(), rr.request_id());
+        assert_eq!(
+            (ri.profile_identifier(), ri.profile_version()),
+            (rr.profile_identifier(), rr.profile_version())
+        );
+        // Everything except the fresh ceremony identity equals the fixture's result semantics.
+        assert_matches_fixture_result(ri, "initiator", false);
+        assert_matches_fixture_result(rr, "responder", false);
+        drop(pair);
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+        a.release();
+    }
+
+    /// P3 9: local verified completion is not atomic bilateral success. The Initiator reaches
+    /// its result by producing the final ACK; nothing acknowledges that ACK, so its loss leaves
+    /// the Responder waiting with no result. There is no fourth message.
+    #[test]
+    fn lost_final_ack_leaves_only_the_initiator_with_a_local_result() {
+        let a = Authorities::new("finish-lost-final-ack");
+        let (mut pair, id) = approvals_authenticated(&a);
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        let _undelivered = initiator_ack(&mut pair.i, &r_ack);
+
+        assert_succeeded(&mut pair.i, &a.ei, &id);
+        let result_i = pair.i.result().cloned();
+
+        assert_eq!(pair.r.result(), None);
+        assert!(matches!(
+            pair.r.state,
+            State::AwaitInitiatorFinishAck { .. }
+        ));
+        assert!(pair.r.session().is_some() && pair.r.sas_bytes_for_test().is_some());
+        assert!(!pair.r.admission.terminal);
+        assert_eq!(a.er.status().unwrap(), Status::Busy);
+        assert_eq!(remaining(&a.er), 9);
+
+        // I has nothing further to send or wait for.
+        assert_eq!(
+            pair.i.emit_initiator_finish(),
+            Err(CeremonyError::Completed)
+        );
+        assert_eq!(
+            pair.i.receive_completion(&r_ack),
+            Err(CeremonyError::Completed)
+        );
+        // R later ends locally (here: local CANCEL) with no result; I's result is unaffected.
+        pair.r.cancel_sas(&id).unwrap();
+        assert_failed(&mut pair.r, &a.er, &id);
+        assert_eq!(pair.i.result().cloned(), result_i);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn initiator_finish_requires_authenticated_approvals_and_the_initiator_role() {
+        let a = Authorities::new("finish-preconditions");
+        let mut pre = RemoteCeremony::initiator(
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            &vector("START"),
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap();
+        assert_eq!(pre.emit_initiator_finish(), Err(CeremonyError::NoLiveSas));
+        drop(pre);
+
+        let not_yet = Err(CeremonyError::ApprovalsNotAuthenticated);
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let ops = crypto::mac_operations();
+        // SAS displayed; then locally approved; then own MAC emitted with the peer's pending.
+        assert_eq!(pair.i.emit_initiator_finish(), not_yet);
+        pair.i.approve_sas(&id).unwrap();
+        assert_eq!(pair.i.emit_initiator_finish(), not_yet);
+        let i_mac = emitted(&mut pair.i);
+        let ops_after_mac = crypto::mac_operations();
+        assert_eq!(ops_after_mac, ops + 1);
+        assert_eq!(pair.i.emit_initiator_finish(), not_yet);
+        assert!(pair.i.is_own_mac_emitted() && !pair.i.is_ready_for_completion());
+
+        // The Responder can never start completion, even once ready.
+        assert_eq!(
+            pair.r.emit_initiator_finish(),
+            Err(CeremonyError::NotInitiator)
+        );
+        pair.r.receive_bootstrap_mac(&i_mac).unwrap();
+        let r_mac = approve_and_emit(&mut pair.r, &id);
+        assert!(pair.r.is_ready_for_completion());
+        let (ops, seen) = (crypto::mac_operations(), pair.r.seen.len());
+        assert_eq!(
+            pair.r.emit_initiator_finish(),
+            Err(CeremonyError::NotInitiator)
+        );
+        assert_eq!((crypto::mac_operations(), pair.r.seen.len()), (ops, seen));
+        assert!(pair.r.is_ready_for_completion(), "refusal has no effect");
+
+        // Once both approvals are authenticated, I emits exactly one INITIATOR_FINISH.
+        pair.i.receive_bootstrap_mac(&r_mac).unwrap();
+        finish(&mut pair.i);
+        let ops = crypto::mac_operations();
+        for _ in 0..2 {
+            assert_eq!(
+                pair.i.emit_initiator_finish(),
+                Ok(FinishEmission::AlreadyEmitted)
+            );
+        }
+        assert_eq!(crypto::mac_operations(), ops, "no repeated MAC calculation");
+        assert!(matches!(pair.i.state, State::AwaitResponderFinish { .. }));
+        assert!(pair.i.admission.authorization.is_none());
+        assert_eq!(a.ei.status().unwrap(), Status::Busy);
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+        drop(pair);
+
+        // Peer MAC verified first while local approval is still pending: still refused.
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let r_mac = approve_and_emit(&mut pair.r, &id);
+        pair.i.receive_bootstrap_mac(&r_mac).unwrap();
+        assert_eq!(pair.i.emit_initiator_finish(), not_yet);
+        pair.i.approve_sas(&id).unwrap();
+        assert_eq!(pair.i.emit_initiator_finish(), not_yet);
+        assert!(pair.i.presentation().is_none() && !pair.i.is_ready_for_completion());
+        // After termination there is no live SAS at all.
+        pair.i.cancel_sas(&id).unwrap();
+        assert_eq!(
+            pair.i.emit_initiator_finish(),
+            Err(CeremonyError::NoLiveSas)
+        );
+        drop(pair);
+        a.release();
+    }
+
+    /// Delivers `mutate(valid frame)` for `step` to its receiver and proves terminal failure
+    /// with no result, MAC work only where the tag had to be checked, and no revival.
+    fn assert_bad_finish_is_terminal(
+        scope: &str,
+        step: Completion,
+        mutate: impl Fn(&[u8]) -> Vec<u8>,
+        expected: CeremonyError,
+    ) {
+        let a = Authorities::new(scope);
+        let (mut pair, id, valid) = drive_to(&a, step);
+        let sender_result = endpoint(&mut pair, step.sender()).result().cloned();
+        let bad = mutate(&valid);
+        assert_ne!(bad, valid);
+        let checks_mac = matches!(expected, CeremonyError::Crypto(_));
+        let run = endpoint(&mut pair, step.receiver());
+        let ops = crypto::mac_operations();
+        assert_eq!(run.receive_completion(&bad), Err(expected));
+        assert_eq!(crypto::mac_operations(), ops + usize::from(checks_mac));
+        assert_failed(run, endpoint_executor(&a, step.receiver()), &id);
+        // A later valid frame or emission cannot revive the run or create a result.
+        assert!(run.receive_completion(&valid).is_err());
+        assert!(run.emit_initiator_finish().is_err());
+        assert_failed(run, endpoint_executor(&a, step.receiver()), &id);
+        // The sender is a separate endpoint. If it already produced the final ACK, its local
+        // result stays exactly as it was.
+        assert_eq!(
+            endpoint(&mut pair, step.sender()).result().cloned(),
+            sender_result
+        );
+        assert_eq!(
+            sender_result.is_some(),
+            step == Completion::InitiatorFinishAck
+        );
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn corrupted_finish_mac_is_terminal_at_every_step() {
+        for (index, step) in STEPS.into_iter().enumerate() {
+            assert_bad_finish_is_terminal(
+                &format!("finish-bad-mac-{index}"),
+                step,
+                |valid| {
+                    let (step, rid, digest, mut mac) = finish_parts(valid);
+                    mac[31] ^= 0x01;
+                    finish_wire(step, rid, digest, mac)
+                },
+                CeremonyError::Crypto(crypto::Error::MacMismatch),
+            );
+        }
+    }
+
+    #[test]
+    fn wrong_transcript_digest_or_request_id_is_terminal_at_every_step() {
+        for (index, step) in STEPS.into_iter().enumerate() {
+            // One digest bit; the rest of the frame stays valid. Rejected by the explicit
+            // digest check before any MAC work.
+            assert_bad_finish_is_terminal(
+                &format!("finish-digest-{index}"),
+                step,
+                |valid| {
+                    let (step, rid, mut digest, mac) = finish_parts(valid);
+                    digest[13] ^= 0x10;
+                    finish_wire(step, rid, digest, mac)
+                },
+                CeremonyError::TranscriptMismatch,
+            );
+            assert_bad_finish_is_terminal(
+                &format!("finish-request-id-{index}"),
+                step,
+                |valid| {
+                    let (step, mut rid, digest, mac) = finish_parts(valid);
+                    rid[0] ^= 0x01;
+                    finish_wire(step, rid, digest, mac)
+                },
+                CeremonyError::RequestIdMismatch,
+            );
+            // A truncated tag never reaches MAC verification.
+            assert_bad_finish_is_terminal(
+                &format!("finish-short-tag-{index}"),
+                step,
+                |valid| {
+                    let mut short = valid[..valid.len() - 1].to_vec();
+                    let at = short.len() - 35;
+                    short[at..at + 4].copy_from_slice(&31u32.to_be_bytes());
+                    short
+                },
+                CeremonyError::Codec(protocol::CodecError::InvalidField("fixed_32")),
+            );
+        }
+    }
+
+    #[test]
+    fn finish_macs_bind_type_purpose_direction_and_identity() {
+        let mismatch = Err(crypto::Error::MacMismatch);
+        for (index, step) in STEPS.into_iter().enumerate() {
+            let a = Authorities::new(&format!("finish-binding-{index}"));
+            let (mut pair, id, valid) = drive_to(&a, step);
+            let tag = finish_parts(&valid).3;
+            let run = &*endpoint(&mut pair, step.receiver());
+            let verify = |kind: u8, purpose: &[u8], s, r, id: &[u8; 32]| {
+                let (input, info) =
+                    crypto::completion_mac_strings_for_test(kind, purpose, s, r, id);
+                run.session()
+                    .unwrap()
+                    .established
+                    .verify_mac(&input, &info, &tag)
+            };
+            let (t, p, s, r) = (
+                step.auth_frame_type(),
+                step.purpose(),
+                step.sender(),
+                step.receiver(),
+            );
+            assert_eq!(verify(t, p, s, r, &id), Ok(()));
+            let mut other_id = id;
+            other_id[17] ^= 0x40;
+            // Swapped direction, both roles equal, and another ceremony identity.
+            assert_eq!(verify(t, p, r, s, &id), mismatch);
+            assert_eq!(verify(t, p, s, s, &id), mismatch);
+            assert_eq!(verify(t, p, r, r, &id), mismatch);
+            assert_eq!(verify(t, p, s, r, &other_id), mismatch);
+            // A generic purpose is not a completion purpose.
+            assert_eq!(verify(t, b"finish", s, r, &id), mismatch);
+            for other in STEPS.into_iter().filter(|other| *other != step) {
+                // Type changed with the purpose unchanged, purpose changed with the type
+                // unchanged, and the other step's complete reconstruction.
+                assert_eq!(verify(other.auth_frame_type(), p, s, r, &id), mismatch);
+                assert_eq!(verify(t, other.purpose(), s, r, &id), mismatch);
+                assert_eq!(
+                    verify(
+                        other.auth_frame_type(),
+                        other.purpose(),
+                        other.sender(),
+                        other.receiver(),
+                        &id
+                    ),
+                    mismatch
+                );
+            }
+            drop(pair);
+            a.release();
+        }
+    }
+
+    #[test]
+    fn a_finish_tag_cannot_authenticate_another_finish_step() {
+        let a = Authorities::new("finish-cross-step");
+        let (mut pair, id) = approvals_authenticated(&a);
+        let i_finish = finish(&mut pair.i);
+        responder_ack(&mut pair.r, &i_finish);
+        let (_, rid, digest, finish_tag) = finish_parts(&i_finish);
+        // Same sender, receiver, request ID, and digest as the final ACK; only the step differs.
+        let as_final_ack = finish_wire(STEPS[2], rid.clone(), digest, finish_tag);
+        assert_eq!(
+            pair.r.receive_completion(&as_final_ack),
+            Err(CeremonyError::Crypto(crypto::Error::MacMismatch))
+        );
+        assert_failed(&mut pair.r, &a.er, &id);
+        // I's own-direction tag relabelled as the Responder's ACK.
+        let as_responder_ack = finish_wire(STEPS[1], rid, digest, finish_tag);
+        assert_eq!(
+            pair.i.receive_completion(&as_responder_ack),
+            Err(CeremonyError::Crypto(crypto::Error::MacMismatch))
+        );
+        assert_failed(&mut pair.i, &a.ei, &id);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn finish_from_another_ceremony_with_the_same_request_id_fails() {
+        let (first, second, third) = (
+            Authorities::new("finish-cross-a"),
+            Authorities::new("finish-cross-b"),
+            Authorities::new("finish-cross-c"),
+        );
+        let (mut a, id_a) = approvals_authenticated(&first);
+        let (mut b, id_b) = approvals_authenticated(&second);
+        let (mut c, id_c) = approvals_authenticated(&third);
+        assert!(id_a != id_b && id_a != id_c && id_b != id_c);
+        let foreign = finish(&mut a.i);
+        let own = finish(&mut b.i);
+        let (_, rid, _, tag_a) = finish_parts(&foreign);
+        assert_eq!(rid, finish_parts(&own).1, "identical request IDs");
+
+        // As sent, the digest names ceremony A: rejected before any MAC work.
+        let ops = crypto::mac_operations();
+        assert_eq!(
+            b.r.receive_completion(&foreign),
+            Err(CeremonyError::TranscriptMismatch)
+        );
+        assert_eq!(crypto::mac_operations(), ops);
+        assert_failed(&mut b.r, &second.er, &id_b);
+        assert!(b.r.receive_completion(&own).is_err());
+        assert_failed(&mut b.r, &second.er, &id_b);
+
+        // Relabelled with C's digest, A's tag still cannot authenticate C.
+        let relabelled = finish_wire(STEPS[0], rid, id_c, tag_a);
+        assert_eq!(
+            c.r.receive_completion(&relabelled),
+            Err(CeremonyError::Crypto(crypto::Error::MacMismatch))
+        );
+        assert_failed(&mut c.r, &third.er, &id_c);
+
+        // Ceremony A is unaffected and completes with its own identity.
+        let r_ack = responder_ack(&mut a.r, &foreign);
+        let i_ack = initiator_ack(&mut a.i, &r_ack);
+        assert_eq!(
+            a.r.receive_completion(&i_ack),
+            Ok(CompletionReceipt::Succeeded)
+        );
+        assert_eq!(a.r.result().unwrap().ceremony_identity(), &id_a);
+        drop((a, b, c));
+        first.release();
+        second.release();
+        third.release();
+    }
+
+    #[test]
+    fn exact_finish_duplicate_is_idempotent_and_changed_duplicate_is_terminal() {
+        let a = Authorities::new("finish-duplicates");
+        let (mut pair, id) = approvals_authenticated(&a);
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        let (seen, ops) = (pair.r.seen.len(), crypto::mac_operations());
+        for _ in 0..2 {
+            // No second RESPONDER_FINISH_ACK, MAC verification, retained copy, or transition.
+            assert_eq!(
+                pair.r.receive_completion(&i_finish),
+                Ok(CompletionReceipt::AlreadyAccepted)
+            );
+        }
+        assert_eq!((pair.r.seen.len(), crypto::mac_operations()), (seen, ops));
+        assert!(matches!(
+            pair.r.state,
+            State::AwaitInitiatorFinishAck { .. }
+        ));
+        assert_eq!(pair.r.result(), None);
+        assert_eq!(a.er.status().unwrap(), Status::Busy);
+
+        // Changed bytes for the already accepted INITIATOR_FINISH: terminal while active.
+        let (step, rid, digest, mut mac) = finish_parts(&i_finish);
+        mac[0] ^= 0x80;
+        assert_eq!(
+            pair.r
+                .receive_completion(&finish_wire(step, rid, digest, mac)),
+            Err(CeremonyError::InvalidState)
+        );
+        assert_eq!(crypto::mac_operations(), ops);
+        assert_failed(&mut pair.r, &a.er, &id);
+
+        // I moves from verifying RESPONDER_FINISH_ACK to Succeeded in one transition, so a
+        // duplicate can only arrive after success: it is rejected and changes nothing.
+        let i_ack = initiator_ack(&mut pair.i, &r_ack);
+        let result = pair.i.result().cloned();
+        assert_eq!(
+            pair.i.receive_completion(&r_ack),
+            Err(CeremonyError::Completed)
+        );
+        assert_eq!(pair.i.result().cloned(), result);
+        // The correct final ACK cannot revive the failed Responder.
+        assert!(pair.r.receive_completion(&i_ack).is_err());
+        assert_failed(&mut pair.r, &a.er, &id);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn out_of_order_or_wrong_role_completion_is_terminal_without_mac_work() {
+        type Setup = fn(&mut Pair, &[u8; 32]);
+        let cases: [(Completion, protocol::Role, Setup); 9] = [
+            // I receives RESPONDER_FINISH_ACK before it emitted INITIATOR_FINISH.
+            (STEPS[1], protocol::Role::Initiator, authenticate),
+            // I, ready but not yet finished, receives an INITIATOR_FINISH (its own direction).
+            (STEPS[0], protocol::Role::Initiator, authenticate),
+            // R receives INITIATOR_FINISH_ACK before it sent RESPONDER_FINISH_ACK.
+            (STEPS[2], protocol::Role::Responder, authenticate),
+            // R receives a Responder-direction message.
+            (STEPS[1], protocol::Role::Responder, authenticate),
+            // I receives Initiator-direction messages while awaiting R's ACK.
+            (STEPS[0], protocol::Role::Initiator, |p, id| {
+                authenticate(p, id);
+                finish(&mut p.i);
+            }),
+            (STEPS[2], protocol::Role::Initiator, |p, id| {
+                authenticate(p, id);
+                finish(&mut p.i);
+            }),
+            // R awaiting the final ACK receives a RESPONDER_FINISH_ACK.
+            (STEPS[1], protocol::Role::Responder, |p, id| {
+                authenticate(p, id);
+                let f = finish(&mut p.i);
+                responder_ack(&mut p.r, &f);
+            }),
+            // R receives INITIATOR_FINISH before I's approval MAC is verified.
+            (STEPS[0], protocol::Role::Responder, |p, id| {
+                approve_and_emit(&mut p.r, id);
+            }),
+            // R receives INITIATOR_FINISH while its SAS is still displayed.
+            (STEPS[0], protocol::Role::Responder, |_, _| {}),
+        ];
+        for (index, (step, receiver, setup)) in cases.into_iter().enumerate() {
+            let a = Authorities::new(&format!("finish-order-{index}"));
+            let mut pair = establish(&a);
+            let id = pair.identity();
+            setup(&mut pair, &id);
+            // Correct request ID and digest; the tag is never examined.
+            let frame = finish_wire(step, vector_request_id(), id, [0x5a; 32]);
+            let run = endpoint(&mut pair, receiver);
+            let ops = crypto::mac_operations();
+            assert_eq!(
+                run.receive_completion(&frame),
+                Err(CeremonyError::InvalidState),
+                "case {index}"
+            );
+            assert_eq!(crypto::mac_operations(), ops);
+            assert_failed(run, endpoint_executor(&a, receiver), &id);
+            drop(pair);
+            a.release();
+        }
+
+        // A non-completion message offered as completion input is also terminal.
+        let a = Authorities::new("finish-order-other-type");
+        let (mut pair, id) = approvals_authenticated(&a);
+        let rkey = pair.wire[3].clone();
+        assert_eq!(
+            pair.r.receive_completion(&rkey),
+            Err(CeremonyError::InvalidState)
+        );
+        assert_failed(&mut pair.r, &a.er, &id);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn local_reject_or_cancel_during_completion_is_terminal_without_result() {
+        type Setup = fn(&mut Pair, &[u8; 32]);
+        let stages: [(protocol::Role, Setup); 3] = [
+            // I awaiting RESPONDER_FINISH_ACK.
+            (protocol::Role::Initiator, |p, id| {
+                authenticate(p, id);
+                finish(&mut p.i);
+            }),
+            // R awaiting INITIATOR_FINISH.
+            (protocol::Role::Responder, authenticate),
+            // R awaiting the final INITIATOR_FINISH_ACK.
+            (protocol::Role::Responder, |p, id| {
+                authenticate(p, id);
+                let f = finish(&mut p.i);
+                responder_ack(&mut p.r, &f);
+            }),
+        ];
+        for (index, (role, setup)) in stages.into_iter().enumerate() {
+            for reject in [false, true] {
+                let a = Authorities::new(&format!("finish-local-{index}-{reject}"));
+                let mut pair = establish(&a);
+                let id = pair.identity();
+                setup(&mut pair, &id);
+                let run = endpoint(&mut pair, role);
+                let seen = run.seen.len();
+                let outcome = if reject {
+                    run.reject_sas(&id)
+                } else {
+                    run.cancel_sas(&id)
+                };
+                assert_eq!(outcome, Ok(()), "stage {index}");
+                assert_eq!(run.seen.len(), seen, "local-only: nothing sent");
+                assert_failed(run, endpoint_executor(&a, role), &id);
+                assert!(run.emit_initiator_finish().is_err());
+                drop(pair);
+                a.release();
+            }
+        }
+    }
+
+    #[test]
+    fn local_success_is_immutable_and_retains_no_live_state() {
+        let a = Authorities::new("finish-immutable");
+        let (mut pair, id) = approvals_authenticated(&a);
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        let i_ack = initiator_ack(&mut pair.i, &r_ack);
+        pair.r.receive_completion(&i_ack).unwrap();
+        let wire = pair.wire.clone();
+        let bootstrap_mac = mac_frame(vector_request_id(), protocol::Role::Initiator, [1; 32]);
+        for (run, executor, authority) in [(&mut pair.i, &a.ei, &a.i), (&mut pair.r, &a.er, &a.r)] {
+            let result = run.result().cloned().unwrap();
+            let ops = crypto::mac_operations();
+            for frame in [&i_finish, &r_ack, &i_ack] {
+                assert_eq!(run.receive_completion(frame), Err(CeremonyError::Completed));
+                let mut changed = frame.clone();
+                *changed.last_mut().unwrap() ^= 1;
+                assert_eq!(
+                    run.receive_completion(&changed),
+                    Err(CeremonyError::Completed)
+                );
+            }
+            assert_eq!(
+                run.receive_completion(b"not a frame"),
+                Err(CeremonyError::Completed)
+            );
+            assert_eq!(
+                run.receive_bootstrap_mac(&bootstrap_mac),
+                Err(CeremonyError::Completed)
+            );
+            assert!(run.receive_bootstrap_mac(b"not a frame").is_err());
+            assert!(run.receive_start_duplicate(&wire[0]).is_err());
+            assert!(run.receive_accept(&wire[1]).is_err());
+            assert!(run.receive_initiator_key(&wire[2]).is_err());
+            assert!(run.receive_responder_key(&wire[3]).is_err());
+            assert!(run.start().is_err());
+            assert!(run.authorize(authority).is_err());
+            assert!(run.expose_key().is_err());
+            assert_eq!(run.emit_initiator_finish(), Err(CeremonyError::Completed));
+            assert_eq!(run.emit_bootstrap_mac(), Err(CeremonyError::NoLiveSas));
+            // Old approval, reject, and cancel callbacks have no live SAS to act on.
+            assert_eq!(run.approve_sas(&id), Err(CeremonyError::NoLiveSas));
+            assert_eq!(run.reject_sas(&id), Err(CeremonyError::NoLiveSas));
+            assert_eq!(run.cancel_sas(&id), Err(CeremonyError::NoLiveSas));
+            assert_eq!(run.terminate(), Ok(()));
+            assert_eq!(run.presentation(), None);
+            assert_eq!(crypto::mac_operations(), ops);
+            assert_eq!(run.result(), Some(&result));
+            assert_succeeded(run, executor, &id);
+        }
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn uncertain_guard_release_at_the_success_point_fails_closed_without_result() {
+        let a = Authorities::new("finish-uncertain-release");
+        let (mut pair, id) = approvals_authenticated(&a);
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        let poisoned = a.ei.clone();
+        let _ = std::thread::spawn(move || {
+            let _shared = poisoned.0.shared.lock().unwrap();
+            panic!("simulate uncertain guard state");
+        })
+        .join();
+        // No result and no final ACK are released; the SAS session is already dropped.
+        assert_eq!(
+            pair.i.receive_completion(&r_ack),
+            Err(CeremonyError::Owner(OwnerError::OwnershipUncertain))
+        );
+        assert_eq!(pair.i.result(), None);
+        assert!(matches!(pair.i.state, State::Terminal));
+        assert_stale(&mut pair.i, &id);
+        assert!(pair.i.receive_completion(&r_ack).is_err());
+        assert_eq!(pair.i.result(), None);
         match a.ei.0.shared.lock() {
             Err(poisoned) => assert!(poisoned.into_inner().active.is_some()),
             Ok(_) => panic!("shared state unexpectedly recovered"),

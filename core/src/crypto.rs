@@ -368,9 +368,22 @@ pub(super) fn approval_context(
     receiver: Role,
     ceremony_identity: &[u8; 32],
 ) -> Result<Vec<u8>, Error> {
+    mac_context(0x31, purpose, sender, receiver, ceremony_identity)
+}
+
+/// The shared P3 8/9 MAC context layout: domain, profile, version, purpose, sender role,
+/// receiver role, `ceremony_identity`. Only the context type distinguishes approval (`0x31`)
+/// from completion (`0x32`).
+fn mac_context(
+    context_type: u8,
+    purpose: &[u8],
+    sender: Role,
+    receiver: Role,
+    ceremony_identity: &[u8; 32],
+) -> Result<Vec<u8>, Error> {
     let version = 1u16.to_be_bytes();
     frame(
-        0x31,
+        context_type,
         &[
             DOMAIN,
             PROFILE_ID,
@@ -383,14 +396,11 @@ pub(super) fn approval_context(
     )
 }
 
-/// Exact vodozemac `(input, info)` strings for one direction's BOOTSTRAP_MAC: input is
-/// unpadded Base64url of the complete approval frame; info is the P3 3.2 `mac` context string.
-pub(super) fn approval_mac_strings(
-    approval_frame: &[u8],
-    context: &[u8],
-) -> Result<(String, String), Error> {
+/// Exact vodozemac `(input, info)` strings for one authenticated statement: input is unpadded
+/// Base64url of the complete non-wire frame; info is the P3 3.2 `mac` context string.
+pub(super) fn mac_strings(frame: &[u8], context: &[u8]) -> Result<(String, String), Error> {
     Ok((
-        capped_base64url(b"", approval_frame)?,
+        capped_base64url(b"", frame)?,
         capped_base64url(MAC_PREFIX, context)?,
     ))
 }
@@ -403,10 +413,111 @@ pub(super) fn bootstrap_mac_strings(
     sas_bytes: &[u8; 6],
     sender_bootstrap: &Bootstrap,
 ) -> Result<(String, String), Error> {
-    approval_mac_strings(
+    mac_strings(
         &approval_frame(sender, ceremony_identity, sas_bytes, sender_bootstrap)?,
         &approval_context(APPROVAL_PURPOSE, sender, peer_of(sender), ceremony_identity)?,
     )
+}
+
+/// The three P3 9 completion steps, in their only legal order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Completion {
+    InitiatorFinish,
+    ResponderFinishAck,
+    InitiatorFinishAck,
+}
+
+impl Completion {
+    /// Non-wire `CompletionAuthFrame` type byte; never a network message type.
+    pub(super) fn auth_frame_type(self) -> u8 {
+        match self {
+            Self::InitiatorFinish => 0x35,
+            Self::ResponderFinishAck => 0x36,
+            Self::InitiatorFinishAck => 0x37,
+        }
+    }
+    pub(super) fn purpose(self) -> &'static [u8] {
+        match self {
+            Self::InitiatorFinish => b"initiator-finish",
+            Self::ResponderFinishAck => b"responder-finish-ack",
+            Self::InitiatorFinishAck => b"initiator-finish-ack",
+        }
+    }
+    pub(super) fn sender(self) -> Role {
+        match self {
+            Self::InitiatorFinish | Self::InitiatorFinishAck => Role::Initiator,
+            Self::ResponderFinishAck => Role::Responder,
+        }
+    }
+    pub(super) fn receiver(self) -> Role {
+        peer_of(self.sender())
+    }
+}
+
+/// Non-wire P3 9 `CompletionAuthFrame`: domain, profile, version, sender role, receiver role,
+/// `ceremony_identity`, then the completion purpose LAST. It never contains a MAC.
+fn completion_auth_frame(
+    auth_frame_type: u8,
+    sender: Role,
+    receiver: Role,
+    ceremony_identity: &[u8; 32],
+    purpose: &[u8],
+) -> Result<Vec<u8>, Error> {
+    let version = 1u16.to_be_bytes();
+    frame(
+        auth_frame_type,
+        &[
+            DOMAIN,
+            PROFILE_ID,
+            &version,
+            &[sender as u8],
+            &[receiver as u8],
+            ceremony_identity,
+            purpose,
+        ],
+    )
+}
+
+/// The vodozemac `(input, info)` for `step` of this ceremony, from the fixed P3 9 mapping only.
+pub(super) fn completion_mac_strings(
+    step: Completion,
+    ceremony_identity: &[u8; 32],
+) -> Result<(String, String), Error> {
+    let (purpose, sender, receiver) = (step.purpose(), step.sender(), step.receiver());
+    mac_strings(
+        &completion_auth_frame(
+            step.auth_frame_type(),
+            sender,
+            receiver,
+            ceremony_identity,
+            purpose,
+        )?,
+        &mac_context(0x32, purpose, sender, receiver, ceremony_identity)?,
+    )
+}
+
+/// Test-only reconstruction with every bound completion field chosen by the caller, so tests
+/// can prove that changing any one of them breaks verification. Production uses the fixed map.
+#[cfg(test)]
+pub(super) fn completion_mac_strings_for_test(
+    auth_frame_type: u8,
+    purpose: &[u8],
+    sender: Role,
+    receiver: Role,
+    ceremony_identity: &[u8; 32],
+) -> (String, String) {
+    mac_strings(
+        &completion_auth_frame(
+            auth_frame_type,
+            sender,
+            receiver,
+            ceremony_identity,
+            purpose,
+        )
+        .unwrap(),
+        &mac_context(0x32, purpose, sender, receiver, ceremony_identity).unwrap(),
+    )
+    .unwrap()
 }
 
 #[cfg(test)]
@@ -717,6 +828,104 @@ mod tests {
     }
 
     #[test]
+    fn completion_encodings_match_authoritative_vector_for_all_three_steps() {
+        let json = fixture();
+        let identity: [u8; 32] = hex(string(&json, &["ceremony_identity", "hex"]))
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            json["completion"]["transcript_digest_equals_ceremony_identity"],
+            Value::Bool(true)
+        );
+        assert_eq!(
+            identity.as_slice(),
+            hex(string(&json, &["completion", "transcript_digest", "hex"]))
+        );
+        for (name, step, auth_type, sender, receiver) in [
+            (
+                "initiator_finish",
+                Completion::InitiatorFinish,
+                0x35,
+                Role::Initiator,
+                Role::Responder,
+            ),
+            (
+                "responder_finish_ack",
+                Completion::ResponderFinishAck,
+                0x36,
+                Role::Responder,
+                Role::Initiator,
+            ),
+            (
+                "initiator_finish_ack",
+                Completion::InitiatorFinishAck,
+                0x37,
+                Role::Initiator,
+                Role::Responder,
+            ),
+        ] {
+            let d = |path: &[&str]| {
+                let mut full = vec!["completion", "authentications", name];
+                full.extend_from_slice(path);
+                string(&json, &full).to_owned()
+            };
+            assert_eq!(step.purpose(), d(&["purpose"]).as_bytes());
+            assert_eq!((step.sender(), step.receiver()), (sender, receiver));
+            assert_eq!(hex(&d(&["sender_role_code"])), [sender as u8]);
+            assert_eq!(hex(&d(&["receiver_role_code"])), [receiver as u8]);
+            assert_eq!(step.auth_frame_type(), auth_type);
+
+            let auth = hex(&d(&["auth_frame", "hex"]));
+            assert_eq!(auth[9], auth_type);
+            assert_eq!(auth, hex(&d(&["mac_input", "canonical_binary_hex"])));
+            assert_eq!(
+                completion_auth_frame(auth_type, sender, receiver, &identity, step.purpose())
+                    .unwrap(),
+                auth
+            );
+            // The purpose is the final field of the auth frame.
+            assert!(auth.ends_with(step.purpose()));
+            let context = hex(&d(&["context_frame", "hex"]));
+            assert_eq!(context[9], 0x32);
+            assert_eq!(context, hex(&d(&["mac_context", "canonical_binary_hex"])));
+            assert_eq!(
+                mac_context(0x32, step.purpose(), sender, receiver, &identity).unwrap(),
+                context
+            );
+            assert!(context.ends_with(&identity));
+
+            let (input, info) = completion_mac_strings(step, &identity).unwrap();
+            assert_eq!(input, d(&["mac_input_base64url_unpadded"]));
+            assert_eq!(input, d(&["mac_input", "base64url_unpadded"]));
+            assert_eq!(input.as_bytes(), hex(&d(&["mac_input_hex"])));
+            assert_eq!(input.as_bytes(), hex(&d(&["mac", "input_hex"])));
+            assert_eq!(URL_SAFE_NO_PAD.decode(&input).unwrap(), auth);
+            assert_eq!(info, d(&["info_string"]));
+            assert_eq!(info, d(&["mac_context", "info_string"]));
+            assert_eq!(
+                info.strip_prefix("sas-pairing-vodozemac-profile-draft-01/mac/")
+                    .unwrap(),
+                d(&["mac_context", "base64url_unpadded"])
+            );
+            assert!(!input.contains('=') && !info.contains('='));
+            assert_eq!(
+                completion_mac_strings_for_test(
+                    auth_type,
+                    step.purpose(),
+                    sender,
+                    receiver,
+                    &identity
+                ),
+                (input, info)
+            );
+            assert_eq!(
+                hex(&d(&["raw_mac", "hex"])),
+                hex(&d(&["mac", "output_hex"]))
+            );
+        }
+    }
+
+    #[test]
     fn live_bootstrap_mac_verifies_only_the_exact_bound_statement() {
         let (initiator_state, responder_state) = (EphemeralSas::new(), EphemeralSas::new());
         let (initiator_public, responder_public) =
@@ -731,7 +940,7 @@ mod tests {
         assert_eq!(r.verify_mac(&input, &info, &tag), Ok(()));
 
         let reject = |frame: Vec<u8>, context: Vec<u8>| {
-            let (input, info) = approval_mac_strings(&frame, &context).unwrap();
+            let (input, info) = mac_strings(&frame, &context).unwrap();
             assert_eq!(r.verify_mac(&input, &info, &tag), Err(Error::MacMismatch));
         };
         let context = |purpose: &[u8], sender, receiver, id: &[u8; 32]| {
@@ -832,7 +1041,7 @@ mod tests {
             ),
         );
         // The MAC input is Base64url of the frame, not its hex or a lossy text rendering.
-        let (_, info) = approval_mac_strings(&frame, &good_context).unwrap();
+        let (_, info) = mac_strings(&frame, &good_context).unwrap();
         let hex_input: String = frame.iter().map(|b| format!("{b:02x}")).collect();
         let lossy_input = String::from_utf8_lossy(&frame).into_owned();
         for wrong in [hex_input, lossy_input] {

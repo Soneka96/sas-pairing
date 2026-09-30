@@ -5,7 +5,7 @@ use std::fmt;
 
 pub const PROFILE_ID: &[u8] = b"sas-pairing-vodozemac-profile-draft-01";
 const MAGIC: &[u8; 7] = b"SASPAIR";
-const VERSION: u16 = 1;
+pub(crate) const VERSION: u16 = 1;
 pub const MAX_FRAME: usize = 65_536;
 pub const MAX_BOOTSTRAP_FRAME: usize = 16_384;
 
