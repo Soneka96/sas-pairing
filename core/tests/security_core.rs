@@ -3,11 +3,12 @@
 use std::{
     io::{BufRead, BufReader, Write},
     process::{Child, ChildStdin, Command, Stdio},
-    sync::{Arc, Barrier},
+    sync::{Arc, Barrier, mpsc},
     thread,
+    time::Duration,
 };
 
-use sas_pairing_core::{Authority, Error, Role, Status};
+use sas_pairing_core::{Error, Role, Status, TrustedAuthority};
 
 fn owner(scope: &str) -> (Child, ChildStdin) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_ownership_probe"))
@@ -18,19 +19,38 @@ fn owner(scope: &str) -> (Child, ChildStdin) {
         .spawn()
         .unwrap();
     let stdout = child.stdout.take().unwrap();
-    let mut line = String::new();
-    BufReader::new(stdout).read_line(&mut line).unwrap();
-    assert_eq!(line.trim(), "READY");
+    let (send, line) = mpsc::channel();
+    thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = send.send(line);
+    });
+    let line = match line.recv_timeout(Duration::from_secs(10)) {
+        Ok(line) => line,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("ownership probe timed out: {error}");
+        }
+    };
+    if line.trim() != "READY" {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("unexpected ownership probe output: {}", line.trim());
+    }
     let input = child.stdin.take().unwrap();
     (child, input)
 }
 
 #[test]
 fn process_ownership_and_full_reservation_lifecycle() {
-    assert_eq!(Authority::register(b"").unwrap_err(), Error::InvalidScope);
+    assert_eq!(
+        TrustedAuthority::register(b"").unwrap_err(),
+        Error::InvalidScope
+    );
     let (mut child, child_input) = owner("integration-owner");
     assert_eq!(
-        Authority::register(b"integration-owner").unwrap_err(),
+        TrustedAuthority::register(b"integration-owner").unwrap_err(),
         Error::OwnershipUnavailable
     );
     let contender = Command::new(env!("CARGO_BIN_EXE_ownership_probe"))
@@ -41,73 +61,74 @@ fn process_ownership_and_full_reservation_lifecycle() {
         .output()
         .unwrap();
     assert!(!contender.status.success());
-    let separate = Authority::register(b"independent-owner").unwrap();
+    let separate = TrustedAuthority::register(b"independent-owner").unwrap();
     separate.release().unwrap();
 
     child.kill().unwrap();
     child.wait().unwrap();
     drop(child_input);
 
-    let authority = Authority::register(b"integration-owner").unwrap();
+    let authority = TrustedAuthority::register(b"integration-owner").unwrap();
+    let executor = authority.executor();
     let mut expected_identity = b"sas-pairing-authority-v1".to_vec();
     expected_identity.extend_from_slice(&17u32.to_be_bytes());
     expected_identity.extend_from_slice(b"integration-owner");
     assert_eq!(authority.canonical_identity(), expected_identity);
     assert_eq!(
-        Authority::register(b"integration-owner").unwrap_err(),
+        TrustedAuthority::register(b"integration-owner").unwrap_err(),
         Error::AlreadyRegistered
     );
-    assert_eq!(authority.status().unwrap(), Status::Ready { remaining: 10 });
-    let mut unauthorized = authority.begin(Role::Initiator).unwrap();
+    assert_eq!(executor.status().unwrap(), Status::Ready { remaining: 10 });
+    let mut unauthorized = executor.begin(Role::Initiator).unwrap();
     assert_eq!(
-        authority.reserve(&mut unauthorized, None),
+        executor.reserve(&mut unauthorized, None),
         Err(Error::MissingAuthorization)
     );
-    authority.terminate(&mut unauthorized).unwrap();
+    executor.terminate(&mut unauthorized).unwrap();
     drop(unauthorized);
-    let initiator = authority.begin(Role::Initiator).unwrap();
-    let mut responder = authority.begin(Role::Responder).unwrap();
-    let mut other = authority.begin(Role::Initiator).unwrap();
+    let initiator = executor.begin(Role::Initiator).unwrap();
+    let mut responder = executor.begin(Role::Responder).unwrap();
+    let mut other = executor.begin(Role::Initiator).unwrap();
     let stale = authority.authorize(&mut other).unwrap();
     assert_eq!(
-        authority.reserve(&mut responder, Some(stale)),
+        executor.reserve(&mut responder, Some(stale)),
         Err(Error::StaleAuthorization)
     );
-    assert_eq!(authority.status().unwrap(), Status::Ready { remaining: 10 });
-    let mut terminated = authority.begin(Role::Initiator).unwrap();
+    assert_eq!(executor.status().unwrap(), Status::Ready { remaining: 10 });
+    let mut terminated = executor.begin(Role::Initiator).unwrap();
     let pending = authority.authorize(&mut terminated).unwrap();
-    authority.terminate(&mut terminated).unwrap();
+    executor.terminate(&mut terminated).unwrap();
     assert_eq!(
-        authority.reserve(&mut terminated, Some(pending)),
+        executor.reserve(&mut terminated, Some(pending)),
         Err(Error::Terminated)
     );
     drop(terminated);
     let authorization = authority.authorize(&mut responder).unwrap();
     assert_eq!(
-        authority
+        executor
             .reserve(&mut responder, Some(authorization))
             .unwrap(),
         9
     );
-    assert_eq!(authority.status().unwrap(), Status::Busy);
+    assert_eq!(executor.status().unwrap(), Status::Busy);
 
-    let mut blocked = authority.begin(Role::Initiator).unwrap();
+    let mut blocked = executor.begin(Role::Initiator).unwrap();
     let authorization = authority.authorize(&mut blocked).unwrap();
     assert_eq!(
-        authority.reserve(&mut blocked, Some(authorization)),
+        executor.reserve(&mut blocked, Some(authorization)),
         Err(Error::Busy)
     );
-    assert_eq!(authority.status().unwrap(), Status::Busy);
+    assert_eq!(executor.status().unwrap(), Status::Busy);
 
-    authority.terminate(&mut responder).unwrap();
+    executor.terminate(&mut responder).unwrap();
     assert_eq!(
         authority.authorize(&mut responder).unwrap_err(),
         Error::Terminated
     );
-    assert_eq!(authority.status().unwrap(), Status::Ready { remaining: 9 });
+    assert_eq!(executor.status().unwrap(), Status::Ready { remaining: 9 });
 
-    authority.terminate(&mut blocked).unwrap();
-    authority.terminate(&mut other).unwrap();
+    executor.terminate(&mut blocked).unwrap();
+    executor.terminate(&mut other).unwrap();
     let auth = authority.authorize(&mut blocked).unwrap_err();
     assert_eq!(auth, Error::Terminated);
     drop(initiator);
@@ -115,40 +136,41 @@ fn process_ownership_and_full_reservation_lifecycle() {
     drop(responder);
     drop(other);
 
-    let mut abandoned = authority.begin(Role::Initiator).unwrap();
+    let mut abandoned = executor.begin(Role::Initiator).unwrap();
     let authorization = authority.authorize(&mut abandoned).unwrap();
     assert_eq!(
-        authority
+        executor
             .reserve(&mut abandoned, Some(authorization))
             .unwrap(),
         8
     );
     drop(abandoned);
-    assert_eq!(authority.status().unwrap(), Status::Ready { remaining: 8 });
+    assert_eq!(executor.status().unwrap(), Status::Ready { remaining: 8 });
 
     // Post-reservation failures are represented by termination; the spent opportunity stays spent.
     for remaining in (0..8).rev() {
-        let mut ceremony = authority.begin(Role::Initiator).unwrap();
+        let mut ceremony = executor.begin(Role::Initiator).unwrap();
         let token = authority.authorize(&mut ceremony).unwrap();
         assert_eq!(
-            authority.reserve(&mut ceremony, Some(token)).unwrap(),
+            executor.reserve(&mut ceremony, Some(token)).unwrap(),
             remaining
         );
-        authority.terminate(&mut ceremony).unwrap();
+        executor.terminate(&mut ceremony).unwrap();
     }
-    assert_eq!(authority.status().unwrap(), Status::Exhausted);
-    let mut eleventh = authority.begin(Role::Responder).unwrap();
+    assert_eq!(executor.status().unwrap(), Status::Exhausted);
+    let mut eleventh = executor.begin(Role::Responder).unwrap();
     let token = authority.authorize(&mut eleventh).unwrap();
     assert_eq!(
-        authority.reserve(&mut eleventh, Some(token)),
+        executor.reserve(&mut eleventh, Some(token)),
         Err(Error::Exhausted)
     );
-    authority.terminate(&mut eleventh).unwrap();
+    executor.terminate(&mut eleventh).unwrap();
     drop(eleventh);
+    drop(executor);
     authority.release().unwrap();
-    let replacement = Authority::register(b"integration-owner").unwrap();
+    let replacement = TrustedAuthority::register(b"integration-owner").unwrap();
     assert_eq!(
-        replacement.status().unwrap(),
+        replacement.executor().status().unwrap(),
         Status::Ready { remaining: 10 }
     );
     replacement.release().unwrap();
@@ -156,16 +178,20 @@ fn process_ownership_and_full_reservation_lifecycle() {
 
 #[test]
 fn shared_guard_race_has_one_winner() {
-    let authority = Authority::register(b"thread-race").unwrap();
+    let authority = TrustedAuthority::register(b"thread-race").unwrap();
+    let executor = authority.executor();
     let barrier = Arc::new(Barrier::new(3));
     let workers: Vec<_> = [Role::Initiator, Role::Responder]
         .into_iter()
         .map(|role| {
-            let authority = authority.clone();
+            let mut ceremony = executor.begin(role).unwrap();
+            let token = authority.authorize(&mut ceremony).unwrap();
+            (ceremony, token)
+        })
+        .map(|(mut ceremony, token)| {
+            let authority = executor.clone();
             let barrier = barrier.clone();
             thread::spawn(move || {
-                let mut ceremony = authority.begin(role).unwrap();
-                let token = authority.authorize(&mut ceremony).unwrap();
                 barrier.wait();
                 let result = authority.reserve(&mut ceremony, Some(token));
                 (authority, ceremony, result)
@@ -194,6 +220,7 @@ fn shared_guard_race_has_one_winner() {
     for (authority, mut ceremony, _) in results {
         authority.terminate(&mut ceremony).unwrap();
     }
+    drop(executor);
     authority.release().unwrap();
 }
 
@@ -203,7 +230,98 @@ fn graceful_shutdown_allows_replacement_with_fresh_volatile_budget() {
     writeln!(input).unwrap();
     drop(input);
     assert!(child.wait().unwrap().success());
-    let authority = Authority::register(b"normal-release").unwrap();
-    assert_eq!(authority.status().unwrap(), Status::Ready { remaining: 10 });
+    let authority = TrustedAuthority::register(b"normal-release").unwrap();
+    assert_eq!(
+        authority.executor().status().unwrap(),
+        Status::Ready { remaining: 10 }
+    );
     authority.release().unwrap();
+}
+
+struct RaceProbe {
+    child: Child,
+    input: ChildStdin,
+    lines: mpsc::Receiver<String>,
+}
+
+impl RaceProbe {
+    fn start(scope: &str) -> Self {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ownership_probe"))
+            .arg(scope)
+            .arg("--race")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (send, lines) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                if send.send(line.unwrap_or_default()).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            input: child.stdin.take().unwrap(),
+            child,
+            lines,
+        }
+    }
+
+    fn line(&self) -> String {
+        self.lines
+            .recv_timeout(Duration::from_secs(10))
+            .expect("ownership probe timed out")
+    }
+
+    fn send(&mut self, command: &str) {
+        writeln!(self.input, "{command}").unwrap();
+        self.input.flush().unwrap();
+    }
+}
+
+impl Drop for RaceProbe {
+    fn drop(&mut self) {
+        if self.child.try_wait().unwrap().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+#[test]
+fn simultaneous_independent_processes_have_one_owner_and_safe_replacement() {
+    let scope = format!("race-{}", std::process::id());
+    let mut first = RaceProbe::start(&scope);
+    let mut second = RaceProbe::start(&scope);
+    assert_eq!(first.line(), "ARMED");
+    assert_eq!(second.line(), "ARMED");
+
+    // Both children are independently waiting at the gate before either acquisition begins.
+    first.send("GO");
+    second.send("GO");
+    let first_result = first.line();
+    let second_result = second.line();
+    let outcomes = [first_result.as_str(), second_result.as_str()];
+    assert_eq!(outcomes.iter().filter(|&&s| s == "WON").count(), 1);
+    assert_eq!(outcomes.iter().filter(|&&s| s == "LOST").count(), 1);
+
+    let (winner, loser) = if first_result == "WON" {
+        (&mut first, &mut second)
+    } else {
+        (&mut second, &mut first)
+    };
+    assert_eq!(loser.child.wait().unwrap().code(), Some(1));
+    assert_eq!(
+        TrustedAuthority::register(scope.as_bytes()).unwrap_err(),
+        Error::OwnershipUnavailable
+    );
+    winner.send("RELEASE");
+    assert_eq!(winner.line(), "RELEASED");
+    assert!(winner.child.wait().unwrap().success());
+
+    let replacement = TrustedAuthority::register(scope.as_bytes()).unwrap();
+    replacement.release().unwrap();
 }

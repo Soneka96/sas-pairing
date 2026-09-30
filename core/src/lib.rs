@@ -47,14 +47,31 @@ pub enum Status {
     Exhausted,
 }
 
-/// A registration is an opaque handle issued from trusted local configuration.
+/// Trusted local configuration owns this type and is the only authorization issuer.
 /// Its scope is never accepted from a network message.
-#[derive(Clone)]
-pub struct Authority(Arc<State>);
+pub struct TrustedAuthority(Arc<State>);
 
-impl fmt::Debug for Authority {
+/// Give this restricted handle to ceremony execution, never the trusted handle.
+///
+/// ```compile_fail
+/// use sas_pairing_core::{Role, TrustedAuthority};
+/// let trusted = TrustedAuthority::register(b"scope").unwrap();
+/// let executor = trusted.executor();
+/// let mut ceremony = executor.begin(Role::Initiator).unwrap();
+/// executor.authorize(&mut ceremony).unwrap();
+/// ```
+#[derive(Clone)]
+pub struct CeremonyExecutor(Arc<State>);
+
+impl fmt::Debug for TrustedAuthority {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Authority").finish_non_exhaustive()
+        f.debug_struct("TrustedAuthority").finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for CeremonyExecutor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CeremonyExecutor").finish_non_exhaustive()
     }
 }
 
@@ -78,7 +95,7 @@ impl Drop for State {
 }
 
 pub struct Ceremony {
-    authority: Authority,
+    authority: CeremonyExecutor,
     id: u64,
     role: Role,
     authorization: Option<u64>,
@@ -96,7 +113,7 @@ impl fmt::Debug for Authorization {
     }
 }
 
-impl Authority {
+impl TrustedAuthority {
     /// Registers one canonical scope. The trusted registry must issue one stable scope per capability.
     pub fn register(scope: &[u8]) -> Result<Self, Error> {
         if scope.is_empty() || scope.len() > u32::MAX as usize {
@@ -132,20 +149,12 @@ impl Authority {
         &self.0.identity
     }
 
-    pub fn begin(&self, role: Role) -> Result<Ceremony, Error> {
-        let id = NEXT_CEREMONY
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            .map_err(|_| Error::OwnershipUncertain)?;
-        Ok(Ceremony {
-            authority: self.clone(),
-            id,
-            role,
-            authorization: None,
-            terminal: false,
-        })
+    /// Create the limited interface intended for untrusted protocol execution.
+    pub fn executor(&self) -> CeremonyExecutor {
+        CeremonyExecutor(self.0.clone())
     }
 
-    /// Trusted local boundary: issue an exact-ceremony authorization capability.
+    /// Local application boundary: issue ceremony-specific consent after user approval.
     pub fn authorize(&self, ceremony: &mut Ceremony) -> Result<Authorization, Error> {
         if ceremony.terminal {
             return Err(Error::Terminated);
@@ -160,6 +169,35 @@ impl Authority {
         Ok(Authorization {
             ceremony: ceremony.id,
             seal,
+        })
+    }
+
+    /// Explicit release is preferred; dropping the final handle also closes the OS lease.
+    pub fn release(self) -> Result<(), Error> {
+        let mut state = Arc::try_unwrap(self.0).map_err(|_| Error::Busy)?;
+        let lease = state
+            .ownership
+            .get_mut()
+            .map_err(|_| Error::OwnershipUncertain)?
+            .take();
+        if let Some(lease) = lease {
+            lease.release()?;
+        }
+        Ok(())
+    }
+}
+
+impl CeremonyExecutor {
+    pub fn begin(&self, role: Role) -> Result<Ceremony, Error> {
+        let id = NEXT_CEREMONY
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| Error::OwnershipUncertain)?;
+        Ok(Ceremony {
+            authority: self.clone(),
+            id,
+            role,
+            authorization: None,
+            terminal: false,
         })
     }
 
@@ -232,20 +270,6 @@ impl Authority {
             }
         })
     }
-
-    /// Explicit release is preferred; dropping the final handle also closes the OS lease.
-    pub fn release(self) -> Result<(), Error> {
-        let mut state = Arc::try_unwrap(self.0).map_err(|_| Error::Busy)?;
-        let lease = state
-            .ownership
-            .get_mut()
-            .map_err(|_| Error::OwnershipUncertain)?
-            .take();
-        if let Some(lease) = lease {
-            lease.release()?;
-        }
-        Ok(())
-    }
 }
 
 impl Ceremony {
@@ -272,8 +296,8 @@ mod os_lock {
     use sha2::{Digest, Sha256};
     use std::{
         fs::{self, File, OpenOptions},
-        os::windows::fs::OpenOptionsExt,
-        path::PathBuf,
+        os::windows::fs::{MetadataExt, OpenOptionsExt},
+        path::{Component, Path, PathBuf, Prefix},
     };
     use windows_sys::Win32::{
         Foundation::{ERROR_LOCK_VIOLATION, HANDLE},
@@ -299,7 +323,7 @@ mod os_lock {
             let dir = PathBuf::from(root)
                 .join("sas-pairing")
                 .join("authority-locks");
-            fs::create_dir_all(&dir).map_err(|_| Error::OwnershipUnavailable)?;
+            ensure_plain_directories(&dir)?;
             let name = format!("{}.lock", hex(&Sha256::digest(identity)));
             let file = OpenOptions::new()
                 .read(true)
@@ -311,6 +335,7 @@ mod os_lock {
                 .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
                 .open(dir.join(name))
                 .map_err(|_| Error::OwnershipUnavailable)?;
+            ensure_regular_lock_file(&file)?;
             let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
             let acquired = unsafe {
                 LockFileEx(
@@ -349,6 +374,54 @@ mod os_lock {
         }
     }
     use std::os::windows::io::AsRawHandle;
+
+    pub(super) fn ensure_plain_directories(path: &Path) -> Result<(), Error> {
+        if !path.is_absolute() {
+            return Err(Error::OwnershipUnavailable);
+        }
+        if !matches!(path.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_)))
+        {
+            return Err(Error::OwnershipUnavailable);
+        }
+        let mut current = PathBuf::new();
+        for component in path.components() {
+            current.push(component);
+            if matches!(component, Component::Prefix(_)) {
+                continue;
+            }
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) => {
+                    let attributes = metadata.file_attributes();
+                    if attributes & 0x400 != 0 || attributes & 0x10 == 0 {
+                        return Err(Error::OwnershipUnavailable);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir(&current).map_err(|_| Error::OwnershipUnavailable)?;
+                    let metadata =
+                        fs::symlink_metadata(&current).map_err(|_| Error::OwnershipUncertain)?;
+                    let attributes = metadata.file_attributes();
+                    if attributes & 0x400 != 0 || attributes & 0x10 == 0 {
+                        return Err(Error::OwnershipUnavailable);
+                    }
+                }
+                Err(_) => return Err(Error::OwnershipUncertain),
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn ensure_regular_lock_file(file: &File) -> Result<(), Error> {
+        let attributes = file
+            .metadata()
+            .map_err(|_| Error::OwnershipUncertain)?
+            .file_attributes();
+        if attributes & 0x400 != 0 || attributes & 0x10 != 0 {
+            return Err(Error::OwnershipUnavailable);
+        }
+        Ok(())
+    }
+
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
@@ -370,37 +443,92 @@ mod os_lock {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
-    use super::{Authority, Error, Role};
+    use super::{Error, Role, TrustedAuthority, os_lock};
+    use std::{
+        fs::{self, OpenOptions},
+        os::windows::fs::{OpenOptionsExt, symlink_dir, symlink_file},
+        path::PathBuf,
+    };
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("sas-pairing-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn lock_paths_reject_file_parents_and_reparse_points() {
+        let base = temp_path("path-check");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        let regular_file = base.join("not-a-directory");
+        fs::write(&regular_file, b"").unwrap();
+        assert_eq!(
+            os_lock::ensure_plain_directories(&regular_file.join("child")),
+            Err(Error::OwnershipUnavailable)
+        );
+
+        let target_dir = base.join("target");
+        let linked_dir = base.join("junction-like-link");
+        fs::create_dir(&target_dir).unwrap();
+        if let Err(error) = symlink_dir(&target_dir, &linked_dir) {
+            eprintln!("directory-symlink check unavailable on this host: {error}");
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
+        assert_eq!(
+            os_lock::ensure_plain_directories(&linked_dir.join("child")),
+            Err(Error::OwnershipUnavailable)
+        );
+
+        let target_file = base.join("target.lock");
+        let linked_file = base.join("linked.lock");
+        fs::write(&target_file, b"").unwrap();
+        symlink_file(&target_file, &linked_file).unwrap();
+        if let Ok(file) = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(0x0020_0000) // FILE_FLAG_OPEN_REPARSE_POINT
+            .open(&linked_file)
+        {
+            assert_eq!(
+                os_lock::ensure_regular_lock_file(&file),
+                Err(Error::OwnershipUnavailable)
+            );
+        }
+        fs::remove_dir_all(base).unwrap();
+    }
 
     #[test]
     fn poisoned_shared_state_fails_closed() {
-        let authority = Authority::register(b"poisoned-state-test").unwrap();
-        let poisoned = authority.clone();
+        let authority = TrustedAuthority::register(b"poisoned-state-test").unwrap();
+        let executor = authority.executor();
+        let poisoned = executor.clone();
         let _ = std::thread::spawn(move || {
             let _state = poisoned.0.shared.lock().unwrap();
             panic!("simulate ambiguous in-process state");
         })
         .join();
-        assert_eq!(authority.status().unwrap_err(), Error::OwnershipUncertain);
-        let mut ceremony = authority.begin(Role::Initiator).unwrap();
+        assert_eq!(executor.status().unwrap_err(), Error::OwnershipUncertain);
+        let mut ceremony = executor.begin(Role::Initiator).unwrap();
         let authorization = authority.authorize(&mut ceremony).unwrap();
         assert_eq!(
-            authority.reserve(&mut ceremony, Some(authorization)),
+            executor.reserve(&mut ceremony, Some(authorization)),
             Err(Error::OwnershipUncertain)
         );
         drop(ceremony);
+        drop(executor);
         authority.release().unwrap();
     }
 }
 
 #[cfg(all(test, not(windows)))]
 mod unsupported_platform_tests {
-    use super::{Authority, Error};
+    use super::{Error, TrustedAuthority};
 
     #[test]
     fn ownership_is_never_faked_on_unsupported_platforms() {
         assert_eq!(
-            Authority::register(b"unsupported-test").unwrap_err(),
+            TrustedAuthority::register(b"unsupported-test").unwrap_err(),
             Error::UnsupportedPlatform
         );
     }
