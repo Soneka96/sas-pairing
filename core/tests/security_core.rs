@@ -177,6 +177,68 @@ fn process_ownership_and_full_reservation_lifecycle() {
 }
 
 #[test]
+fn file_control_probe_reports_identity_and_releases_ownership() {
+    let dir = std::env::temp_dir().join(format!("sas-p4-probe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let scope = format!("file-control-{}", std::process::id());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ownership_probe"))
+        .args([&scope, "--file-control", dir.to_str().unwrap()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let ready = dir.join(format!("{}.ready", child.id()));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ready.exists() && std::time::Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(ready.exists(), "probe did not become ready");
+    let contender = Command::new(env!("CARGO_BIN_EXE_ownership_probe"))
+        .args([&scope, "--file-control", dir.to_str().unwrap()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let contender_pid = contender.id();
+    assert_eq!(contender.wait_with_output().unwrap().status.code(), Some(1));
+    let owner_log = std::fs::read_to_string(dir.join(format!("{}.log", child.id()))).unwrap();
+    let contender_log = std::fs::read_to_string(dir.join(format!("{contender_pid}.log"))).unwrap();
+    assert!(contender_log.contains("ownership=DENIED"));
+    assert!(contender_log.contains("reservation=BLOCKED_BEFORE_EXECUTOR"));
+    assert_eq!(
+        owner_log
+            .lines()
+            .next()
+            .unwrap()
+            .split("canonical_identity_hex=")
+            .nth(1),
+        contender_log
+            .lines()
+            .next()
+            .unwrap()
+            .split("canonical_identity_hex=")
+            .nth(1)
+    );
+    std::fs::write(dir.join("release"), "release").unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() && std::time::Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    if child.try_wait().unwrap().is_none() {
+        child.kill().unwrap();
+    }
+    assert!(child.wait().unwrap().success());
+    let log = std::fs::read_to_string(dir.join(format!("{}.log", child.id()))).unwrap();
+    assert!(log.contains("ownership=ACQUIRED"));
+    assert!(log.contains("ownership=RELEASED"));
+    assert!(log.contains("canonical_identity_hex="));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn shared_guard_race_has_one_winner() {
     let authority = TrustedAuthority::register(b"thread-race").unwrap();
     let executor = authority.executor();
