@@ -5,8 +5,8 @@
 `sas-pairing` is a language-neutral project for human-authenticated pairing between two devices. The intended experience is that each device displays the same short authentication string (SAS), and the user compares the values:
 
 ```text
-Device A:  7K3-M2Q8D
-Device B:  7K3-M2Q8D
+Device A:  4442 5768 1708
+Device B:  4442 5768 1708
 
 If the values match, approve pairing.
 ```
@@ -15,9 +15,9 @@ The value is compared on both devices. It is not typed and is not a password. Th
 
 ## Intended properties
 
-The design aims to support active man-in-the-middle resistant initial pairing, human comparison instead of password entry, an alphanumeric SAS, and authentication and binding of consumer-supplied application context by a successful ceremony. Context values are input, not trusted facts merely because an application supplied them; the selected profile defines what it authenticates and binds. The protocol is language-neutral, with one security core, Dart and .NET bindings, deterministic test vectors, and an explicit threat model.
+The design aims to support active man-in-the-middle resistant initial pairing, human comparison instead of password entry, and authentication and binding of consumer-supplied application context by a successful ceremony. The selected experimental remote profile uses three decimal groups of 13 bits each (39 displayed bits); historical presentation research is not the selected format. Context values are input, not trusted facts merely because an application supplied them; the selected profile defines what it authenticates and binds. The protocol is language-neutral, with one security core, Dart and .NET bindings, deterministic test vectors, and an explicit threat model.
 
-These are design goals, not current capabilities or security claims. SAS examples in this README are illustrative and do not select an alphabet, length, grouping, or entropy value.
+These are design goals, not current capabilities or security claims. The example shows the selected experimental representation; it does not indicate implementation status or production approval.
 
 ## Project status
 

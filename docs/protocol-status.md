@@ -16,6 +16,8 @@ P3 remote specification finalization is complete with this baseline; P4 is the n
 
 **Owner decision and current direction:** P2 originally selected Candidate B based on available formal evidence. P3 research exposed substantial custom design and maintenance responsibility in its concrete instantiation; the owner reopened construction selection for ownership reasons, not because Candidate B was shown insecure. The owner has selected the existing vodozemac-based remote candidate for experimental implementation, using the pinned 0.11.0 dependency and current corrected specification/policy. This selection is distinct from production approval. Residual assumptions and verification limits remain documented and accepted for experimental development.
 
+The selected experimental remote SAS representation is three decimal groups of 13 bits each, for 39 displayed bits, as specified by the authoritative profile and deterministic vector. Earlier alphanumeric and other presentation discussions are historical research only; they are not current format choices. This representation is experimental and does not imply production approval.
+
 The separate same-device local profile and platform adapters remain gated. See [current manager context](../ai/context/project.md) for the implementation handoff.
 
 ## Historical P2 decision and current evidence boundary
