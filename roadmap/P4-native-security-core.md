@@ -2,13 +2,13 @@
 
 ## Status
 
-🔵 **EXPERIMENTAL IMPLEMENTATION IN PROGRESS — FIRST SECURITY-FOUNDATION INCREMENT IMPLEMENTED; P4 NOT COMPLETE.** The Windows Rust foundation now provides canonical trusted-scope registration, process ownership, ceremony-specific authorization, a shared guard and volatile ten-opportunity budget, and terminal cleanup. Same-session process tests pass. Cross-logon-session verification remains pending. The owner selected the corrected vodozemac remote profile and owner policy as the experimental baseline and waived the qualified-human-review prerequisite for this phase. F-02 is recorded as a false positive under the stated idealized assumptions; the complete argument remains conditional and is not formally verified. No production-security approval is granted.
+🔵 **EXPERIMENTAL IMPLEMENTATION IN PROGRESS — FIRST SECURITY-FOUNDATION INCREMENT IMPLEMENTED; P4 NOT COMPLETE.** The Windows Rust foundation now derives account-scoped lock ownership from the process token SID and Windows profile API, with canonical identity encoding unchanged. Same-session process tests pass. Same-user cross-logon-session verification remains pending and cryptographic contribution exposure must not begin until it is completed. The owner selected the corrected vodozemac remote profile and owner policy as the experimental baseline and waived the qualified-human-review prerequisite for this phase. F-02 is recorded as a false positive under the stated idealized assumptions; the complete argument remains conditional and is not formally verified. No production-security approval is granted.
 
 ## First implementation step
 
 Build and verify the Rust authority-ownership and exposure-admission foundation before implementing protocol messages: canonical local authority identity registration; one OS-backed exclusive owner lease; one shared active-ceremony guard; and one shared volatile ten-opportunity counter. Reservation must require fresh authorization for that exact ceremony and acquire the guard plus opportunity with one atomic outcome before any public contribution can be released. Keep protocol message handling out of this first slice.
 
-The first increment implements this step's reservation foundation and a real Windows file-lock lease. Same-session process contention, forced termination, normal release, distinct authorities, shared guard/budget, authorization, and reservation lifecycle checks pass. Cross-logon-session behavior has a reproducible manual procedure but remains unverified here. Cryptographic ceremony implementation and protocol conformance remain future work.
+The first increment implements this step's reservation foundation and a real Windows file-lock lease. Same-session process contention, forced termination, normal release, distinct authorities, shared guard/budget, authorization, and reservation lifecycle checks pass. A manual cross-logon-session procedure remains documented but unverified; no cryptographic contribution may be exposed until that evidence is recorded. Cryptographic ceremony implementation and protocol conformance remain future work.
 
 ## Goal
 

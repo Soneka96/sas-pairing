@@ -300,12 +300,17 @@ mod os_lock {
         path::{Component, Path, PathBuf, Prefix},
     };
     use windows_sys::Win32::{
-        Foundation::{ERROR_LOCK_VIOLATION, HANDLE},
+        Foundation::{CloseHandle, ERROR_LOCK_VIOLATION, HANDLE},
+        Security::{
+            GetLengthSid, GetTokenInformation, IsValidSid, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        },
         Storage::FileSystem::{
             FILE_FLAG_OPEN_REPARSE_POINT, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
             LockFileEx, UnlockFileEx,
         },
         System::IO::OVERLAPPED,
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+        UI::Shell::GetUserProfileDirectoryW,
     };
 
     pub struct Lease {
@@ -319,12 +324,17 @@ mod os_lock {
 
     impl Lease {
         pub fn acquire(identity: &[u8]) -> Result<Self, Error> {
-            let root = std::env::var_os("LOCALAPPDATA").ok_or(Error::OwnershipUnavailable)?;
-            let dir = PathBuf::from(root)
+            let (sid, profile) = authenticated_account()?;
+            let dir = profile
+                .join("AppData")
+                .join("Local")
                 .join("sas-pairing")
                 .join("authority-locks");
             ensure_plain_directories(&dir)?;
-            let name = format!("{}.lock", hex(&Sha256::digest(identity)));
+            let mut account_identity = (sid.len() as u32).to_be_bytes().to_vec();
+            account_identity.extend_from_slice(&sid);
+            account_identity.extend_from_slice(identity);
+            let name = format!("{}.lock", hex(&Sha256::digest(account_identity)));
             let file = OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -374,6 +384,63 @@ mod os_lock {
         }
     }
     use std::os::windows::io::AsRawHandle;
+
+    pub(super) fn authenticated_account() -> Result<(Vec<u8>, PathBuf), Error> {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(Error::OwnershipUnavailable);
+        }
+        struct Token(HANDLE);
+        impl Drop for Token {
+            fn drop(&mut self) {
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+        let token = Token(token);
+        let mut size = 0;
+        unsafe {
+            GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &mut size);
+        }
+        if size == 0 {
+            return Err(Error::OwnershipUnavailable);
+        }
+        let mut info = vec![0u8; size as usize];
+        if unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenUser,
+                info.as_mut_ptr().cast(),
+                size,
+                &mut size,
+            )
+        } == 0
+        {
+            return Err(Error::OwnershipUnavailable);
+        }
+        let user = unsafe { &*info.as_ptr().cast::<TOKEN_USER>() };
+        let sid = user.User.Sid;
+        if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
+            return Err(Error::OwnershipUnavailable);
+        }
+        let sid_len = unsafe { GetLengthSid(sid) } as usize;
+        if !(8..=68).contains(&sid_len) {
+            return Err(Error::OwnershipUnavailable);
+        }
+        let sid = unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), sid_len) }.to_vec();
+
+        let mut chars = 0;
+        unsafe { GetUserProfileDirectoryW(token.0, std::ptr::null_mut(), &mut chars) };
+        if chars == 0 {
+            return Err(Error::OwnershipUnavailable);
+        }
+        let mut profile = vec![0u16; chars as usize];
+        if unsafe { GetUserProfileDirectoryW(token.0, profile.as_mut_ptr(), &mut chars) } == 0 {
+            return Err(Error::OwnershipUnavailable);
+        }
+        profile.truncate(chars.saturating_sub(1) as usize);
+        let profile = String::from_utf16(&profile).map_err(|_| Error::OwnershipUnavailable)?;
+        Ok((sid, PathBuf::from(profile)))
+    }
 
     pub(super) fn ensure_plain_directories(path: &Path) -> Result<(), Error> {
         if !path.is_absolute() {
@@ -471,31 +538,44 @@ mod windows_tests {
         let linked_dir = base.join("junction-like-link");
         fs::create_dir(&target_dir).unwrap();
         if let Err(error) = symlink_dir(&target_dir, &linked_dir) {
-            eprintln!("directory-symlink check unavailable on this host: {error}");
-            let _ = fs::remove_dir_all(&base);
-            return;
+            eprintln!("UNVERIFIED: directory reparse-point check unavailable: {error}");
+        } else {
+            assert_eq!(
+                os_lock::ensure_plain_directories(&linked_dir.join("child")),
+                Err(Error::OwnershipUnavailable)
+            );
         }
-        assert_eq!(
-            os_lock::ensure_plain_directories(&linked_dir.join("child")),
-            Err(Error::OwnershipUnavailable)
-        );
 
         let target_file = base.join("target.lock");
         let linked_file = base.join("linked.lock");
         fs::write(&target_file, b"").unwrap();
-        symlink_file(&target_file, &linked_file).unwrap();
-        if let Ok(file) = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(0x0020_0000) // FILE_FLAG_OPEN_REPARSE_POINT
-            .open(&linked_file)
-        {
-            assert_eq!(
-                os_lock::ensure_regular_lock_file(&file),
-                Err(Error::OwnershipUnavailable)
-            );
+        match symlink_file(&target_file, &linked_file) {
+            Ok(()) => match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(0x0020_0000) // FILE_FLAG_OPEN_REPARSE_POINT
+                .open(&linked_file)
+            {
+                Ok(file) => assert_eq!(
+                    os_lock::ensure_regular_lock_file(&file),
+                    Err(Error::OwnershipUnavailable)
+                ),
+                Err(error) => {
+                    eprintln!("UNVERIFIED: lock-file reparse-point check unavailable: {error}")
+                }
+            },
+            Err(error) => eprintln!("UNVERIFIED: lock-file symlink setup unavailable: {error}"),
         }
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn account_identity_comes_from_windows_and_is_stable() {
+        let first = os_lock::authenticated_account().unwrap();
+        let second = os_lock::authenticated_account().unwrap();
+        assert_eq!(first, second);
+        assert!(!first.0.is_empty());
+        assert!(first.1.is_absolute());
     }
 
     #[test]
