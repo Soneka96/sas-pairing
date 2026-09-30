@@ -558,6 +558,22 @@ mod tests {
             public_key: key,
         };
         assert!(id65.encode().is_err());
+
+        let mut empty_start = hex(START);
+        let profile_len = u32::from_be_bytes(empty_start[10..14].try_into().unwrap()) as usize;
+        let request_id_len_at = 18 + profile_len;
+        let request_id_at = request_id_len_at + 4;
+        empty_start.drain(request_id_at..request_id_at + 16);
+        empty_start[request_id_len_at..request_id_at].copy_from_slice(&0u32.to_be_bytes());
+        assert!(decode(&empty_start).is_err());
+
+        let mut oversized_start = hex(START);
+        let request_id_len_at =
+            18 + u32::from_be_bytes(oversized_start[10..14].try_into().unwrap()) as usize;
+        let request_id_at = request_id_len_at + 4;
+        oversized_start.splice(request_id_at..request_id_at + 16, vec![7; 65]);
+        oversized_start[request_id_len_at..request_id_at].copy_from_slice(&65u32.to_be_bytes());
+        assert!(decode(&oversized_start).is_err());
         assert!(Bootstrap::new(vec![b'a'], vec![b'a'; 64], vec![0], vec![0; 8192]).is_ok());
         assert!(Bootstrap::new(vec![b'a'], b"a".to_vec(), vec![0], vec![0; 8193]).is_err());
     }

@@ -96,7 +96,7 @@ impl RemoteCeremony {
         expected: Option<Bootstrap>,
     ) -> Result<Self, CeremonyError> {
         let start = protocol::decode(start_bytes)?;
-        validate_request_id(&start)?;
+        validate_initiator_request_id(&start)?;
         let peer = match &start.message {
             Message::Start { bootstrap, .. } => bootstrap,
             _ => return Err(CeremonyError::InvalidState),
@@ -131,7 +131,6 @@ impl RemoteCeremony {
         expected: Option<Bootstrap>,
     ) -> Result<(Self, Vec<u8>), CeremonyError> {
         let start = protocol::decode(start_bytes)?;
-        validate_request_id(&start)?;
         let (request_id, peer) = match &start.message {
             Message::Start {
                 request_id,
@@ -528,7 +527,7 @@ fn request_id_of(message: &DecodedMessage) -> Result<&[u8], CeremonyError> {
         _ => Err(CeremonyError::InvalidState),
     }
 }
-fn validate_request_id(message: &DecodedMessage) -> Result<(), CeremonyError> {
+fn validate_initiator_request_id(message: &DecodedMessage) -> Result<(), CeremonyError> {
     if request_id_of(message)?.len() == 16 {
         Ok(())
     } else {
@@ -684,6 +683,54 @@ mod tests {
         drop(executor_r);
         authority_i.release().unwrap();
         authority_r.release().unwrap();
+    }
+
+    #[test]
+    fn request_id_lengths_follow_role_specific_rules() {
+        let local_i = bootstrap(&decoded("START"), true);
+        let local_r = bootstrap(&decoded("ACCEPT"), false);
+
+        for len in [1, 16, 64] {
+            let start = Message::Start {
+                request_id: vec![0x42; len],
+                bootstrap: local_i.clone(),
+            }
+            .encode()
+            .unwrap();
+            let (authority, exec) = executor(format!("responder-request-id-{len}").as_bytes());
+            let (responder, accept) = RemoteCeremony::responder(
+                exec.clone(),
+                exec.begin(Role::Responder).unwrap(),
+                &start,
+                local_r.clone(),
+                None,
+            )
+            .unwrap();
+            assert!(
+                matches!(protocol::decode(&accept).unwrap().message, Message::Accept { request_id, .. } if request_id.len() == len)
+            );
+            assert_eq!(exec.status().unwrap(), Status::Ready { remaining: 10 });
+            drop(responder);
+            drop(exec);
+            authority.release().unwrap();
+
+            let (authority, exec) = executor(format!("initiator-request-id-{len}").as_bytes());
+            let result = RemoteCeremony::initiator(
+                exec.clone(),
+                exec.begin(Role::Initiator).unwrap(),
+                &start,
+                local_i.clone(),
+                None,
+            );
+            match result {
+                Ok(run) if len == 16 => drop(run),
+                Err(error) if len != 16 => assert_eq!(error, CeremonyError::InvalidRequestId),
+                _ => panic!("initiator accepted an invalid request ID length"),
+            }
+            assert_eq!(exec.status().unwrap(), Status::Ready { remaining: 10 });
+            drop(exec);
+            authority.release().unwrap();
+        }
     }
 
     #[test]
