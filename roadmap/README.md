@@ -9,11 +9,7 @@ P1 ✅ Threat Model and Protocol Requirements
  ↓
 P2 ✅ Construction Selection / Formal Mapping
  ↓
-P3 ✅/🟡 Candidate Protocol Specification + Review Package (specification substantially review-ready)
- ↓
-P3.5 🟡 AI-assisted findings documented; qualified human gate waived for experimental P4
- ↓
-P3.6 ✅ Experimental owner selection / baseline acceptance (not production freeze)
+P3 ✅ Finalized selected experimental remote specification and owner policy
  ↓
 P4 🔵 Experimental Native Rust Security Core authorized
  ↓
@@ -43,7 +39,7 @@ P10 🟡 Consumer Integration / DovahLink Example
 
 The roadmap is evidence-driven and may change. Deep planning is limited to the current phase; the next phase is understood well enough to expose dependencies. Later phases remain milestone-level until earlier security decisions resolve. A phase may end in STOP rather than automatically progressing. No dates or delivery estimates are implied.
 
-P0, P1, and the historical P2 research phase are complete. **Historical P2 outcome: SELECTED — Candidate B.** During P3, the owner reopened that choice because a concrete Candidate B profile would require substantial project-owned cryptographic design and proof-mapping/maintenance. This is an ownership decision, not a finding that Candidate B is insecure; it remains a formal reference and possible fallback. Current remote policy permits one owning process per authority, one live exposed ceremony, and a shared 10-opportunity process/session budget across roles, threads, and connections. The `n_A + n_B - 1` model gives at most 19 pairs only in a joint 10/10 window while both endpoints remain within their respective process sessions; it is not a bound across arbitrary restarts or over a lifetime. **F-02 is a false positive under the stated idealized assumptions:** an attacker may know its own DH secret after an honest public contribution is revealed; the relevant condition is target-SAS unpredictability before the attacker fixes its contribution. The complete argument remains conditional and is not formally verified. AI-assisted reviews are not professional audits. The owner waived the qualified-human-review gate for experimental development, not completed it. **Vodozemac 0.11.0 is selected for experimental implementation. P4 is authorized, not complete.** No production-security or release approval is granted. P5 implementation review, existing release gates, and the separate local-profile/adapter gates remain. See [protocol status](../docs/protocol-status.md), [owner decision](../docs/decisions/0002-experimental-vodozemac-selection.md), and [AI manager context](../ai/context/project.md).
+P0–P3 remote experimental specification finalization are complete. **Historical P2 outcome: SELECTED — Candidate B.** During P3, the owner reopened that choice because a concrete Candidate B profile would require substantial project-owned cryptographic design and proof-mapping/maintenance. This is an ownership decision, not a finding that Candidate B is insecure; it remains a formal reference and possible fallback. Current remote policy permits one owning process per authority, one live exposed ceremony, a shared ten-opportunity process/session budget, and distinct finite pre-exposure resource controls across roles, threads, and connections. The `n_A + n_B - 1` model gives at most 19 pairs only in a joint 10/10 window while both endpoints remain within their respective process sessions; it is not a bound across arbitrary restarts or over a lifetime. **F-02 is a false positive under the stated idealized assumptions:** an attacker may know its own DH secret after an honest public contribution is revealed; the relevant condition is target-SAS unpredictability before the attacker fixes its contribution. The complete argument remains conditional and is not formally verified. AI-assisted reviews are not professional audits. The owner waived the qualified-human-review gate for experimental development, not completed it; no professional audit is currently planned. **Vodozemac 0.11.0 is selected for experimental implementation. P4 is next and authorized, not complete.** No production-security or release approval is granted. The separate local-profile/adapter work remains candidate-only and does not block remote P4. See [protocol status](../docs/protocol-status.md) and [owner decision](../docs/decisions/0002-experimental-vodozemac-selection.md).
 
 ## Security gates across phases
 
@@ -53,8 +49,8 @@ P0, P1, and the historical P2 research phase are complete. **Historical P2 outco
 - Make any security-required attempt limits and persistence requirements part of the protocol contract.
 - Fail closed; do not silently downgrade or fall back.
 - Tests and vectors establish conformance, not cryptographic security.
-- Require independent security review before production-readiness claims.
-- The owner waived the qualified-human-review gate for experimental P4 only; no professional audit is claimed.
+- Do not treat the experimental-development authorization as production readiness. Any future release requires a separate owner readiness decision and accurate disclosure of assurance limits.
+- The owner waived the qualified-human-review gate for experimental P4; no professional audit has occurred or is currently planned.
 - Distinguish candidate, research, selected, and STOP outcomes. Do not turn uncertainty into architecture.
 
 ## Phases
@@ -73,10 +69,9 @@ P0, P1, and the historical P2 research phase are complete. **Historical P2 outco
 
 ## Review gates
 
-- **P3.5 — Pre-implementation construction security review:** Findings and the conditional argument are documented from AI-assisted review; the owner waived the qualified-human-review prerequisite for experimental development. This is not a completed professional audit or proof.
-- **P3.6 — Owner selection and experimental baseline:** The owner selected vodozemac for experimental implementation and accepted the current corrected specification/policy as its development baseline. This is not a production profile freeze.
-- **P5 — Post-implementation security review:** Does the actual Rust implementation correctly and safely implement the reviewed construction/profile? This occurs after P4; remediation and final protocol freeze follow in P6.
+- **P3 — Experimental remote specification:** finalized by this baseline; the selected profile, policy, vectors, applicable conformance cases, limitations, and P4 prerequisites are explicit. No production profile approval is implied.
+- **P5 — Post-implementation security review:** after P4, assess the actual implementation against the selected profile and record scope/findings. No qualified professional audit is currently planned or implied by this roadmap.
 
 ## 1.0 readiness
 
-P10 does not automatically produce a 1.0 release. Production-readiness claims require explicit security-readiness criteria, including a justified protocol and profile, completed required remediation, independent security review, and evidence that the release meets its stated requirements. The waived experimental-development gate does not waive these release requirements. Any public release must accurately disclose assurance limitations. Passing tests or vectors alone is insufficient.
+P10 does not automatically produce a 1.0 release. Any release requires a separate owner readiness decision and evidence appropriate to its claims. The waived experimental-development review gate does not establish production readiness. Any public release must accurately disclose assurance limitations. Passing tests or vectors alone is insufficient.
