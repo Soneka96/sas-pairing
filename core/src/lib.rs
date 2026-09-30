@@ -7,6 +7,8 @@ use std::{
     },
 };
 
+pub mod protocol;
+
 const DOMAIN: &[u8] = b"sas-pairing-authority-v1";
 const MAX_OPPORTUNITIES: u8 = 10;
 static REGISTRY: OnceLock<Mutex<HashSet<Vec<u8>>>> = OnceLock::new();

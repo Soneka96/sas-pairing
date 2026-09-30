@@ -1,0 +1,564 @@
+//! Canonical P3 remote wire codec. This validates syntax only; it performs no
+//! authentication, cryptographic validation, or ceremony state transitions.
+
+use std::fmt;
+
+pub const PROFILE_ID: &[u8] = b"sas-pairing-vodozemac-profile-draft-01";
+const MAGIC: &[u8; 7] = b"SASPAIR";
+const VERSION: u16 = 1;
+pub const MAX_FRAME: usize = 65_536;
+pub const MAX_BOOTSTRAP_FRAME: usize = 16_384;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodecError {
+    Truncated,
+    BadMagic,
+    UnsupportedVersion(u16),
+    UnknownType(u8),
+    InvalidField(&'static str),
+    Oversized,
+    TrailingBytes,
+    LengthOverflow,
+}
+impl fmt::Display for CodecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+impl std::error::Error for CodecError {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Role {
+    Initiator = 1,
+    Responder = 2,
+}
+impl TryFrom<u8> for Role {
+    type Error = CodecError;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Initiator),
+            2 => Ok(Self::Responder),
+            _ => Err(CodecError::InvalidField("role")),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bootstrap {
+    application_identity: Vec<u8>,
+    key_algorithm: Vec<u8>,
+    public_key: Vec<u8>,
+    shared_context: Vec<u8>,
+    canonical: Vec<u8>,
+}
+impl Bootstrap {
+    pub fn new(
+        application_identity: Vec<u8>,
+        key_algorithm: Vec<u8>,
+        public_key: Vec<u8>,
+        shared_context: Vec<u8>,
+    ) -> Result<Self, CodecError> {
+        let mut value = Self {
+            application_identity,
+            key_algorithm,
+            public_key,
+            shared_context,
+            canonical: Vec::new(),
+        };
+        value.validate()?;
+        value.canonical = encode_frame(
+            0x20,
+            &[
+                &value.application_identity,
+                &value.key_algorithm,
+                &value.public_key,
+                &value.shared_context,
+            ],
+            MAX_BOOTSTRAP_FRAME,
+        )?;
+        Ok(value)
+    }
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical
+    }
+    pub fn application_identity(&self) -> &[u8] {
+        &self.application_identity
+    }
+    pub fn key_algorithm(&self) -> &[u8] {
+        &self.key_algorithm
+    }
+    pub fn public_key(&self) -> &[u8] {
+        &self.public_key
+    }
+    pub fn shared_context(&self) -> &[u8] {
+        &self.shared_context
+    }
+    fn validate(&self) -> Result<(), CodecError> {
+        bounded(&self.application_identity, 1, 1024, "application_identity")?;
+        bounded(&self.key_algorithm, 1, 64, "key_algorithm")?;
+        if !self.key_algorithm.is_ascii()
+            || !self.key_algorithm[0].is_ascii_lowercase()
+                && !self.key_algorithm[0].is_ascii_digit()
+            || !self
+                .key_algorithm
+                .iter()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'.' || *b == b'-')
+        {
+            return Err(CodecError::InvalidField("key_algorithm"));
+        }
+        bounded(&self.public_key, 1, 4096, "public_key")?;
+        bounded(&self.shared_context, 0, 8192, "shared_context")
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
+        if bytes.len() > MAX_BOOTSTRAP_FRAME {
+            return Err(CodecError::Oversized);
+        }
+        let (kind, fields) = parse(bytes)?;
+        if kind != 0x20 || fields.len() != 4 {
+            return Err(CodecError::InvalidField("bootstrap"));
+        }
+        let value = Self {
+            application_identity: fields[0].to_vec(),
+            key_algorithm: fields[1].to_vec(),
+            public_key: fields[2].to_vec(),
+            shared_context: fields[3].to_vec(),
+            canonical: bytes.to_vec(),
+        };
+        value.validate()?;
+        Ok(value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Message {
+    Start {
+        request_id: Vec<u8>,
+        bootstrap: Bootstrap,
+    },
+    Accept {
+        request_id: Vec<u8>,
+        commitment: [u8; 32],
+        bootstrap: Bootstrap,
+    },
+    InitiatorKey {
+        request_id: Vec<u8>,
+        public_key: [u8; 32],
+    },
+    ResponderKey {
+        request_id: Vec<u8>,
+        public_key: [u8; 32],
+    },
+    BootstrapMac {
+        request_id: Vec<u8>,
+        sender: Role,
+        mac: [u8; 32],
+    },
+    InitiatorFinish {
+        request_id: Vec<u8>,
+        transcript: [u8; 32],
+        mac: [u8; 32],
+    },
+    ResponderFinishAck {
+        request_id: Vec<u8>,
+        transcript: [u8; 32],
+        mac: [u8; 32],
+    },
+    InitiatorFinishAck {
+        request_id: Vec<u8>,
+        transcript: [u8; 32],
+        mac: [u8; 32],
+    },
+    Cancel {
+        request_id: Vec<u8>,
+        sender: Role,
+        reason: CancelReason,
+        mac: [u8; 32],
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CancelReason {
+    UserRejection = 1,
+    UserCancellation = 2,
+    Timeout = 3,
+    LocalPolicyFailure = 4,
+}
+impl TryFrom<u8> for CancelReason {
+    type Error = CodecError;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::UserRejection),
+            2 => Ok(Self::UserCancellation),
+            3 => Ok(Self::Timeout),
+            4 => Ok(Self::LocalPolicyFailure),
+            _ => Err(CodecError::InvalidField("reason")),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecodedMessage {
+    pub message: Message,
+    canonical: Vec<u8>,
+}
+impl DecodedMessage {
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical
+    }
+}
+
+impl Message {
+    pub fn encode(&self) -> Result<Vec<u8>, CodecError> {
+        let (kind, request_id, fields): (u8, &Vec<u8>, Vec<Vec<u8>>) = match self {
+            Self::Start {
+                request_id,
+                bootstrap,
+            } => (1, request_id, vec![bootstrap.canonical_bytes().to_vec()]),
+            Self::Accept {
+                request_id,
+                commitment,
+                bootstrap,
+            } => (
+                2,
+                request_id,
+                vec![commitment.to_vec(), bootstrap.canonical_bytes().to_vec()],
+            ),
+            Self::InitiatorKey {
+                request_id,
+                public_key,
+            } => (3, request_id, vec![public_key.to_vec()]),
+            Self::ResponderKey {
+                request_id,
+                public_key,
+            } => (4, request_id, vec![public_key.to_vec()]),
+            Self::BootstrapMac {
+                request_id,
+                sender,
+                mac,
+            } => (5, request_id, vec![vec![*sender as u8], mac.to_vec()]),
+            Self::InitiatorFinish {
+                request_id,
+                transcript,
+                mac,
+            } => (6, request_id, vec![transcript.to_vec(), mac.to_vec()]),
+            Self::ResponderFinishAck {
+                request_id,
+                transcript,
+                mac,
+            } => (7, request_id, vec![transcript.to_vec(), mac.to_vec()]),
+            Self::InitiatorFinishAck {
+                request_id,
+                transcript,
+                mac,
+            } => (8, request_id, vec![transcript.to_vec(), mac.to_vec()]),
+            Self::Cancel {
+                request_id,
+                sender,
+                reason,
+                mac,
+            } => (
+                9,
+                request_id,
+                vec![vec![*sender as u8], vec![*reason as u8], mac.to_vec()],
+            ),
+        };
+        bounded(request_id, 1, 64, "request_id")?;
+        let mut refs: Vec<&[u8]> = Vec::with_capacity(fields.len() + 2);
+        refs.push(PROFILE_ID);
+        refs.push(request_id);
+        refs.extend(fields.iter().map(Vec::as_slice));
+        encode_frame(kind, &refs, MAX_FRAME)
+    }
+}
+
+pub fn decode(bytes: &[u8]) -> Result<DecodedMessage, CodecError> {
+    if bytes.len() > MAX_FRAME {
+        return Err(CodecError::Oversized);
+    }
+    let (kind, f) = parse(bytes)?;
+    if !(1..=9).contains(&kind) {
+        return Err(CodecError::UnknownType(kind));
+    }
+    if f.len() < 2 || f[0] != PROFILE_ID {
+        return Err(CodecError::InvalidField("profile_id"));
+    }
+    bounded(f[1], 1, 64, "request_id")?;
+    let fixed = |i: usize| -> Result<[u8; 32], CodecError> {
+        (*f.get(i).ok_or(CodecError::Truncated)?)
+            .try_into()
+            .map_err(|_| CodecError::InvalidField("fixed_32"))
+    };
+    let request_id = f[1].to_vec();
+    let message = match kind {
+        1 if f.len() == 3 => Message::Start {
+            request_id,
+            bootstrap: Bootstrap::decode(f[2])?,
+        },
+        2 if f.len() == 4 => Message::Accept {
+            request_id,
+            commitment: fixed(2)?,
+            bootstrap: Bootstrap::decode(f[3])?,
+        },
+        3 if f.len() == 3 => Message::InitiatorKey {
+            request_id,
+            public_key: fixed(2)?,
+        },
+        4 if f.len() == 3 => Message::ResponderKey {
+            request_id,
+            public_key: fixed(2)?,
+        },
+        5 if f.len() == 4 => Message::BootstrapMac {
+            request_id,
+            sender: Role::try_from(one(f[2], "role")?)?,
+            mac: fixed(3)?,
+        },
+        6..=8 if f.len() == 4 => {
+            let transcript = fixed(2)?;
+            let mac = fixed(3)?;
+            match kind {
+                6 => Message::InitiatorFinish {
+                    request_id,
+                    transcript,
+                    mac,
+                },
+                7 => Message::ResponderFinishAck {
+                    request_id,
+                    transcript,
+                    mac,
+                },
+                _ => Message::InitiatorFinishAck {
+                    request_id,
+                    transcript,
+                    mac,
+                },
+            }
+        }
+        9 if f.len() == 5 => Message::Cancel {
+            request_id,
+            sender: Role::try_from(one(f[2], "role")?)?,
+            reason: CancelReason::try_from(one(f[3], "reason")?)?,
+            mac: fixed(4)?,
+        },
+        _ => return Err(CodecError::InvalidField("field_count")),
+    };
+    Ok(DecodedMessage {
+        message,
+        canonical: bytes.to_vec(),
+    })
+}
+
+fn one(field: &[u8], name: &'static str) -> Result<u8, CodecError> {
+    if field.len() == 1 {
+        Ok(field[0])
+    } else {
+        Err(CodecError::InvalidField(name))
+    }
+}
+fn bounded(bytes: &[u8], min: usize, max: usize, name: &'static str) -> Result<(), CodecError> {
+    if (min..=max).contains(&bytes.len()) {
+        Ok(())
+    } else {
+        Err(CodecError::InvalidField(name))
+    }
+}
+fn encode_frame(kind: u8, fields: &[&[u8]], max: usize) -> Result<Vec<u8>, CodecError> {
+    let mut size = 10usize;
+    for field in fields {
+        size = size
+            .checked_add(4)
+            .and_then(|n| n.checked_add(field.len()))
+            .ok_or(CodecError::LengthOverflow)?;
+    }
+    if size > max || size > MAX_FRAME {
+        return Err(CodecError::Oversized);
+    }
+    let mut out = Vec::with_capacity(size);
+    out.extend_from_slice(MAGIC);
+    out.extend_from_slice(&VERSION.to_be_bytes());
+    out.push(kind);
+    for field in fields {
+        let len = u32::try_from(field.len()).map_err(|_| CodecError::Oversized)?;
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(field);
+    }
+    Ok(out)
+}
+fn parse(bytes: &[u8]) -> Result<(u8, Vec<&[u8]>), CodecError> {
+    if bytes.len() < 10 {
+        return Err(CodecError::Truncated);
+    }
+    if bytes.len() > MAX_FRAME {
+        return Err(CodecError::Oversized);
+    }
+    if &bytes[..7] != MAGIC {
+        return Err(CodecError::BadMagic);
+    }
+    let version = u16::from_be_bytes([bytes[7], bytes[8]]);
+    if version != VERSION {
+        return Err(CodecError::UnsupportedVersion(version));
+    }
+    let mut pos = 10usize;
+    let kind = bytes[9];
+    let mut fields = Vec::new();
+    while pos < bytes.len() {
+        let end_len = pos.checked_add(4).ok_or(CodecError::LengthOverflow)?;
+        if end_len > bytes.len() {
+            return Err(CodecError::Truncated);
+        }
+        let len = u32::from_be_bytes(bytes[pos..end_len].try_into().unwrap()) as usize;
+        let end = end_len.checked_add(len).ok_or(CodecError::LengthOverflow)?;
+        if end > bytes.len() {
+            return Err(CodecError::Truncated);
+        }
+        fields.push(&bytes[end_len..end]);
+        pos = end;
+    }
+    Ok((kind, fields))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+    fn boot(hex_frame: &str) -> Bootstrap {
+        Bootstrap::decode(&hex(hex_frame)).unwrap()
+    }
+    const IBOOT: &str = "53415350414952000120000000227361732d70616972696e672074657374206669787475726520696e69746961746f7200000007656432353531390000002079b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad0496640000001b7361732d70616972696e672f636f6e746578742f746573742d7631";
+    const RBOOT: &str = "53415350414952000120000000227361732d70616972696e672074657374206669787475726520726573706f6e646572000000076564323535313900000020e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f00000001b7361732d70616972696e672f636f6e746578742f746573742d7631";
+    const RID: &str = "000102030405060708090a0b0c0d0e0f";
+    const PROFILE: &str =
+        "7361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d3031";
+    const START: &str = "53415350414952000101000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f0000007e53415350414952000120000000227361732d70616972696e672074657374206669787475726520696e69746961746f7200000007656432353531390000002079b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad0496640000001b7361732d70616972696e672f636f6e746578742f746573742d7631";
+    const ACCEPT: &str = "53415350414952000102000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f000000203c8739ad0efadd2a0453a0b7513a441764cbf5acae216543ae6494c654a2b5710000007e53415350414952000120000000227361732d70616972696e672074657374206669787475726520726573706f6e646572000000076564323535313900000020e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f00000001b7361732d70616972696e672f636f6e746578742f746573742d7631";
+    const IK: &str = "53415350414952000103000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f0000002007a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c";
+    const RK: &str = "53415350414952000104000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f000000205869aff450549732cbaaed5e5df9b30a6da31cb0e5742bad5ad4a1a768f1a67b";
+    const BM: &str = "53415350414952000105000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f00000001010000002083920d83a0c5c5fb2bff5a65f4723106ea253cb3102ba58e2e06d32f95e86853";
+    const IF: &str = "53415350414952000106000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c0000002024b6a87e3a885b2fe2fd798f3ebd917f87dbadc567974313483e55c67508c30e";
+    const RFA: &str = "53415350414952000107000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c00000020358d79b9fcbc73b57c6c8339fa644b018ee2f34ebe986e371042f59973d628c8";
+    const IFA: &str = "53415350414952000108000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c00000020f309fcd8da269c12a5d380ddfe626c9cee1c153d8bf5e6e90b24f78d2e6baec6";
+
+    #[test]
+    fn authoritative_vectors_and_all_nine_types_round_trip() {
+        let cases = [START, ACCEPT, IK, RK, BM, IF, RFA, IFA];
+        for expected in cases {
+            let bytes = hex(expected);
+            let parsed = decode(&bytes).unwrap();
+            assert_eq!(parsed.canonical_bytes(), bytes);
+            assert_eq!(parsed.message.encode().unwrap(), bytes);
+        }
+        assert_eq!(boot(IBOOT).canonical_bytes(), hex(IBOOT));
+        assert_eq!(boot(RBOOT).canonical_bytes(), hex(RBOOT));
+
+        let rid = hex(RID);
+        let mac = [0x55; 32];
+        let cancel = Message::Cancel {
+            request_id: rid,
+            sender: Role::Responder,
+            reason: CancelReason::Timeout,
+            mac,
+        };
+        let encoded = cancel.encode().unwrap();
+        assert_eq!(decode(&encoded).unwrap().message, cancel);
+    }
+
+    #[test]
+    fn rejects_bad_headers_fields_truncation_and_trailing_data() {
+        let valid = hex(IK);
+        for (index, value, expected) in [
+            (0, b'X', CodecError::BadMagic),
+            (8, 2, CodecError::UnsupportedVersion(2)),
+            (9, 0x7f, CodecError::UnknownType(0x7f)),
+        ] {
+            let mut bad = valid.clone();
+            bad[index] = value;
+            assert_eq!(decode(&bad).unwrap_err(), expected);
+        }
+        assert!(decode(&valid[..valid.len() - 1]).is_err());
+        let mut extra = valid.clone();
+        extra.extend_from_slice(&[0]);
+        assert!(decode(&extra).is_err());
+        let mut missing = valid.clone();
+        missing.truncate(missing.len() - 36);
+        assert!(decode(&missing).is_err());
+        let mut bad_profile = valid.clone();
+        let pos = 14;
+        bad_profile[pos] ^= 1;
+        assert!(decode(&bad_profile).is_err());
+        let mut extra_field = valid.clone();
+        extra_field.extend_from_slice(&[0, 0, 0, 0]);
+        assert!(decode(&extra_field).is_err());
+        let mut bad_role = hex(BM);
+        bad_role[76] = 3;
+        assert!(decode(&bad_role).is_err());
+        let mut bad_reason = Message::Cancel {
+            request_id: hex(RID),
+            sender: Role::Initiator,
+            reason: CancelReason::UserRejection,
+            mac: [0; 32],
+        }
+        .encode()
+        .unwrap();
+        bad_reason[81] = 5;
+        assert!(decode(&bad_reason).is_err());
+    }
+
+    #[test]
+    fn exact_resource_boundaries_and_untrusted_lengths() {
+        let boot_ok = Bootstrap::new(
+            vec![b'a'; 1024],
+            b"ed25519".to_vec(),
+            vec![0; 4096],
+            vec![0; 8192],
+        )
+        .unwrap();
+        assert!(boot_ok.canonical_bytes().len() <= MAX_BOOTSTRAP_FRAME);
+        assert!(
+            Bootstrap::new(vec![b'a'; 1025], b"ed25519".to_vec(), vec![0; 32], vec![]).is_err()
+        );
+        assert!(Bootstrap::new(vec![b'a'], b"Ed25519".to_vec(), vec![0; 32], vec![]).is_err());
+        let mut giant = hex(IK);
+        giant[10..14].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(decode(&giant).is_err());
+        let payload_len = (MAX_FRAME - 14) as u32;
+        let at_limit = [
+            &b"SASPAIR\0\x01\x7f"[..],
+            &payload_len.to_be_bytes(),
+            &vec![0; MAX_FRAME - 14],
+        ]
+        .concat();
+        assert!(parse(&at_limit).is_ok());
+        assert_eq!(
+            parse(&[at_limit.as_slice(), &[0]].concat()).unwrap_err(),
+            CodecError::Oversized
+        );
+        assert_eq!(
+            Bootstrap::decode(&vec![0; MAX_BOOTSTRAP_FRAME + 1]).unwrap_err(),
+            CodecError::Oversized
+        );
+        assert_eq!(
+            decode(&vec![0; MAX_FRAME + 1]).unwrap_err(),
+            CodecError::Oversized
+        );
+        assert_eq!(hex(PROFILE), PROFILE_ID);
+        let key = [0; 32];
+        let id64 = Message::InitiatorKey {
+            request_id: vec![7; 64],
+            public_key: key,
+        };
+        assert!(decode(&id64.encode().unwrap()).is_ok());
+        let id65 = Message::InitiatorKey {
+            request_id: vec![7; 65],
+            public_key: key,
+        };
+        assert!(id65.encode().is_err());
+        assert!(Bootstrap::new(vec![b'a'], vec![b'a'; 64], vec![0], vec![0; 8192]).is_ok());
+        assert!(Bootstrap::new(vec![b'a'], b"a".to_vec(), vec![0], vec![0; 8193]).is_err());
+    }
+}

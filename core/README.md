@@ -1,6 +1,8 @@
 # Native Rust security core
 
-This increment implements canonical scope registration, Windows process ownership, a trusted authorization issuer, a shared ceremony guard, a volatile ten-opportunity budget and terminal cleanup. It does not implement pairing messages, key generation, SAS or network transport.
+This increment implements canonical scope registration, Windows process ownership, a trusted authorization issuer, a shared ceremony guard, a volatile ten-opportunity budget, terminal cleanup, and a standalone canonical P3 remote frame codec. The codec handles bootstrap records and all nine wire message types, bounds and validates syntax, and preserves accepted canonical bytes. It does not authenticate messages or implement cryptography, ceremony state, key generation, SAS, or network transport. Parsing alone cannot acquire an authority, authorize a ceremony, or reserve an exposure opportunity.
+
+The codec uses the selected experimental profile at `docs/p3-vodozemac-ceremony-profile-draft.md` §§3, 4, and 6. It validates framing, ordered field counts, profile/version, field lengths, bootstrap grammar, role codes, and cancellation reason codes. Cryptographic checks, semantic peer/context checks, role/state sequencing, duplicate handling, and authority/exposure policy belong to later increments.
 
 ## Ownership guarantees
 
@@ -32,7 +34,7 @@ cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path core/Cargo.toml
 ```
 
-The Windows suite uses the real file lock. It covers contention, a synchronized simultaneous two-process acquisition, forced termination, normal release and replacement, roles sharing the guard and budget, authorization lifecycle, and ten successful reservations followed by rejection of the eleventh. The simultaneous test uses two child processes held at an explicit stdin barrier and bounded output waits. Non-Windows builds return `UnsupportedPlatform`; no in-process fallback is provided.
+The Windows suite uses the real file lock. It covers contention, a synchronized simultaneous two-process acquisition, forced termination, normal release and replacement, roles sharing the guard and budget, authorization lifecycle, and ten successful reservations followed by rejection of the eleventh. The simultaneous test uses two child processes held at an explicit stdin barrier and bounded output waits. Codec unit tests use the authoritative remote frame vectors for bootstrap, START, ACCEPT, key exchange, approval MAC, and finish messages; CANCEL has no deterministic wire vector and is covered by typed encode/decode checks. Malformed frame tests cover bad headers, unsupported versions, unknown types, missing/extra fields, truncation, invalid profile, and oversize declarations. Non-Windows builds return `UnsupportedPlatform`; no in-process fallback is provided.
 
 ### Cross-session verification (manual; completed 2026-09-30)
 
