@@ -443,10 +443,12 @@ mod tests {
     const IF: &str = "53415350414952000106000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c0000002024b6a87e3a885b2fe2fd798f3ebd917f87dbadc567974313483e55c67508c30e";
     const RFA: &str = "53415350414952000107000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c00000020358d79b9fcbc73b57c6c8339fa644b018ee2f34ebe986e371042f59973d628c8";
     const IFA: &str = "53415350414952000108000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c00000020f309fcd8da269c12a5d380ddfe626c9cee1c153d8bf5e6e90b24f78d2e6baec6";
+    const CANCEL_I: &str = "53415350414952000109000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f0000000101000000010200000020e4289b39d4ab4e17ef95398f926642bcdf203d21d3d93c33f16785838ebb7652";
+    const CANCEL_R: &str = "53415350414952000109000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f000000010200000001030000002061c6ca7fa28eba2cd2fd3e3fdc262f9253ffadb8586b3f2fe96d5c9889a4ad42";
 
     #[test]
     fn authoritative_vectors_and_all_nine_types_round_trip() {
-        let cases = [START, ACCEPT, IK, RK, BM, IF, RFA, IFA];
+        let cases = [START, ACCEPT, IK, RK, BM, IF, RFA, IFA, CANCEL_I, CANCEL_R];
         for expected in cases {
             let bytes = hex(expected);
             let parsed = decode(&bytes).unwrap();
@@ -466,6 +468,15 @@ mod tests {
         };
         let encoded = cancel.encode().unwrap();
         assert_eq!(decode(&encoded).unwrap().message, cancel);
+        for (vector, sender, reason) in [
+            (CANCEL_I, Role::Initiator, CancelReason::UserCancellation),
+            (CANCEL_R, Role::Responder, CancelReason::Timeout),
+        ] {
+            assert!(matches!(
+                decode(&hex(vector)).unwrap().message,
+                Message::Cancel { sender: s, reason: r, .. } if s == sender && r == reason
+            ));
+        }
     }
 
     #[test]

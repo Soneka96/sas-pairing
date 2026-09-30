@@ -1,14 +1,16 @@
 //! Crate-private remote ceremony through SAS establishment, local human comparison, the
 //! authenticated BOOTSTRAP_MAC approval exchange, and the three-message authenticated finish
-//! handshake that yields a local, ceremony-scoped `PairingResult`.
+//! handshake that yields a local, ceremony-scoped `PairingResult`. After SAS establishment,
+//! local reject/cancel emits a best-effort authenticated CANCEL and a verified peer CANCEL
+//! terminates the run without a result.
 //! Fixed request IDs are accepted only by this internal/test-scoped constructor;
 //! production request-ID generation and active routing reservation remain pending.
-//! Authenticated CANCEL, deadlines, and transport/resource admission are not implemented.
+//! Deadlines/timers and transport/resource admission are not implemented.
 #![allow(dead_code)] // The protocol remains internal until later P4 work defines its complete API.
 use crate::{
     Authorization, Ceremony, CeremonyExecutor, Error as OwnerError, Role, TrustedAuthority,
     crypto::{self, Completion, EphemeralSas, Established},
-    protocol::{self, Bootstrap, DecodedMessage, Message},
+    protocol::{self, Bootstrap, CancelReason, DecodedMessage, Message},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,6 +248,32 @@ pub(crate) enum CompletionReceipt {
     Succeeded,
     /// Exact duplicate of the accepted INITIATOR_FINISH, ignored without MAC work or output.
     AlreadyAccepted,
+}
+
+/// Local post-SAS reject/cancel outcome. Both variants mean the ceremony is ALREADY terminal:
+/// no result, SAS/session/approval and any pending final ACK dropped, guard released, and the
+/// consumed opportunity kept. Neither variant reports anything about the network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LocalCancellation {
+    /// Authenticated CANCEL for best-effort sending. Returning it is not sending it; no send
+    /// confirmation, delivery acknowledgement, or peer response exists or is awaited.
+    Emitted(Vec<u8>),
+    /// Authenticated CANCEL construction failed, so there is nothing to send. No
+    /// unauthenticated substitute is ever produced.
+    NotEmitted,
+}
+
+/// A verified peer CANCEL. The run is already terminal with no result. The reason is
+/// authenticated diagnostic data only: not a trust verdict, identity claim, or result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PeerCancellation {
+    reason: CancelReason,
+}
+
+impl PeerCancellation {
+    pub(crate) fn reason(&self) -> CancelReason {
+        self.reason
+    }
 }
 
 /// P3 9 local verified completion for exactly one ceremony. It is NOT bilateral success: it
@@ -785,16 +813,97 @@ impl RemoteCeremony {
         Ok(())
     }
 
-    /// Local MISMATCH/REJECT: terminal failure. Sends nothing and refunds nothing.
-    pub(crate) fn reject_sas(&mut self, ceremony_identity: &[u8; 32]) -> Result<(), CeremonyError> {
-        self.live_session(ceremony_identity)?;
-        self.terminate()
+    /// Local MISMATCH/REJECT: terminal failure with CANCEL reason `0x01` user rejection. See
+    /// `cancel_locally` for ordering and outcomes.
+    pub(crate) fn reject_sas(
+        &mut self,
+        ceremony_identity: &[u8; 32],
+    ) -> Result<LocalCancellation, CeremonyError> {
+        self.cancel_locally(ceremony_identity, CancelReason::UserRejection)
     }
 
-    /// Local CANCEL only; authenticated wire CANCEL is later work, so nothing is emitted.
-    pub(crate) fn cancel_sas(&mut self, ceremony_identity: &[u8; 32]) -> Result<(), CeremonyError> {
-        self.live_session(ceremony_identity)?;
-        self.terminate()
+    /// Local CANCEL: terminal failure with CANCEL reason `0x02` user cancellation. See
+    /// `cancel_locally` for ordering and outcomes.
+    pub(crate) fn cancel_sas(
+        &mut self,
+        ceremony_identity: &[u8; 32],
+    ) -> Result<LocalCancellation, CeremonyError> {
+        self.cancel_locally(ceremony_identity, CancelReason::UserCancellation)
+    }
+
+    /// P3 11.3 local cancellation of the live established ceremony `ceremony_identity`, for any
+    /// defined reason (private so later timeout/policy handling can reuse it; no timer exists).
+    /// Order: exact-identity check; build the authenticated CANCEL while `EstablishedSas` still
+    /// exists; irrevocably drop the session (SAS, approval, any pending final ACK); release the
+    /// guard; only then hand back the bytes. Past the identity check the run is terminal on
+    /// every path, and local terminality never waits for any send or peer receipt:
+    /// - `Ok(Emitted(bytes))`: best-effort output only;
+    /// - `Ok(NotEmitted)`: construction failed, nothing to send;
+    /// - `Err(Owner(OwnershipUncertain))`: the session is already dropped, the guard stays
+    ///   conservatively held, and the built frame is withheld.
+    ///
+    /// A wrong identity or no live SAS (`CeremonyIdentityMismatch`/`NoLiveSas`, including before
+    /// SAS establishment and after success) is rejected without any effect. Nothing is refunded
+    /// and no result is created.
+    fn cancel_locally(
+        &mut self,
+        ceremony_identity: &[u8; 32],
+        reason: CancelReason,
+    ) -> Result<LocalCancellation, CeremonyError> {
+        let notification = own_cancel(self.live_session(ceremony_identity)?, reason);
+        self.terminate()?;
+        Ok(match notification {
+            Ok(bytes) => LocalCancellation::Emitted(bytes),
+            Err(_) => LocalCancellation::NotEmitted,
+        })
+    }
+
+    /// Receives the peer's CANCEL (P3 11.3). With a live established SAS it requires canonical
+    /// decoding (including a defined reason code), the exact request ID, and the expected peer
+    /// sender role, then reconstructs the `0x34` frame and `0x38` context with the peer as
+    /// sender, this endpoint as receiver, the local `ceremony_identity`, and the received reason,
+    /// and verifies the tag with vodozemac. Only then is it authenticated peer cancellation: the
+    /// run becomes terminal with no result, the session (and any pending final ACK) is dropped,
+    /// and only then is the guard released. Nothing is sent in response. Any other CANCEL,
+    /// including every CANCEL before SAS establishment (no MAC work is possible), is terminal
+    /// protocol failure and never reported as peer cancellation. Once terminal nothing changes;
+    /// after success it is `Completed`.
+    pub(crate) fn receive_cancel(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<PeerCancellation, CeremonyError> {
+        if matches!(self.state, State::Succeeded(_)) {
+            return Err(CeremonyError::Completed);
+        }
+        let msg = self.decode(bytes)?;
+        let Message::Cancel {
+            request_id,
+            sender,
+            reason,
+            mac,
+        } = &msg.message
+        else {
+            return self.reject_order();
+        };
+        let Some(session) = self.session() else {
+            return self.reject_order();
+        };
+        let (peer, local) = (wire_role(peer_of(session.role)), wire_role(session.role));
+        let verified = if *request_id != session.request_id {
+            Err(CeremonyError::RequestIdMismatch)
+        } else if *sender != peer {
+            Err(CeremonyError::UnexpectedSenderRole)
+        } else {
+            crypto::cancel_mac_strings(peer, local, &session.ceremony_identity, *reason)
+                .and_then(|(input, info)| session.established.verify_mac(&input, &info, mac))
+                .map_err(CeremonyError::from)
+        };
+        if let Err(error) = verified {
+            return self.fail(error);
+        }
+        let reason = *reason;
+        self.terminate()?;
+        Ok(PeerCancellation { reason })
     }
 
     /// Callbacks for another identity, or for no live SAS, are rejected without any effect,
@@ -1169,6 +1278,21 @@ fn own_bootstrap_mac(
     Ok(Message::BootstrapMac {
         request_id: session.request_id.clone(),
         sender,
+        mac,
+    }
+    .encode()?)
+}
+/// Own authenticated CANCEL: exact request ID, our role, `reason`, and the vodozemac tag over
+/// the `0x34` frame and `0x38` context with us as sender and the peer as receiver.
+fn own_cancel(session: &SasSession, reason: CancelReason) -> Result<Vec<u8>, CeremonyError> {
+    let (sender, receiver) = (wire_role(session.role), wire_role(peer_of(session.role)));
+    let (input, info) =
+        crypto::cancel_mac_strings(sender, receiver, &session.ceremony_identity, reason)?;
+    let mac = session.established.calculate_mac(&input, &info)?;
+    Ok(Message::Cancel {
+        request_id: session.request_id.clone(),
+        sender,
+        reason,
         mac,
     }
     .encode()?)
@@ -2141,20 +2265,58 @@ mod tests {
         assert_no_live_sas(run);
     }
 
+    /// The authenticated CANCEL a local reject/cancel returned for best-effort sending.
+    fn emitted_cancel(outcome: Result<LocalCancellation, CeremonyError>) -> Vec<u8> {
+        match outcome {
+            Ok(LocalCancellation::Emitted(bytes)) => bytes,
+            other => panic!("expected an authenticated CANCEL, got {other:?}"),
+        }
+    }
+
+    fn cancel_parts(bytes: &[u8]) -> (Vec<u8>, protocol::Role, CancelReason, [u8; 32]) {
+        match protocol::decode(bytes).unwrap().message {
+            Message::Cancel {
+                request_id,
+                sender,
+                reason,
+                mac,
+            } => (request_id, sender, reason, mac),
+            _ => panic!("not a CANCEL"),
+        }
+    }
+
+    fn cancel_wire(
+        request_id: Vec<u8>,
+        sender: protocol::Role,
+        reason: CancelReason,
+        mac: [u8; 32],
+    ) -> Vec<u8> {
+        Message::Cancel {
+            request_id,
+            sender,
+            reason,
+            mac,
+        }
+        .encode()
+        .unwrap()
+    }
+
     #[test]
     fn local_reject_is_terminal_and_keeps_the_opportunity_consumed() {
         let a = Authorities::new("sas-reject");
         let mut pair = establish(&a);
         let id = pair.identity();
-        assert_eq!(pair.i.reject_sas(&id), Ok(()));
+        let cancel = emitted_cancel(pair.i.reject_sas(&id));
+        assert_eq!(cancel_parts(&cancel).2, CancelReason::UserRejection);
         assert_stale(&mut pair.i, &id);
         assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
         assert!(pair.i.admission.terminal);
-        // The peer is a separate endpoint; this increment sends it nothing.
+        // The peer is a separate endpoint; nothing reaches it unless the CANCEL is delivered.
         assert!(pair.r.is_awaiting_approval());
         assert_eq!(a.er.status().unwrap(), Status::Busy);
         pair.r.approve_sas(&id).unwrap();
-        assert_eq!(pair.r.reject_sas(&id), Ok(()));
+        let cancel = emitted_cancel(pair.r.reject_sas(&id));
+        assert_eq!(cancel_parts(&cancel).2, CancelReason::UserRejection);
         assert_stale(&mut pair.r, &id);
         assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
         drop(pair);
@@ -2162,17 +2324,18 @@ mod tests {
     }
 
     #[test]
-    fn local_cancel_is_terminal_without_wire_output() {
+    fn local_cancel_is_terminal_and_only_returns_best_effort_output() {
         let a = Authorities::new("sas-cancel");
         let mut pair = establish(&a);
         let id = pair.identity();
         let seen = pair.i.seen.len();
-        let () = pair.i.cancel_sas(&id).unwrap();
+        let cancel = emitted_cancel(pair.i.cancel_sas(&id));
+        assert_eq!(cancel_parts(&cancel).2, CancelReason::UserCancellation);
         assert_eq!(pair.i.seen.len(), seen);
         assert_stale(&mut pair.i, &id);
         assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
         pair.r.approve_sas(&id).unwrap();
-        let () = pair.r.cancel_sas(&id).unwrap();
+        emitted_cancel(pair.r.cancel_sas(&id));
         assert_stale(&mut pair.r, &id);
         assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
         drop(pair);
@@ -2750,18 +2913,31 @@ mod tests {
                 let id = pair.identity();
                 stage(&mut pair, &id);
                 let seen = pair.i.seen.len();
-                let result = if reject {
-                    pair.i.reject_sas(&id)
+                let (result, reason) = if reject {
+                    (pair.i.reject_sas(&id), CancelReason::UserRejection)
                 } else {
-                    pair.i.cancel_sas(&id)
+                    (pair.i.cancel_sas(&id), CancelReason::UserCancellation)
                 };
-                assert_eq!(result, Ok(()), "stage {index}");
+                let cancel = emitted_cancel(result);
                 assert_eq!(pair.i.seen.len(), seen);
                 assert_stale(&mut pair.i, &id);
                 assert!(!pair.i.is_ready_for_completion());
                 assert_eq!(pair.i.emit_bootstrap_mac(), Err(CeremonyError::NoLiveSas));
                 assert_eq!(
                     a.ei.status().unwrap(),
+                    Status::Ready {
+                        remaining: expected
+                    }
+                );
+                // The peer, live in whatever approval stage it reached, authenticates it.
+                assert_eq!(
+                    pair.r.receive_cancel(&cancel).map(|c| c.reason()),
+                    Ok(reason),
+                    "stage {index}"
+                );
+                assert_stale(&mut pair.r, &id);
+                assert_eq!(
+                    a.er.status().unwrap(),
                     Status::Ready {
                         remaining: expected
                     }
@@ -2905,6 +3081,13 @@ mod tests {
         match role {
             protocol::Role::Initiator => &mut pair.i,
             protocol::Role::Responder => &mut pair.r,
+        }
+    }
+
+    fn other(role: protocol::Role) -> protocol::Role {
+        match role {
+            protocol::Role::Initiator => protocol::Role::Responder,
+            protocol::Role::Responder => protocol::Role::Initiator,
         }
     }
 
@@ -3166,10 +3349,18 @@ mod tests {
             pair.i.confirm_initiator_finish_ack_sent(&undelivered),
             Err(CeremonyError::Completed)
         );
-        // R later ends locally (here: local CANCEL) with no result; I's result is unaffected.
-        pair.r.cancel_sas(&id).unwrap();
+        // R later ends locally (here: local CANCEL) with no result; I's result is unaffected,
+        // even if R's authenticated CANCEL then reaches I.
+        let cancel = emitted_cancel(pair.r.cancel_sas(&id));
         assert_failed(&mut pair.r, &a.er, &id);
+        let ops = crypto::mac_operations();
+        assert_eq!(
+            pair.i.receive_cancel(&cancel),
+            Err(CeremonyError::Completed)
+        );
+        assert_eq!(crypto::mac_operations(), ops);
         assert_eq!(pair.i.result().cloned(), result_i);
+        assert_succeeded(&mut pair.i, &a.ei, &id);
         drop(pair);
         a.release();
     }
@@ -3321,9 +3512,14 @@ mod tests {
             } else {
                 pair.i.cancel_sas(&id)
             };
-            assert_eq!(outcome, Ok(()));
+            let cancel = emitted_cancel(outcome);
             // The pending ACK and the session are gone, and the guard was then released.
             assert_failed(&mut pair.i, &a.ei, &id);
+            // R, awaiting the final ACK, authenticates the CANCEL instead and ends without one.
+            assert!(pair.r.receive_cancel(&cancel).is_ok());
+            assert_failed(&mut pair.r, &a.er, &id);
+            assert!(pair.r.receive_completion(&i_ack).is_err());
+            assert_eq!(pair.r.result(), None);
             // A late send confirmation or duplicate ACK cannot revive the run.
             assert_eq!(
                 pair.i.confirm_initiator_finish_ack_sent(&i_ack),
@@ -3823,15 +4019,23 @@ mod tests {
                 setup(&mut pair, &id);
                 let run = endpoint(&mut pair, role);
                 let seen = run.seen.len();
-                let outcome = if reject {
-                    run.reject_sas(&id)
+                let (outcome, reason) = if reject {
+                    (run.reject_sas(&id), CancelReason::UserRejection)
                 } else {
-                    run.cancel_sas(&id)
+                    (run.cancel_sas(&id), CancelReason::UserCancellation)
                 };
-                assert_eq!(outcome, Ok(()), "stage {index}");
-                assert_eq!(run.seen.len(), seen, "local-only: nothing sent");
+                let cancel = emitted_cancel(outcome);
+                assert_eq!(run.seen.len(), seen, "no inbound state recorded");
                 assert_failed(run, endpoint_executor(&a, role), &id);
                 assert!(run.emit_initiator_finish().is_err());
+                // The live peer, wherever completion left it, authenticates and ends too.
+                let peer = endpoint(&mut pair, other(role));
+                assert_eq!(
+                    peer.receive_cancel(&cancel).map(|c| c.reason()),
+                    Ok(reason),
+                    "stage {index}"
+                );
+                assert_failed(peer, endpoint_executor(&a, other(role)), &id);
                 drop(pair);
                 a.release();
             }
@@ -3928,6 +4132,776 @@ mod tests {
             Err(poisoned) => assert!(poisoned.into_inner().active.is_some()),
             Ok(_) => panic!("shared state unexpectedly recovered"),
         }
+        drop(pair);
+        a.release();
+    }
+
+    // ---- Authenticated CANCEL ----
+
+    const REASONS: [CancelReason; 4] = [
+        CancelReason::UserRejection,
+        CancelReason::UserCancellation,
+        CancelReason::Timeout,
+        CancelReason::LocalPolicyFailure,
+    ];
+
+    fn poison(executor: &CeremonyExecutor) {
+        let poisoned = executor.clone();
+        let _ = std::thread::spawn(move || {
+            let _shared = poisoned.0.shared.lock().unwrap();
+            panic!("simulate uncertain guard state");
+        })
+        .join();
+    }
+
+    /// Fail closed: the guard is still held and the consumed opportunity is not refunded.
+    fn assert_guard_held_uncertainly(executor: &CeremonyExecutor) {
+        match executor.0.shared.lock() {
+            Err(poisoned) => {
+                let shared = poisoned.into_inner();
+                assert!(shared.active.is_some());
+                assert_eq!(shared.remaining, 9);
+            }
+            Ok(_) => panic!("shared state unexpectedly recovered"),
+        }
+    }
+
+    #[test]
+    fn live_local_cancel_i_to_r_is_terminal_first_then_authenticated_by_the_peer() {
+        let a = Authorities::new("cancel-live-i-to-r");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let ops = crypto::mac_operations();
+        let cancel = emitted_cancel(pair.i.cancel_sas(&id));
+        assert_eq!(
+            crypto::mac_operations(),
+            ops + 1,
+            "one vodozemac calculate_mac"
+        );
+        assert_eq!(cancel[9], 0x09);
+        let (rid, sender, reason, _) = cancel_parts(&cancel);
+        assert_eq!(
+            (rid, sender, reason),
+            (
+                vector_request_id(),
+                protocol::Role::Initiator,
+                CancelReason::UserCancellation
+            )
+        );
+        // Terminal before any peer receipt: no result, session, or SAS; guard released; 9 left.
+        assert_failed(&mut pair.i, &a.ei, &id);
+        assert!(pair.i.session().is_none() && pair.i.presentation().is_none());
+        // The peer is untouched until delivery.
+        assert!(pair.r.is_awaiting_approval() && pair.r.presentation().is_some());
+        assert_eq!(a.er.status().unwrap(), Status::Busy);
+
+        let ops = crypto::mac_operations();
+        assert_eq!(
+            pair.r.receive_cancel(&cancel),
+            Ok(PeerCancellation {
+                reason: CancelReason::UserCancellation
+            })
+        );
+        assert_eq!(
+            crypto::mac_operations(),
+            ops + 1,
+            "one vodozemac verify_mac"
+        );
+        assert_failed(&mut pair.r, &a.er, &id);
+        assert!(pair.r.admission.authorization.is_none());
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn live_timeout_cancel_r_to_i_is_authenticated_without_any_timer() {
+        let a = Authorities::new("cancel-live-r-to-i");
+        let (mut pair, id) = approvals_authenticated(&a);
+        // The private reason-generic path a later timeout trigger would use; no clock exists.
+        let cancel = emitted_cancel(pair.r.cancel_locally(&id, CancelReason::Timeout));
+        let (rid, sender, reason, _) = cancel_parts(&cancel);
+        assert_eq!(
+            (rid, sender, reason),
+            (
+                vector_request_id(),
+                protocol::Role::Responder,
+                CancelReason::Timeout
+            )
+        );
+        assert_failed(&mut pair.r, &a.er, &id);
+        assert!(pair.i.is_ready_for_completion());
+        assert_eq!(
+            pair.i.receive_cancel(&cancel).map(|c| c.reason()),
+            Ok(CancelReason::Timeout)
+        );
+        assert_failed(&mut pair.i, &a.ei, &id);
+        // No INITIATOR_FINISH can follow.
+        assert_eq!(
+            pair.i.emit_initiator_finish(),
+            Err(CeremonyError::NoLiveSas)
+        );
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn every_defined_reason_authenticates_in_both_directions() {
+        for sender in [protocol::Role::Initiator, protocol::Role::Responder] {
+            let a = Authorities::new(&format!("cancel-reasons-{sender:?}"));
+            for reason in REASONS {
+                let mut pair = establish(&a);
+                let id = pair.identity();
+                let cancel =
+                    emitted_cancel(endpoint(&mut pair, sender).cancel_locally(&id, reason));
+                assert_eq!(cancel_parts(&cancel).1, sender);
+                assert_eq!(cancel_parts(&cancel).2, reason);
+                let receiver = endpoint(&mut pair, other(sender));
+                assert_eq!(
+                    receiver.receive_cancel(&cancel).map(|c| c.reason()),
+                    Ok(reason)
+                );
+                assert_stale(receiver, &id);
+                assert!(receiver.result().is_none() && receiver.admission.terminal);
+                drop(pair);
+            }
+            assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 6 });
+            assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 6 });
+            a.release();
+        }
+    }
+
+    #[test]
+    fn local_rejection_sends_user_rejection_and_terminates_the_peer() {
+        let a = Authorities::new("cancel-user-rejection");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        // R saw a different SAS than I did (MISMATCH/REJECT) after I already approved.
+        let i_mac = approve_and_emit(&mut pair.i, &id);
+        pair.r.receive_bootstrap_mac(&i_mac).unwrap();
+        let cancel = emitted_cancel(pair.r.reject_sas(&id));
+        assert_eq!(cancel_parts(&cancel).2, CancelReason::UserRejection);
+        assert_eq!(cancel_parts(&cancel).1, protocol::Role::Responder);
+        assert_failed(&mut pair.r, &a.er, &id);
+        assert_eq!(
+            pair.i.receive_cancel(&cancel).map(|c| c.reason()),
+            Ok(CancelReason::UserRejection)
+        );
+        assert_failed(&mut pair.i, &a.ei, &id);
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn undelivered_local_cancel_needs_no_transport_and_leaves_the_peer_live() {
+        let a = Authorities::new("cancel-undelivered");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let ops = crypto::mac_operations();
+        let _never_sent = emitted_cancel(pair.i.cancel_sas(&id));
+        // Already terminal: there is no send confirmation, retransmission, ack, or fourth step.
+        assert_failed(&mut pair.i, &a.ei, &id);
+        assert_eq!(pair.i.cancel_sas(&id), Err(CeremonyError::NoLiveSas));
+        assert_eq!(crypto::mac_operations(), ops + 1);
+        // The peer stays active until its own cancellation, disconnect, or (later) timeout.
+        let r_mac = approve_and_emit(&mut pair.r, &id);
+        assert_eq!(mac_fields(&r_mac).0, vector_request_id());
+        assert!(pair.r.session().is_some() && pair.r.result().is_none());
+        assert_eq!(a.er.status().unwrap(), Status::Busy);
+        emitted_cancel(pair.r.cancel_sas(&id));
+        assert_failed(&mut pair.r, &a.er, &id);
+        drop(pair);
+        a.release();
+    }
+
+    /// Delivers `mutate(valid I->R CANCEL)` to R and proves terminal protocol failure: never
+    /// peer cancellation, MAC work only when the tag had to be checked, and no revival.
+    fn assert_bad_cancel_is_terminal(
+        scope: &str,
+        mutate: impl Fn(&[u8]) -> Vec<u8>,
+        expected: CeremonyError,
+    ) {
+        let a = Authorities::new(scope);
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let valid = emitted_cancel(pair.i.cancel_sas(&id));
+        let bad = mutate(&valid);
+        assert_ne!(bad, valid);
+        let checks_mac = matches!(expected, CeremonyError::Crypto(_));
+        let ops = crypto::mac_operations();
+        assert_eq!(pair.r.receive_cancel(&bad), Err(expected));
+        assert_eq!(crypto::mac_operations(), ops + usize::from(checks_mac));
+        assert_failed(&mut pair.r, &a.er, &id);
+        // The genuine CANCEL can no longer be verified or change anything.
+        assert_eq!(
+            pair.r.receive_cancel(&valid),
+            Err(CeremonyError::InvalidState)
+        );
+        assert_eq!(crypto::mac_operations(), ops + usize::from(checks_mac));
+        assert_failed(&mut pair.r, &a.er, &id);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn changed_reason_is_syntactically_valid_but_fails_verification() {
+        for (index, reason) in [
+            CancelReason::UserRejection,
+            CancelReason::Timeout,
+            CancelReason::LocalPolicyFailure,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_bad_cancel_is_terminal(
+                &format!("cancel-reason-{index}"),
+                |valid| {
+                    let (rid, sender, original, mac) = cancel_parts(valid);
+                    assert_eq!(original, CancelReason::UserCancellation);
+                    let changed = cancel_wire(rid, sender, reason, mac);
+                    // Still a canonical CANCEL; only the reason (and so the MAC input) differs.
+                    assert_eq!(cancel_parts(&changed).2, reason);
+                    changed
+                },
+                CeremonyError::Crypto(crypto::Error::MacMismatch),
+            );
+        }
+        // An undefined reason code never reaches MAC work.
+        assert_bad_cancel_is_terminal(
+            "cancel-reason-undefined",
+            |valid| {
+                let mut bad = valid.to_vec();
+                let at = bad.len() - 37;
+                assert_eq!(bad[at], CancelReason::UserCancellation as u8);
+                bad[at] = 0x05;
+                bad
+            },
+            CeremonyError::Codec(protocol::CodecError::InvalidField("reason")),
+        );
+    }
+
+    #[test]
+    fn corrupted_short_or_misrouted_cancel_is_terminal_protocol_failure() {
+        assert_bad_cancel_is_terminal(
+            "cancel-bit-flip",
+            |valid| {
+                let (rid, sender, reason, mut mac) = cancel_parts(valid);
+                mac[31] ^= 0x01;
+                cancel_wire(rid, sender, reason, mac)
+            },
+            CeremonyError::Crypto(crypto::Error::MacMismatch),
+        );
+        assert_bad_cancel_is_terminal(
+            "cancel-short-tag",
+            |valid| {
+                let mut short = valid[..valid.len() - 1].to_vec();
+                let at = short.len() - 35;
+                short[at..at + 4].copy_from_slice(&31u32.to_be_bytes());
+                short
+            },
+            CeremonyError::Codec(protocol::CodecError::InvalidField("fixed_32")),
+        );
+        assert_bad_cancel_is_terminal(
+            "cancel-request-id",
+            |valid| {
+                let (mut rid, sender, reason, mac) = cancel_parts(valid);
+                rid[0] ^= 0x01;
+                cancel_wire(rid, sender, reason, mac)
+            },
+            CeremonyError::RequestIdMismatch,
+        );
+        // The receiver's own role on the wire: rejected before any MAC work (R-WIRE-017).
+        assert_bad_cancel_is_terminal(
+            "cancel-wire-role",
+            |valid| {
+                let (rid, _, reason, mac) = cancel_parts(valid);
+                cancel_wire(rid, protocol::Role::Responder, reason, mac)
+            },
+            CeremonyError::UnexpectedSenderRole,
+        );
+        // A different message type offered as CANCEL input.
+        assert_bad_cancel_is_terminal(
+            "cancel-other-type",
+            |_| vector("RESPONDER_KEY"),
+            CeremonyError::InvalidState,
+        );
+    }
+
+    #[test]
+    fn a_cancel_tag_for_the_opposite_direction_fails_verification() {
+        let a = Authorities::new("cancel-direction");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        // I's genuine I->R tag, without ending I, relabelled as R->I and offered back to I:
+        // the wire role is the expected peer, so only the MAC can reject it.
+        let i_to_r = own_cancel(pair.i.session().unwrap(), CancelReason::Timeout).unwrap();
+        let (rid, sender, reason, mac) = cancel_parts(&i_to_r);
+        assert_eq!(sender, protocol::Role::Initiator);
+        let relabelled = cancel_wire(rid, protocol::Role::Responder, reason, mac);
+        let ops = crypto::mac_operations();
+        assert_eq!(
+            pair.i.receive_cancel(&relabelled),
+            Err(CeremonyError::Crypto(crypto::Error::MacMismatch))
+        );
+        assert_eq!(crypto::mac_operations(), ops + 1);
+        assert_failed(&mut pair.i, &a.ei, &id);
+        // The same tag as sent (I->R) still authenticates at R: direction alone decided it.
+        assert_eq!(
+            pair.r.receive_cancel(&i_to_r).map(|c| c.reason()),
+            Ok(CancelReason::Timeout)
+        );
+        assert_failed(&mut pair.r, &a.er, &id);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn cancel_from_another_ceremony_with_the_same_request_id_cannot_cancel() {
+        let (first, second) = (
+            Authorities::new("cancel-cross-a"),
+            Authorities::new("cancel-cross-b"),
+        );
+        let mut a = establish(&first);
+        let mut b = establish(&second);
+        let (id_a, id_b) = (a.identity(), b.identity());
+        assert_ne!(id_a, id_b);
+        let foreign = emitted_cancel(a.i.cancel_sas(&id_a));
+        let own = own_cancel(b.i.session().unwrap(), CancelReason::UserCancellation).unwrap();
+        // Same request ID, reason, and roles; only the ceremony (and so the tag) differs.
+        let (fa, fb) = (cancel_parts(&foreign), cancel_parts(&own));
+        assert_eq!((&fa.0, fa.1, fa.2), (&fb.0, fb.1, fb.2));
+        assert_ne!(fa.3, fb.3);
+
+        let ops = crypto::mac_operations();
+        assert_eq!(
+            b.r.receive_cancel(&foreign),
+            Err(CeremonyError::Crypto(crypto::Error::MacMismatch))
+        );
+        assert_eq!(crypto::mac_operations(), ops + 1);
+        assert_failed(&mut b.r, &second.er, &id_b);
+        // B's Initiator is a separate live endpoint and is unaffected by the replay.
+        assert!(b.i.is_awaiting_approval());
+        assert_eq!(second.ei.status().unwrap(), Status::Busy);
+        // Ceremony A's own Responder authenticates its genuine CANCEL.
+        assert_eq!(
+            a.r.receive_cancel(&foreign).map(|c| c.reason()),
+            Ok(CancelReason::UserCancellation)
+        );
+        assert_failed(&mut a.r, &first.er, &id_a);
+        drop((a, b));
+        first.release();
+        second.release();
+    }
+
+    #[test]
+    fn cancel_mac_binds_frozen_types_purpose_roles_identity_and_reason() {
+        const CANCEL: &[u8] = b"sas-pairing-vodozemac-profile-draft-01/cancel/";
+        const MAC: &[u8] = b"sas-pairing-vodozemac-profile-draft-01/mac/";
+        use protocol::Role::{Initiator as I, Responder as R};
+        let mismatch = Err(crypto::Error::MacMismatch);
+        for sender in [I, R] {
+            let a = Authorities::new(&format!("cancel-binding-{sender:?}"));
+            let mut pair = establish(&a);
+            let id = pair.identity();
+            let receiver = other(sender);
+            let reason = CancelReason::UserCancellation;
+            let tag = cancel_parts(&emitted_cancel(
+                endpoint(&mut pair, sender).cancel_locally(&id, reason),
+            ))
+            .3;
+            let run = &*endpoint(&mut pair, receiver);
+            let verify = |auth: u8,
+                          context: u8,
+                          prefix: &[u8],
+                          inner: Option<&[u8]>,
+                          s,
+                          r,
+                          id: &[u8; 32],
+                          reason: u8| {
+                let (input, info) = crypto::cancel_mac_strings_for_test(
+                    auth, context, prefix, inner, s, r, id, reason,
+                );
+                run.session()
+                    .unwrap()
+                    .established
+                    .verify_mac(&input, &info, &tag)
+            };
+            let good = reason as u8;
+            assert_eq!(
+                verify(0x34, 0x38, CANCEL, None, sender, receiver, &id, good),
+                Ok(())
+            );
+            // Context type 0x38 -> approval, completion, or the auth-frame type.
+            for context in [0x31, 0x32, 0x34] {
+                assert_eq!(
+                    verify(0x34, context, CANCEL, None, sender, receiver, &id, good),
+                    mismatch
+                );
+            }
+            // Auth-frame type 0x34 -> approval, completion, or the context type.
+            for auth in [0x33, 0x35, 0x38] {
+                assert_eq!(
+                    verify(auth, 0x38, CANCEL, None, sender, receiver, &id, good),
+                    mismatch
+                );
+            }
+            // Outer purpose `mac`, an inner `cancel` field, and both together.
+            assert_eq!(
+                verify(0x34, 0x38, MAC, None, sender, receiver, &id, good),
+                mismatch
+            );
+            let inner = Some(&b"cancel"[..]);
+            assert_eq!(
+                verify(0x34, 0x38, CANCEL, inner, sender, receiver, &id, good),
+                mismatch
+            );
+            assert_eq!(
+                verify(0x34, 0x38, MAC, inner, sender, receiver, &id, good),
+                mismatch
+            );
+            // Sender role, receiver role, and the swapped direction.
+            for (s, r) in [(receiver, receiver), (sender, sender), (receiver, sender)] {
+                assert_eq!(verify(0x34, 0x38, CANCEL, None, s, r, &id, good), mismatch);
+            }
+            // Another ceremony identity.
+            let mut other_id = id;
+            other_id[9] ^= 0x02;
+            assert_eq!(
+                verify(0x34, 0x38, CANCEL, None, sender, receiver, &other_id, good),
+                mismatch
+            );
+            // Every other reason byte, defined or not.
+            for other_reason in [0x00, 0x01, 0x03, 0x04, 0x05, 0xff] {
+                assert_eq!(
+                    verify(
+                        0x34,
+                        0x38,
+                        CANCEL,
+                        None,
+                        sender,
+                        receiver,
+                        &id,
+                        other_reason
+                    ),
+                    mismatch
+                );
+            }
+            drop(pair);
+            a.release();
+        }
+    }
+
+    #[test]
+    fn cancel_before_sas_establishment_is_invalid_input_without_mac_work() {
+        let a = Authorities::new("cancel-pre-sas");
+        let early = |sender| {
+            cancel_wire(
+                vector_request_id(),
+                sender,
+                CancelReason::UserCancellation,
+                [7; 32],
+            )
+        };
+        let ops = crypto::mac_operations();
+
+        // I before exposure, awaiting ACCEPT: terminal, nothing spent.
+        let mut i = RemoteCeremony::initiator(
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            &vector("START"),
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap();
+        i.start().unwrap();
+        assert_eq!(
+            i.receive_cancel(&early(protocol::Role::Responder)),
+            Err(CeremonyError::InvalidState)
+        );
+        assert!(i.admission.terminal && i.receive_accept(&vector("ACCEPT")).is_err());
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+        drop(i);
+
+        // A. R after START/ACCEPT, before any peer key: terminal, R spends nothing.
+        let (mut r, _) = RemoteCeremony::responder(
+            a.er.clone(),
+            a.er.begin(Role::Responder).unwrap(),
+            &vector("START"),
+            bootstrap(&decoded("ACCEPT"), false),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            r.receive_cancel(&early(protocol::Role::Initiator)),
+            Err(CeremonyError::InvalidState)
+        );
+        assert!(r.admission.terminal);
+        assert!(r.receive_initiator_key(&vector("INITIATOR_KEY")).is_err());
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        drop(r);
+
+        // B. I exposed INITIATOR_KEY (opportunity consumed); R did DH but has not exposed.
+        let start = vector("START");
+        let mut i = RemoteCeremony::initiator(
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            &start,
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap();
+        i.start().unwrap();
+        let (mut r, accept) = RemoteCeremony::responder(
+            a.er.clone(),
+            a.er.begin(Role::Responder).unwrap(),
+            &start,
+            bootstrap(&decoded("ACCEPT"), false),
+            None,
+        )
+        .unwrap();
+        i.receive_accept(&accept).unwrap();
+        i.authorize(&a.i).unwrap();
+        let ikey = i.expose_key().unwrap();
+        assert_eq!(a.ei.status().unwrap(), Status::Busy);
+        r.receive_initiator_key(&ikey).unwrap();
+        // R holds a DH result but no transcript identity: still pre-SAS, nothing spent.
+        assert_eq!(
+            r.receive_cancel(&early(protocol::Role::Initiator)),
+            Err(CeremonyError::InvalidState)
+        );
+        assert!(r.admission.terminal && r.authorize(&a.r).is_err() && r.expose_key().is_err());
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        // I awaiting RESPONDER_KEY: terminal; its consumed opportunity stays consumed.
+        assert_eq!(
+            i.receive_cancel(&early(protocol::Role::Responder)),
+            Err(CeremonyError::InvalidState)
+        );
+        assert!(i.admission.terminal && i.presentation().is_none());
+        assert!(i.receive_responder_key(&vector("RESPONDER_KEY")).is_err());
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+
+        assert_eq!(
+            crypto::mac_operations(),
+            ops,
+            "no MAC work without a shared SAS"
+        );
+        drop((i, r));
+        a.release();
+    }
+
+    #[test]
+    fn duplicate_or_later_cancel_after_terminal_changes_nothing() {
+        let a = Authorities::new("cancel-after-terminal");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let cancel = emitted_cancel(pair.i.cancel_sas(&id));
+        pair.r.receive_cancel(&cancel).unwrap();
+        assert_failed(&mut pair.r, &a.er, &id);
+        let (rid, sender, _, mac) = cancel_parts(&cancel);
+        let changed = cancel_wire(rid, sender, CancelReason::Timeout, mac);
+        let ops = crypto::mac_operations();
+        for later in [&cancel, &changed] {
+            for run in [&mut pair.r, &mut pair.i] {
+                assert_eq!(run.receive_cancel(later), Err(CeremonyError::InvalidState));
+                assert!(matches!(run.state, State::Terminal) && run.result().is_none());
+            }
+        }
+        assert_eq!(
+            crypto::mac_operations(),
+            ops,
+            "no repeated MAC verification"
+        );
+        assert_failed(&mut pair.r, &a.er, &id);
+        assert_failed(&mut pair.i, &a.ei, &id);
+
+        // Nothing is released twice: a new ceremony's guard survives old-run input.
+        let mut next = establish(&a);
+        assert_eq!(
+            (a.ei.status().unwrap(), a.er.status().unwrap()),
+            (Status::Busy, Status::Busy)
+        );
+        assert!(pair.r.receive_cancel(&cancel).is_err());
+        assert!(pair.i.receive_cancel(&cancel).is_err());
+        assert_eq!(
+            (a.ei.status().unwrap(), a.er.status().unwrap()),
+            (Status::Busy, Status::Busy)
+        );
+        assert!(next.i.is_awaiting_approval() && next.r.is_awaiting_approval());
+        let next_id = next.identity();
+        emitted_cancel(next.i.cancel_sas(&next_id));
+        drop((pair, next));
+        a.release();
+    }
+
+    #[test]
+    fn cancel_while_the_final_ack_send_is_pending_never_yields_a_result() {
+        // Peer CANCEL arrives at I after it produced, but before it confirmed, the final ACK.
+        let a = Authorities::new("cancel-pending-peer");
+        let (mut pair, id) = approvals_authenticated(&a);
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        let i_ack = initiator_ack(&mut pair.i, &r_ack);
+        assert_final_ack_pending(&pair.i, &a.ei, &i_ack);
+        let cancel = emitted_cancel(pair.r.cancel_sas(&id));
+        assert_failed(&mut pair.r, &a.er, &id);
+        assert_eq!(
+            pair.i.receive_cancel(&cancel).map(|c| c.reason()),
+            Ok(CancelReason::UserCancellation)
+        );
+        assert_failed(&mut pair.i, &a.ei, &id);
+        // The pending final ACK is gone and cannot win afterwards.
+        assert_eq!(
+            pair.i.confirm_initiator_finish_ack_sent(&i_ack),
+            Err(CeremonyError::NoPendingFinalAck)
+        );
+        assert!(pair.i.receive_completion(&r_ack).is_err());
+        assert_eq!((pair.i.result(), pair.r.result()), (None, None));
+        assert_failed(&mut pair.i, &a.ei, &id);
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+        drop(pair);
+        a.release();
+
+        // Local CANCEL at I in the same window; R then receives the CANCEL, not the ACK.
+        let a = Authorities::new("cancel-pending-local");
+        let (mut pair, id) = approvals_authenticated(&a);
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        let i_ack = initiator_ack(&mut pair.i, &r_ack);
+        let cancel = emitted_cancel(pair.i.cancel_sas(&id));
+        assert_failed(&mut pair.i, &a.ei, &id);
+        assert_eq!(
+            pair.i.confirm_initiator_finish_ack_sent(&i_ack),
+            Err(CeremonyError::NoPendingFinalAck)
+        );
+        assert_eq!(pair.i.result(), None);
+        assert!(pair.r.receive_cancel(&cancel).is_ok());
+        assert_failed(&mut pair.r, &a.er, &id);
+        assert!(pair.r.receive_completion(&i_ack).is_err());
+        assert_eq!(pair.r.result(), None);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn cancel_after_local_success_changes_nothing() {
+        let a = Authorities::new("cancel-after-success");
+        let (mut pair, id) = approvals_authenticated(&a);
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        let i_ack = initiator_ack(&mut pair.i, &r_ack);
+        // Genuine CANCELs built (not sent, not ending either run) while both were still live.
+        let i_cancel = own_cancel(pair.i.session().unwrap(), CancelReason::Timeout).unwrap();
+        let r_cancel = own_cancel(pair.r.session().unwrap(), CancelReason::Timeout).unwrap();
+        confirm_sent(&mut pair.i, &i_ack);
+        assert_eq!(
+            pair.r.receive_completion(&i_ack),
+            Ok(CompletionReceipt::Succeeded)
+        );
+        for (run, executor, cancel) in [
+            (&mut pair.i, &a.ei, &r_cancel),
+            (&mut pair.r, &a.er, &i_cancel),
+        ] {
+            let result = run.result().cloned().unwrap();
+            let ops = crypto::mac_operations();
+            assert_eq!(run.receive_cancel(cancel), Err(CeremonyError::Completed));
+            assert_eq!(
+                run.receive_cancel(b"not a frame"),
+                Err(CeremonyError::Completed)
+            );
+            // No live session: a stale local reject/cancel builds no CANCEL.
+            assert_eq!(run.cancel_sas(&id), Err(CeremonyError::NoLiveSas));
+            assert_eq!(run.reject_sas(&id), Err(CeremonyError::NoLiveSas));
+            assert_eq!(
+                run.cancel_locally(&id, CancelReason::Timeout),
+                Err(CeremonyError::NoLiveSas)
+            );
+            assert_eq!(crypto::mac_operations(), ops);
+            assert_eq!(run.result(), Some(&result));
+            assert_succeeded(run, executor, &id);
+        }
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn failed_cancel_construction_still_terminates_without_output() {
+        for pending_final_ack in [false, true] {
+            let a = Authorities::new(&format!("cancel-construction-failure-{pending_final_ack}"));
+            let (mut pair, id) = approvals_authenticated(&a);
+            let pending = pending_final_ack.then(|| {
+                let f = finish(&mut pair.i);
+                let ack = responder_ack(&mut pair.r, &f);
+                initiator_ack(&mut pair.i, &ack)
+            });
+            crypto::fail_next_cancel_construction();
+            let ops = crypto::mac_operations();
+            assert_eq!(pair.i.cancel_sas(&id), Ok(LocalCancellation::NotEmitted));
+            assert_eq!(crypto::mac_operations(), ops, "no tag was ever computed");
+            // Terminal exactly as if the CANCEL had been built: nothing to send, no result.
+            assert!(matches!(pair.i.state, State::Terminal) && pair.i.result().is_none());
+            assert_stale(&mut pair.i, &id);
+            assert!(pair.i.admission.terminal);
+            if let Some(ack) = pending {
+                assert_eq!(
+                    pair.i.confirm_initiator_finish_ack_sent(&ack),
+                    Err(CeremonyError::NoPendingFinalAck)
+                );
+            }
+            assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+            // With no notification, the peer simply remains live on its own.
+            assert!(pair.r.session().is_some());
+            assert_eq!(a.er.status().unwrap(), Status::Busy);
+            emitted_cancel(pair.r.reject_sas(&id));
+            assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
+            drop(pair);
+            a.release();
+        }
+    }
+
+    #[test]
+    fn uncertain_guard_release_withholds_local_cancel_and_fails_closed() {
+        let a = Authorities::new("cancel-uncertain-local");
+        let (mut pair, id) = approvals_authenticated(&a);
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        let i_ack = initiator_ack(&mut pair.i, &r_ack);
+        poison(&a.ei);
+        let ops = crypto::mac_operations();
+        // The CANCEL is built while the session exists, then withheld: an uncertain cleanup
+        // return releases no wire output.
+        assert_eq!(
+            pair.i.cancel_sas(&id),
+            Err(CeremonyError::Owner(OwnerError::OwnershipUncertain))
+        );
+        assert_eq!(crypto::mac_operations(), ops + 1);
+        assert!(matches!(pair.i.state, State::Terminal) && pair.i.result().is_none());
+        assert_stale(&mut pair.i, &id);
+        assert_eq!(
+            pair.i.confirm_initiator_finish_ack_sent(&i_ack),
+            Err(CeremonyError::NoPendingFinalAck)
+        );
+        assert_eq!(pair.i.result(), None);
+        assert_guard_held_uncertainly(&a.ei);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn uncertain_guard_release_after_a_verified_peer_cancel_fails_closed() {
+        let a = Authorities::new("cancel-uncertain-peer");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let cancel = emitted_cancel(pair.r.cancel_sas(&id));
+        poison(&a.ei);
+        assert_eq!(
+            pair.i.receive_cancel(&cancel),
+            Err(CeremonyError::Owner(OwnerError::OwnershipUncertain))
+        );
+        assert!(matches!(pair.i.state, State::Terminal) && pair.i.result().is_none());
+        assert_stale(&mut pair.i, &id);
+        assert!(pair.i.receive_cancel(&cancel).is_err());
+        assert_guard_held_uncertainly(&a.ei);
         drop(pair);
         a.release();
     }

@@ -9,13 +9,16 @@ use vodozemac::{
     sas::{EstablishedSas, Mac, Sas, SasBytes},
 };
 
-use crate::protocol::{Bootstrap, DecodedMessage, MAX_FRAME, Message, PROFILE_ID, Role};
+use crate::protocol::{
+    Bootstrap, CancelReason, DecodedMessage, MAX_FRAME, Message, PROFILE_ID, Role,
+};
 
 const DOMAIN: &[u8] = b"org.sas-pairing";
 const COMMIT_DOMAIN: &[u8] = b"sas-pairing-vodozemac-profile-draft-01/commit/v1";
 const TRANSCRIPT_DOMAIN: &[u8] = b"sas-pairing-vodozemac-profile-draft-01/transcript/v1";
 const SAS_PREFIX: &[u8] = b"sas-pairing-vodozemac-profile-draft-01/sas/";
 const MAC_PREFIX: &[u8] = b"sas-pairing-vodozemac-profile-draft-01/mac/";
+const CANCEL_PREFIX: &[u8] = b"sas-pairing-vodozemac-profile-draft-01/cancel/";
 const APPROVAL_PURPOSE: &[u8] = b"match-approve-bootstrap";
 const CRYPTO_INPUT_LIMIT: usize = 65_536;
 
@@ -34,12 +37,19 @@ pub(super) enum Error {
 #[cfg(test)]
 thread_local! {
     static MAC_OPERATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FAIL_NEXT_CANCEL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Test-only count of vodozemac MAC calculations and verifications on this thread.
 #[cfg(test)]
 pub(super) fn mac_operations() -> usize {
     MAC_OPERATIONS.with(std::cell::Cell::get)
+}
+
+/// Test-only fault injection: the next `cancel_mac_strings` on this thread fails.
+#[cfg(test)]
+pub(super) fn fail_next_cancel_construction() {
+    FAIL_NEXT_CANCEL.with(|fail| fail.set(true));
 }
 
 pub(super) struct EphemeralSas(Sas);
@@ -496,6 +506,111 @@ pub(super) fn completion_mac_strings(
     )
 }
 
+/// Non-wire P3 11.3 cancellation structure: domain, profile, version, sender role, receiver
+/// role, `ceremony_identity`, reason code. `CancelAuthFrame` (`0x34`) and `CancelMacContext`
+/// (`0x38`) carry these identical fields in this order; only the type byte differs. There is no
+/// inner purpose field, no request ID, and never a MAC.
+fn cancel_frame(
+    frame_type: u8,
+    sender: Role,
+    receiver: Role,
+    ceremony_identity: &[u8; 32],
+    reason: CancelReason,
+) -> Result<Vec<u8>, Error> {
+    let version = 1u16.to_be_bytes();
+    frame(
+        frame_type,
+        &[
+            DOMAIN,
+            PROFILE_ID,
+            &version,
+            &[sender as u8],
+            &[receiver as u8],
+            ceremony_identity,
+            &[reason as u8],
+        ],
+    )
+}
+
+/// Non-wire `CancelAuthFrame / 0x34`: the MAC input statement. Never a network message type.
+pub(super) fn cancel_auth_frame(
+    sender: Role,
+    receiver: Role,
+    ceremony_identity: &[u8; 32],
+    reason: CancelReason,
+) -> Result<Vec<u8>, Error> {
+    cancel_frame(0x34, sender, receiver, ceremony_identity, reason)
+}
+
+/// Non-wire `CancelMacContext / 0x38`: the MAC `info` context under outer purpose `cancel`.
+pub(super) fn cancel_context(
+    sender: Role,
+    receiver: Role,
+    ceremony_identity: &[u8; 32],
+    reason: CancelReason,
+) -> Result<Vec<u8>, Error> {
+    cancel_frame(0x38, sender, receiver, ceremony_identity, reason)
+}
+
+/// The vodozemac `(input, info)` for an authenticated CANCEL: input is unpadded Base64url of
+/// the `0x34` frame; info is `.../cancel/` (never `.../mac/`) plus unpadded Base64url of the
+/// `0x38` context. Callers derive both roles from local ceremony state, never from the wire.
+pub(super) fn cancel_mac_strings(
+    sender: Role,
+    receiver: Role,
+    ceremony_identity: &[u8; 32],
+    reason: CancelReason,
+) -> Result<(String, String), Error> {
+    debug_assert_ne!(sender, receiver);
+    #[cfg(test)]
+    if FAIL_NEXT_CANCEL.with(|fail| fail.replace(false)) {
+        return Err(Error::Oversized);
+    }
+    Ok((
+        capped_base64url(
+            b"",
+            &cancel_auth_frame(sender, receiver, ceremony_identity, reason)?,
+        )?,
+        capped_base64url(
+            CANCEL_PREFIX,
+            &cancel_context(sender, receiver, ceremony_identity, reason)?,
+        )?,
+    ))
+}
+
+/// Test-only CANCEL reconstruction with every structural choice made by the caller (frame and
+/// context types, outer prefix, an optional inner purpose field, roles, identity, and a raw
+/// reason byte), so tests can prove each departure from the frozen encoding fails.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn cancel_mac_strings_for_test(
+    auth_type: u8,
+    context_type: u8,
+    prefix: &[u8],
+    inner_purpose: Option<&[u8]>,
+    sender: Role,
+    receiver: Role,
+    ceremony_identity: &[u8; 32],
+    reason: u8,
+) -> (String, String) {
+    let version = 1u16.to_be_bytes();
+    let (sender, receiver, reason) = ([sender as u8], [receiver as u8], [reason]);
+    let tail: [&[u8]; 4] = [&sender, &receiver, ceremony_identity, &reason];
+    let auth: Vec<&[u8]> = [DOMAIN, PROFILE_ID, &version]
+        .into_iter()
+        .chain(tail)
+        .collect();
+    let context: Vec<&[u8]> = [DOMAIN, PROFILE_ID, &version]
+        .into_iter()
+        .chain(inner_purpose)
+        .chain(tail)
+        .collect();
+    (
+        capped_base64url(b"", &frame(auth_type, &auth).unwrap()).unwrap(),
+        capped_base64url(prefix, &frame(context_type, &context).unwrap()).unwrap(),
+    )
+}
+
 /// Test-only reconstruction with every bound completion field chosen by the caller, so tests
 /// can prove that changing any one of them breaks verification. Production uses the fixed map.
 #[cfg(test)]
@@ -926,6 +1041,122 @@ mod tests {
     }
 
     #[test]
+    fn cancel_encodings_match_authoritative_vector_in_both_directions() {
+        let json = fixture();
+        let c = &json["cancellation"];
+        let identity: [u8; 32] = hex(string(&json, &["ceremony_identity", "hex"]))
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            identity.as_slice(),
+            hex(c["ceremony_identity"].as_str().unwrap())
+        );
+        assert_eq!(
+            (
+                c["auth_frame_type"].as_str(),
+                c["mac_context_type"].as_str(),
+                c["outer_purpose"].as_str()
+            ),
+            (Some("0x34"), Some("0x38"), Some("cancel"))
+        );
+        for (code, reason) in [
+            ("01", CancelReason::UserRejection),
+            ("02", CancelReason::UserCancellation),
+            ("03", CancelReason::Timeout),
+            ("04", CancelReason::LocalPolicyFailure),
+        ] {
+            assert_eq!(hex(code), [reason as u8]);
+            assert!(c["reason_codes"][code].is_string());
+        }
+        let request_id = hex(string(&json, &["inputs", "request_id", "hex"]));
+        for (name, sender, receiver, reason, expected_tag) in [
+            (
+                "initiator",
+                Role::Initiator,
+                Role::Responder,
+                CancelReason::UserCancellation,
+                "e4289b39d4ab4e17ef95398f926642bcdf203d21d3d93c33f16785838ebb7652",
+            ),
+            (
+                "responder",
+                Role::Responder,
+                Role::Initiator,
+                CancelReason::Timeout,
+                "61c6ca7fa28eba2cd2fd3e3fdc262f9253ffadb8586b3f2fe96d5c9889a4ad42",
+            ),
+        ] {
+            let d = |path: &[&str]| {
+                let mut full = vec!["cancellation", "directions", name];
+                full.extend_from_slice(path);
+                string(&json, &full).to_owned()
+            };
+            assert_eq!(hex(&d(&["sender_role_code"])), [sender as u8]);
+            assert_eq!(hex(&d(&["receiver_role_code"])), [receiver as u8]);
+            assert_eq!(hex(&d(&["reason_code"])), [reason as u8]);
+
+            let auth = cancel_auth_frame(sender, receiver, &identity, reason).unwrap();
+            assert_eq!(auth, hex(&d(&["auth_frame", "hex"])));
+            assert_eq!(auth, hex(&d(&["mac_input", "canonical_binary_hex"])));
+            assert_eq!(auth[9], 0x34);
+            let context = cancel_context(sender, receiver, &identity, reason).unwrap();
+            assert_eq!(context, hex(&d(&["context_frame", "hex"])));
+            assert_eq!(context, hex(&d(&["mac_context", "canonical_binary_hex"])));
+            assert_eq!(context[9], 0x38);
+            // Identical fields and order; only the type byte differs. The reason is last.
+            assert_eq!((&auth[..9], &auth[10..]), (&context[..9], &context[10..]));
+            assert!(auth.ends_with(&[0, 0, 0, 1, reason as u8]));
+            assert!(!context.windows(6).any(|w| w == b"cancel"));
+
+            let (input, info) = cancel_mac_strings(sender, receiver, &identity, reason).unwrap();
+            assert_eq!(input, d(&["mac_input_base64url_unpadded"]));
+            assert_eq!(input, d(&["mac_input", "base64url_unpadded"]));
+            assert_eq!(input.as_bytes(), hex(&d(&["mac_input_hex"])));
+            assert_eq!(input.as_bytes(), hex(&d(&["mac", "input_hex"])));
+            assert_eq!(URL_SAFE_NO_PAD.decode(&input).unwrap(), auth);
+            assert_eq!(info, d(&["info_string"]));
+            assert_eq!(info, d(&["mac_context", "info_string"]));
+            let encoded = info
+                .strip_prefix("sas-pairing-vodozemac-profile-draft-01/cancel/")
+                .unwrap();
+            assert_eq!(encoded, d(&["mac_context", "base64url_unpadded"]));
+            assert_eq!(URL_SAFE_NO_PAD.decode(encoded).unwrap(), context);
+            assert!(!info.contains("/mac/"));
+            assert!(!input.contains('=') && !info.contains('='));
+            assert_eq!(
+                cancel_mac_strings_for_test(
+                    0x34,
+                    0x38,
+                    CANCEL_PREFIX,
+                    None,
+                    sender,
+                    receiver,
+                    &identity,
+                    reason as u8
+                ),
+                (input, info)
+            );
+
+            // Wire framing of the fixture's fixed-secret tag; the tag itself is not recomputed.
+            let tag: [u8; 32] = hex(&d(&["raw_mac", "hex"])).try_into().unwrap();
+            assert_eq!(tag.as_slice(), hex(expected_tag));
+            assert_eq!(tag.as_slice(), hex(&d(&["mac", "output_hex"])));
+            let message = Message::Cancel {
+                request_id: request_id.clone(),
+                sender,
+                reason,
+                mac: tag,
+            };
+            let wire = message.encode().unwrap();
+            let expected_wire = hex(string(&json, &["wire_messages", "CANCEL", name, "hex"]));
+            assert_eq!(wire, expected_wire);
+            assert_eq!(wire[9], 0x09);
+            let decoded = protocol::decode(&expected_wire).unwrap();
+            assert_eq!(decoded.message, message);
+            assert_eq!(decoded.canonical_bytes(), expected_wire);
+        }
+    }
+
+    #[test]
     fn live_bootstrap_mac_verifies_only_the_exact_bound_statement() {
         let (initiator_state, responder_state) = (EphemeralSas::new(), EphemeralSas::new());
         let (initiator_public, responder_public) =
@@ -1066,7 +1297,7 @@ mod tests {
     #[test]
     fn generated_mac_strings_are_capped_including_prefix() {
         let encoded = |n: usize| n / 3 * 4 + [0, 2, 3][n % 3];
-        for prefix in [&b""[..], MAC_PREFIX] {
+        for prefix in [&b""[..], MAC_PREFIX, CANCEL_PREFIX] {
             let (mut accepted, mut rejected) = (false, false);
             for n in 49_100..49_160 {
                 let fits = prefix.len() + encoded(n) <= CRYPTO_INPUT_LIMIT;
