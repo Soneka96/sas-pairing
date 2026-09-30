@@ -2,7 +2,7 @@
 
 > Cases instantiate the candidate drafts for future Rust/Dart/.NET and adapter tests. They do not select a profile or grant production approval. “Reject before SAS charge” means before either endpoint's profile-defined key-release boundary; a post-boundary terminal failure never refunds an already reserved opportunity.
 
-> **CR-01 OPEN:** Remote cases below exercise the historical multi-ceremony/`5,497` epoch candidate. They must be revised for the [owner's one-shot direction](p3-one-shot-remote-pairing-decision.md) after security verification; they are not conformance evidence for that direction.
+> **HISTORICAL CANDIDATE CASES:** Remote cases below exercise the pre-owner multi-ceremony/`5,497` epoch candidate and are not conformance evidence for the current owner-selected 10-opportunity process/session policy. That policy and its 10/10 joint-window pair-count model are recorded in the [owner decision](p3-one-shot-remote-pairing-decision.md). These fixtures remain unchanged; the per-tested-pair `2^-39` premise is still open and parent CR-01 remains open.
 
 Each row supplies a stable ID, precondition/input, expected outcome, and relevant accounting/resource boundary. `—` means the property does not apply. “Terminal” describes the active ceremony. Resource cases use the current frozen caps and state rules.
 
@@ -159,7 +159,7 @@ Each row supplies a stable ID, precondition/input, expected outcome, and relevan
 | L-RESOURCE-013 | UI activity, junk, keepalive, or adapter noise occurs | Do not refresh inactivity or absolute deadline | No charge; no prompt extension |
 | L-RESOURCE-014 | System resume cannot establish elapsed time safely | Fail active ceremonies conservatively | No charge; release slots |
 | L-RESOURCE-015 | Process restart | Destroy active ceremony/approval; may start fresh operational rate windows | No remote charge/reset; release volatile slots |
-| L-RESOURCE-016 | Any local ceremony/activity | Remote durable 5,497-attempt epoch stays unchanged | No remote charge/reset/refund |
+| L-RESOURCE-016 | Any local ceremony/activity | Remote 10-opportunity process/session budget stays unchanged | No remote charge/reset/refund |
 
 ## Windows adapter candidate
 

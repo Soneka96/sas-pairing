@@ -1,6 +1,6 @@
 # sas-pairing current manager context
 
-**Current CR-01 gate (2026-09-30):** The owner selected a [one-shot remote-pairing direction](../../docs/p3-one-shot-remote-pairing-decision.md), but a focused check found that one endpoint's pending SAS can still be tested against later candidates when the other endpoint is explicitly re-enabled. The owner direction needs revision; older remote multi-ceremony and `5,497`-opportunity descriptions below are historical candidate material. The 20-consumption process-session ceiling is abuse protection, not a cryptographic lifetime bound. CR-01 remains open, vodozemac is favored but not selected, and P4 is blocked. The remote profile's transcript prefix has been corrected to match its deterministic vector.
+**Current CR-01 gate (2026-09-30):** The owner selected the [remote session safety policy](../../docs/p3-one-shot-remote-pairing-decision.md): one live exposed ceremony across roles/connections, explicit retries only, and 10 exposed SAS opportunities per process/session per core. The previously reviewed pair-count model is `n_A + n_B - 1`, at most 19 tested pairs for a 10/10 joint window. Pair-counting remediation is documented; the per-tested-pair `2^-39` premise remains unverified, so parent CR-01 remains open. The older multi-ceremony/`5,497` candidate material below is historical. Vodozemac is favored, not selected, and P4 is blocked. The transcript prefix remains consistent with its deterministic vector.
 
 ## Project purpose
 
@@ -24,7 +24,7 @@ Candidate B is Beskorovajnov–Müller-Quade mutual `π_SAS^×`: historically se
 
 ## Vodozemac candidate
 
-`sas-pairing-vodozemac-ceremony-profile-draft-01` is the **FAVORED CANDIDATE — NOT SELECTED**, concrete, vectorized, and reviewable. It pins vodozemac 0.11.0 as a candidate and specifies X25519, a SHA-256 responder commitment, canonical framing, transcript identity, Matrix decimal SAS, bootstrap/completion MACs, context and expected-peer semantics, accounting, resource controls, timeouts, and state handling. Its complete active-MITM composition, commitment hiding/binding, per-opportunity `≤ 2^-39` premise, aggregate `N = 5,497`, `ε = 10^-8` policy, and adaptive abort/retry/concurrency/grinding argument have not been independently established. The arithmetic is conditional on the per-opportunity premise. Matrix/vodozemac precedent and deterministic vectors are not a proof of this composition.
+`sas-pairing-vodozemac-ceremony-profile-draft-01` is the **FAVORED CANDIDATE — NOT SELECTED**, concrete, vectorized, and reviewable. It pins vodozemac 0.11.0 as a candidate and specifies X25519, a SHA-256 responder commitment, canonical framing, transcript identity, Matrix decimal SAS, bootstrap/completion MACs, context and expected-peer semantics, candidate accounting, resource controls, timeouts, and state handling. The older aggregate `N = 5,497`, `ε = 10^-8` policy is historical candidate text, superseded for current owner policy by the 10-opportunity process/session ceiling. The complete active-MITM composition, commitment hiding/binding, and per-tested-pair `≤ 2^-39` premise remain unverified. The 19-pair union-bound arithmetic is conditional on that premise. Matrix/vodozemac precedent and deterministic vectors are not a proof of this composition.
 
 ## Current construction status
 

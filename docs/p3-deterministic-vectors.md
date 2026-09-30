@@ -2,7 +2,7 @@
 
 > **DETERMINISTIC TEST VECTORS FOR CANDIDATE PROFILES — NOT PRODUCTION APPROVAL**
 
-> **CR-01 OPEN:** The remote vector fixes ceremony bytes, not admission or attempt policy. The [owner's one-shot direction](p3-one-shot-remote-pairing-decision.md) is pending security verification. The remote transcript bytes already use `u32be(len(domain)) || domain`, matching the corrected candidate profile.
+> **CR-01 PAIR-COUNTING REMEDIATION DOCUMENTED — PER-PAIR PREMISE OPEN:** The remote vector fixes ceremony bytes, not admission or attempt policy. The owner-selected policy is 10 exposed opportunities per process/session per core, with at most 19 tested pairs in a 10/10 joint window under the reviewed pair-count model. The remote transcript bytes remain `u32be(len(domain)) || domain`, matching the candidate profile; this policy decision changes no vector bytes.
 
 ## Status and scope
 
@@ -81,4 +81,4 @@ The success result fixtures contain only the specified profile, version, peer ro
 
 ## Limits
 
-The vectors demonstrate byte and derivation agreement for one synthetic positive ceremony per profile. They do not establish vodozemac candidate selection, protocol security, production readiness, Windows behavior, OS credentials, or external review. Negative and boundary behavior is listed separately in [the conformance matrix](p3-conformance-cases.md); resource accounting is specified there as cases, not simulated across 5,497 attempts.
+The vectors demonstrate byte and derivation agreement for one synthetic positive ceremony per profile. They do not establish vodozemac candidate selection, protocol security, production readiness, Windows behavior, OS credentials, or external review. Negative and boundary behavior is listed separately in [the conformance matrix](p3-conformance-cases.md); the historical 5,497-attempt candidate accounting is not simulated there and is not current owner policy.

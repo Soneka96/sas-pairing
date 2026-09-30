@@ -5,7 +5,7 @@
 > Profile identifier: `sas-pairing-vodozemac-profile-draft-01`
 > Status: a protocol proposal for review, not a production protocol, implementation, or protocol freeze.
 
-> **CR-01 OPEN:** The owner selected a [one-shot remote-pairing direction](p3-one-shot-remote-pairing-decision.md), but a focused check found a cross-endpoint counterexample to its one-comparison claim. The multi-ceremony and `5,497`-opportunity policies below are historical candidate text and conflict with that direction. This draft is not implementable as a settled policy until the security review and reconciliation occur. The transcript-encoding correction in §9 is independent of that decision.
+> **CURRENT OWNER POLICY:** The owner-selected remote session ceiling is 10 exposed SAS opportunities per process/session per core. For two endpoints within one joint window, the previously reviewed total-pair model gives `n_A + n_B - 1`, or at most 19 for a 10/10 window. The per-tested-pair `2^-39` premise remains open; CR-01 remains open. The multi-ceremony, eight-active-Responder-slot, and `5,497` durable-epoch rules later in this unselected draft are historical candidate text, not current owner policy. The transcript-encoding correction in §9 is independent and remains consistent with the deterministic vector.
 
 ## 1. Purpose and status boundary
 

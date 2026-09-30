@@ -8,7 +8,7 @@ P2 historically selected Candidate B as the abstract remote construction. During
 
 The assessment recommends the shared Rust-core direction only as promising reuse, subject to a complete profile and independent review ([reuse assessment](p3-vodozemac-reuse-assessment.md), §18). Vodozemac primitives and Matrix ceremony behavior are precedent, not evidence that this generic composition is secure.
 
-**CR-01 update:** The owner selected a [one-shot remote-pairing direction](p3-one-shot-remote-pairing-decision.md), pending security verification. D7–D10 and D15 record the earlier multi-ceremony/`5,497` epoch candidate and do not override the new owner direction. Its proposed 20-consumption process ceiling is an abuse limit, not a replacement aggregate cryptographic proof. CR-01 remains open, vodozemac remains unselected, and P4 remains blocked.
+**CR-01 update:** The owner selected the [10-opportunity remote process/session policy](p3-one-shot-remote-pairing-decision.md). The owner policy and the previously reviewed `n_A + n_B - 1` model document pair-counting remediation, with at most 19 tested pairs for a 10/10 joint window. D7–D10 and D15 record the earlier multi-ceremony/`5,497` epoch candidate and do not override current owner policy. The per-tested-pair `2^-39` premise remains open for independent verification, so parent CR-01 remains open, vodozemac remains unselected, and P4 remains blocked.
 
 ## Decision records
 
