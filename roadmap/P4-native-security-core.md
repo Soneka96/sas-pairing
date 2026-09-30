@@ -4,9 +4,15 @@
 
 🔵 **EXPERIMENTAL IMPLEMENTATION AUTHORIZED — NOT STARTED OR COMPLETE.** The owner selected the corrected vodozemac remote profile and owner policy as the experimental baseline and waived the qualified-human-review prerequisite for this phase. F-02 is recorded as a false positive under the stated idealized assumptions; the complete argument remains conditional and is not formally verified. No production-security approval is granted.
 
+## First implementation step
+
+Build and verify the Rust authority-ownership and exposure-admission foundation before implementing protocol messages: canonical local authority identity registration; one OS-backed exclusive owner lease; one shared active-ceremony guard; and one shared volatile ten-opportunity counter. Reservation must require fresh authorization for that exact ceremony and acquire the guard plus opportunity with one atomic outcome before any public contribution can be released. Keep protocol message handling out of this first slice.
+
+The step is complete only when two independent processes racing on the same authority produce exactly one owner, ambiguous acquisition fails closed, missing/stale authorization cannot reserve, a second thread/connection/role cannot win a second guard or overrun the tenth reservation, reservations are never refunded after a simulated post-reservation failure, clean release permits one replacement, and crash/recovery testing proves replacement cannot overlap a still-capable old owner. Use a second distinct authority to confirm independent state. Windows same-session and cross-session cases must be included before selecting/enabling a Windows mechanism. These are future implementation checks, not completed evidence.
+
 ## Goal
 
-Implement the reviewed candidate protocol/profile in one native security core, currently intended to be Rust.
+Implement the selected experimental protocol/profile in one native security core, currently intended to be Rust.
 
 ## Why this phase exists
 
@@ -26,7 +32,7 @@ Independent production cryptography in Dart or .NET; binding or consumer integra
 
 ## Deliverables
 
-A native implementation of the reviewed candidate profile and evidence of implementation conformance.
+A native implementation of the selected experimental profile and evidence of implementation conformance.
 
 ## Security invariants
 
@@ -46,8 +52,9 @@ Implement and verify:
 - I1 terminal-state irreversibility and I2 SAS invalidation and stale-approval rejection.
 - Fail-closed handling of malformed cryptographic input and any security-critical invariant that cannot be enforced.
 - Deterministic-vector validation and conformance checks for the current normative requirements.
+- The finite pre-exposure transport/core caps, admission limits, and cleanup invariants in the authoritative profile, kept separate from SAS accounting.
 
-No P4 implementation may invent a security decision for an undecided normative detail. Record it as a prerequisite and resolve it before implementing affected behavior. Ownership mechanics remain target-specific P4 work; this document selects no platform mechanism. These requirements are not claimed as already implemented.
+No P4 implementation may invent a security decision for an undecided normative detail. Record it as a prerequisite and resolve it before implementing affected behavior. Ownership mechanics remain target-specific P4 work; the profile evaluates candidate Windows approaches but selects no mechanism. Experimental P4 does not require a qualified professional audit, which is not currently planned. These requirements are not claimed as already implemented.
 
 ## Exit criteria
 

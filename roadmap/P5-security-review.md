@@ -6,39 +6,39 @@
 
 ## Goal
 
-Obtain independent review of the actual implementation against the construction/profile reviewed before implementation.
+Review the actual implementation against the selected experimental profile, after a reviewable P4 implementation exists.
 
 ## Why this phase exists
 
-The P3.5 review assesses whether a proposed composition/profile is defensible enough to select and implement. P5 happens after P4 and assesses whether the actual Rust implementation correctly and safely implements that reviewed construction/profile. Internal analysis and conformance checks do not replace either independent assessment.
+P5 happens after P4 and examines whether the Rust core correctly implements the selected construction/profile. P3 review was AI-assisted; it did not establish formal or professional assurance. The owner waived a qualified-human-review prerequisite for experimental development and no professional audit is currently planned. P5 does not retroactively claim one occurred.
 
 ## Inputs / prerequisites
 
-The P2 evidence, P3.5 review and P3.6 selection/frozen profile, P4 implementation, vectors, and their documented assumptions and limitations.
+The P2 evidence, P3 selected experimental profile and owner decisions, P4 implementation, vectors, and their documented assumptions and limitations.
 
 ## Scope
 
-Make the selected construction rationale, threat model, frozen profile, implementation, vectors, and implementation-focused review questions available in a reproducible form. Record reviewer findings and their severity and rationale.
+Make the selected construction rationale, threat model, profile, implementation, vectors, and implementation-focused review questions available in a reproducible form. Record the review method, scope, limitations, and findings. Any independent or professional review would require separate planning and is not a prerequisite for experimental P4.
 
 ## Out of scope
 
-Treating tests, vectors, or an informal internal review as independent review; claiming all findings are resolved before P6.
+Treating tests, vectors, AI-assisted analysis, or an informal internal review as professional certification; claiming all findings are resolved before P6.
 
 ## Deliverables
 
-An implementation security-review package, independent findings, and a record of review scope and limitations.
+An implementation security-review package, findings and dispositions, and a record of review scope and limitations.
 
 ## Security invariants
 
-No production-readiness claim before independent security review and resolution of required findings.
+No production-readiness claim based solely on P5, and no claim that the experimental owner decision constitutes security approval.
 
 ## Exit criteria
 
-An independent review has assessed whether the actual Rust implementation correctly and safely implements the reviewed construction/profile, with findings recorded for triage. This does not replace the pre-implementation P3.5 construction review.
+The implementation-focused review has a recorded scope, method, limitations, findings, and disposition sufficient to inform P6. The review may not be described as a professional audit unless qualified reviewers actually perform one. This does not upgrade the conditional protocol argument into a proof.
 
 ## STOP conditions
 
-Stop readiness claims if review cannot be obtained, its scope is insufficient for the claim, or a critical issue remains unexplained.
+Stop any readiness claim that exceeds the evidence, leaves a material finding unexplained, or implies assurance work that was not performed.
 
 ## What this unlocks
 

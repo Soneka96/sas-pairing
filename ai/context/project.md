@@ -8,7 +8,7 @@ Language-neutral human-authenticated pairing for exchanging bootstrap data. The 
 
 ## Current repository phase
 
-**PRE-ALPHA. P3.5 FINDINGS DOCUMENTED; P3.6 EXPERIMENTAL SELECTION RECORDED; P4 AUTHORIZED.** No production cryptography is implemented. Production use and release are not approved.
+**PRE-ALPHA. P3 REMOTE EXPERIMENTAL SPECIFICATION FINALIZED; P4 IS NEXT AND AUTHORIZED.** No Rust implementation or executable cryptographic conformance tests are complete. Production use and release are not approved. The separate same-device profile and platform adapters remain candidate-only and do not block remote P4.
 
 ## P1 result contract
 
