@@ -4,9 +4,9 @@
 >
 > This document defines a specification surface for future P3 decisions. It does not select unresolved cryptographic parameters, define an implementable wire profile, or authorize implementation.
 
-> This file preserves the historical Candidate B P3 foundation. It is not the currently favored vodozemac candidate profile and does not represent a selected v1 protocol.
+> This file preserves the historical Candidate B P3 foundation. It is not the selected vodozemac experimental baseline and does not represent production approval.
 
-**Current status:** P2 originally selected Candidate B as the abstract construction. The owner later reopened the implementation-direction choice because concrete instantiation would require substantial project-owned cryptographic design and proof-mapping/maintenance; this is not a finding that Candidate B is insecure. Candidate B remains a formal reference and possible fallback. The separate vodozemac profile is the **FAVORED CANDIDATE — NOT SELECTED**, pending project-specific analysis and independent review. This foundation preserves the historical Candidate B direction; it does not describe a currently selected production profile. See [current protocol status](protocol-status.md).
+**Historical status:** P2 selected Candidate B as the abstract construction. The owner later reopened implementation direction because concrete instantiation would require substantial project-owned cryptographic design and proof-mapping/maintenance; this is not a finding that Candidate B is insecure. Candidate B remains a formal reference and possible fallback. Owner decision 0002 now selects a separate vodozemac profile for experimental implementation only. This foundation preserves historical Candidate B mechanics and is not the current implementation baseline. See [current protocol status](protocol-status.md).
 
 ## 1. Purpose and security boundary
 
@@ -117,7 +117,7 @@ A separate same-device profile may omit SAS only after a reviewed profile establ
 - authorization for this exact ceremony, resistant to stale requests and replay; and
 - result semantics compatible with the generic pairing result contract.
 
-The local participant must explicitly approve the exact ceremony. Loopback, IP address, hostname, discovery name, process name, same-machine observation, or LAN proximity alone is insufficient to activate this profile. The profile must state the trusted OS/user boundary and must not claim resistance to an attacker able to control that boundary. No OS primitive or authorization rule is selected here; the production remote profile also remains unselected pending the current candidate's security review and an explicit owner decision.
+The local participant must explicitly approve the exact ceremony. Loopback, IP address, hostname, discovery name, process name, same-machine observation, or LAN proximity alone is insufficient to activate this profile. The profile must state the trusted OS/user boundary and must not claim resistance to an attacker able to control that boundary. No OS primitive or authorization rule is selected here. This historical Candidate B profile is separate from the vodozemac experimental baseline; no production remote profile is approved.
 
 ## 9. Unresolved decisions — evidence required
 

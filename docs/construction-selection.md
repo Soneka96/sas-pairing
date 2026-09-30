@@ -1,10 +1,10 @@
 # P2 — Construction selection and formal mapping
 
-> **Historical P2 analysis.** In this document, unqualified references to Candidate B being “selected” describe the original P2 decision only. The owner later reopened the implementation-direction choice for engineering/security ownership reasons, as described below. Candidate B remains a formal reference and possible fallback; the vodozemac-based ceremony is currently favored for investigation but is not selected.
+> **Historical construction analysis.** References to Candidate B being “selected” describe the P2 decision only. The owner later reopened implementation direction for engineering/security ownership reasons. Candidate B remains a formal reference and possible fallback. Owner decision 0002 now selects the existing vodozemac-based ceremony for experimental implementation only; it does not establish production security.
 
 ## Current project status
 
-P2 historically selected Candidate B as the abstract remote construction direction. During P3, concrete-instantiation work exposed substantial project-owned cryptographic design and proof-mapping/maintenance work. The owner decided this was too much custom cryptographic ownership for the project and deliberately reopened the implementation-direction choice. This engineering-risk decision does not disprove Candidate B or its paper; Candidate B remains a formal reference and possible fallback. A ceremony composed from maintained vodozemac primitives is now the **FAVORED CANDIDATE** because it may reduce custom-crypto ownership, but it is **NOT SELECTED** and still needs project-specific analysis and independent review. See [current manager context](../ai/context/project.md) and [protocol status](protocol-status.md).
+P2 historically selected Candidate B as the abstract remote construction direction. During P3, concrete-instantiation work exposed substantial project-owned cryptographic design and proof-mapping/maintenance work. The owner reopened implementation direction for ownership reasons; this does not disprove Candidate B or its paper, and Candidate B remains a formal reference and possible fallback. The current owner decision selects the existing vodozemac-based ceremony for experimental implementation. Review and assurance limitations remain as recorded in [decision 0002](decisions/0002-experimental-vodozemac-selection.md) and [protocol status](protocol-status.md).
 
 The historical P2 decision below is preserved as recorded. It is not a current final remote-profile selection or authorization to implement.
 
