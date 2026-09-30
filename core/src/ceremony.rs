@@ -1,6 +1,7 @@
-//! Crate-private remote ceremony through internal SAS establishment only.
+//! Crate-private remote ceremony through SAS establishment and local human comparison only.
 //! Fixed request IDs are accepted only by this internal/test-scoped constructor;
 //! production request-ID generation and active routing reservation remain pending.
+//! BOOTSTRAP_MAC, authenticated CANCEL, completion, and PairingResult are not implemented.
 #![allow(dead_code)] // The protocol remains internal until later P4 work defines its complete API.
 use crate::{
     Authorization, Ceremony, CeremonyExecutor, Error as OwnerError, Role, TrustedAuthority,
@@ -14,6 +15,10 @@ pub(crate) enum CeremonyError {
     Codec(protocol::CodecError),
     Crypto(crypto::Error),
     InvalidState,
+    /// No SAS of this ceremony is live: not yet established, or the ceremony is terminal.
+    NoLiveSas,
+    /// A local comparison decision targeted a different `ceremony_identity`.
+    CeremonyIdentityMismatch,
     InvalidRequestId,
     RequestIdMismatch,
     SharedContextMismatch,
@@ -71,12 +76,95 @@ enum State {
         rpub: [u8; 32],
         authorization: Option<Authorization>,
     },
-    AwaitingApproval {
-        identity: [u8; 32],
-        sas: Established,
-        info: String,
+    /// The transcript and `ceremony_identity` are fixed; the complete SAS awaits a local decision.
+    AwaitLocalApproval {
+        session: SasSession,
+    },
+    /// Local human MATCH recorded for exactly this identity. Not protocol success: the
+    /// authenticated BOOTSTRAP_MAC exchange and completion remain unimplemented.
+    LocallyApprovedAwaitingAuthentication {
+        session: SasSession,
     },
     Terminal,
+}
+
+/// Established-ceremony material, owned only by its state variant so every terminal
+/// transition drops it. Retained for the later BOOTSTRAP_MAC increment; never exposed.
+struct SasSession {
+    role: Role,
+    ceremony_identity: [u8; 32],
+    sas_bytes: [u8; 6],
+    decimal: String,
+    request_id: Vec<u8>,
+    local_bootstrap: Bootstrap,
+    peer_bootstrap: Bootstrap,
+    established: Established,
+}
+
+impl SasSession {
+    fn new(
+        role: Role,
+        start: &DecodedMessage,
+        accept: &DecodedMessage,
+        ikey: &DecodedMessage,
+        rkey: &DecodedMessage,
+        established: Established,
+    ) -> Result<Self, CeremonyError> {
+        let (ceremony_identity, _) = crypto::transcript_identity(start, accept, ikey, rkey)?;
+        let (_, info) = crypto::sas_info(start, accept, ikey, rkey)?;
+        let (bytes, decimal) = established.sas(&info);
+        let (request_id, initiator) = match &start.message {
+            Message::Start {
+                request_id,
+                bootstrap,
+            } => (request_id.clone(), bootstrap.clone()),
+            _ => return Err(CeremonyError::InvalidState),
+        };
+        let responder = match &accept.message {
+            Message::Accept { bootstrap, .. } => bootstrap.clone(),
+            _ => return Err(CeremonyError::InvalidState),
+        };
+        let (local_bootstrap, peer_bootstrap) = match role {
+            Role::Initiator => (initiator, responder),
+            Role::Responder => (responder, initiator),
+        };
+        Ok(Self {
+            role,
+            ceremony_identity,
+            sas_bytes: *bytes.as_bytes(),
+            decimal,
+            request_id,
+            local_bootstrap,
+            peer_bootstrap,
+            established,
+        })
+    }
+}
+
+/// What a local comparison interface needs for exactly one live ceremony. It is data only:
+/// holding it authorizes nothing, and every decision is rechecked against live ceremony state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SasPresentation {
+    ceremony_identity: [u8; 32],
+    decimal: String,
+}
+
+impl SasPresentation {
+    pub(crate) fn ceremony_identity(&self) -> &[u8; 32] {
+        &self.ceremony_identity
+    }
+    /// The complete `NNNN NNNN NNNN` value to compare with the peer's display.
+    pub(crate) fn decimal(&self) -> &str {
+        &self.decimal
+    }
+}
+
+/// Human SAS MATCH outcome. Distinct from exposure `Authorization`: it is recorded after
+/// exposure, never reserves, consumes, acquires, or releases anything, and emits no output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SasApproval {
+    Recorded,
+    AlreadyRecorded,
 }
 
 pub(crate) struct RemoteCeremony {
@@ -197,16 +285,77 @@ impl RemoteCeremony {
     }
 
     pub(crate) fn is_awaiting_approval(&self) -> bool {
-        matches!(self.state, State::AwaitingApproval { .. })
+        matches!(self.state, State::AwaitLocalApproval { .. })
+    }
+
+    pub(crate) fn is_locally_approved(&self) -> bool {
+        matches!(
+            self.state,
+            State::LocallyApprovedAwaitingAuthentication { .. }
+        )
+    }
+
+    /// Available only while this exact SAS awaits a local decision (I2). It never exists
+    /// before `ceremony_identity` is fixed and is withdrawn by approval or any terminal path.
+    pub(crate) fn presentation(&self) -> Option<SasPresentation> {
+        match &self.state {
+            State::AwaitLocalApproval { session } => Some(SasPresentation {
+                ceremony_identity: session.ceremony_identity,
+                decimal: session.decimal.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Local MATCH for exactly this transcript-derived identity. A request ID is never accepted.
+    pub(crate) fn approve_sas(
+        &mut self,
+        ceremony_identity: &[u8; 32],
+    ) -> Result<SasApproval, CeremonyError> {
+        self.live_session(ceremony_identity)?;
+        if self.is_locally_approved() {
+            return Ok(SasApproval::AlreadyRecorded);
+        }
+        let State::AwaitLocalApproval { session } =
+            std::mem::replace(&mut self.state, State::Terminal)
+        else {
+            unreachable!()
+        };
+        self.state = State::LocallyApprovedAwaitingAuthentication { session };
+        Ok(SasApproval::Recorded)
+    }
+
+    /// Local MISMATCH/REJECT: terminal failure. Sends nothing and refunds nothing.
+    pub(crate) fn reject_sas(&mut self, ceremony_identity: &[u8; 32]) -> Result<(), CeremonyError> {
+        self.live_session(ceremony_identity)?;
+        self.terminate()
+    }
+
+    /// Local CANCEL only; authenticated wire CANCEL is later work, so nothing is emitted.
+    pub(crate) fn cancel_sas(&mut self, ceremony_identity: &[u8; 32]) -> Result<(), CeremonyError> {
+        self.live_session(ceremony_identity)?;
+        self.terminate()
+    }
+
+    /// Callbacks for another identity, or for no live SAS, are rejected without any effect,
+    /// so a stale callback can neither approve nor disturb this ceremony.
+    fn live_session(&self, ceremony_identity: &[u8; 32]) -> Result<&SasSession, CeremonyError> {
+        let session = match &self.state {
+            State::AwaitLocalApproval { session }
+            | State::LocallyApprovedAwaitingAuthentication { session } => session,
+            _ => return Err(CeremonyError::NoLiveSas),
+        };
+        if session.ceremony_identity != *ceremony_identity {
+            return Err(CeremonyError::CeremonyIdentityMismatch);
+        }
+        Ok(session)
     }
 
     #[cfg(test)]
-    fn sas_for_test(&self) -> Option<(Vec<u8>, String)> {
+    fn sas_bytes_for_test(&self) -> Option<[u8; 6]> {
         match &self.state {
-            State::AwaitingApproval { sas, info, .. } => {
-                let (bytes, decimal) = sas.sas(info);
-                Some((bytes.as_bytes().to_vec(), decimal))
-            }
+            State::AwaitLocalApproval { session }
+            | State::LocallyApprovedAwaitingAuthentication { session } => Some(session.sas_bytes),
             _ => None,
         }
     }
@@ -330,19 +479,12 @@ impl RemoteCeremony {
             Err(error) => return self.fail(error.into()),
         };
         self.seen.push((4, bytes.to_vec()));
-        let (identity, _) = match crypto::transcript_identity(&start, &accept, &ikey, &msg) {
-            Ok(value) => value,
-            Err(error) => return self.fail(error.into()),
-        };
-        let (_, info) = match crypto::sas_info(&start, &accept, &ikey, &msg) {
-            Ok(value) => value,
-            Err(error) => return self.fail(error.into()),
-        };
-        self.state = State::AwaitingApproval {
-            identity,
-            sas: established,
-            info,
-        };
+        let session =
+            match SasSession::new(Role::Initiator, &start, &accept, &ikey, &msg, established) {
+                Ok(value) => value,
+                Err(error) => return self.fail(error),
+            };
+        self.state = State::AwaitLocalApproval { session };
         Ok(())
     }
 
@@ -454,20 +596,18 @@ impl RemoteCeremony {
                     Ok(value) => value,
                     Err(error) => return self.fail(error.into()),
                 };
-                let (identity, _) = match crypto::transcript_identity(&start, &accept, &ikey, &rkey)
-                {
+                let session = match SasSession::new(
+                    Role::Responder,
+                    &start,
+                    &accept,
+                    &ikey,
+                    &rkey,
+                    established,
+                ) {
                     Ok(value) => value,
-                    Err(error) => return self.fail(error.into()),
+                    Err(error) => return self.fail(error),
                 };
-                let (_, info) = match crypto::sas_info(&start, &accept, &ikey, &rkey) {
-                    Ok(value) => value,
-                    Err(error) => return self.fail(error.into()),
-                };
-                self.state = State::AwaitingApproval {
-                    identity,
-                    sas: established,
-                    info,
-                };
+                self.state = State::AwaitLocalApproval { session };
                 Ok(bytes)
             }
             other => {
@@ -477,6 +617,8 @@ impl RemoteCeremony {
         }
     }
 
+    /// I1/I2: the assignment drops any SAS session and local approval before the
+    /// executor releases the authority guard. Opportunities are never refunded.
     pub(crate) fn terminate(&mut self) -> Result<(), CeremonyError> {
         if matches!(self.state, State::Terminal) {
             return Ok(());
@@ -516,7 +658,7 @@ impl RemoteCeremony {
 
 impl Drop for RemoteCeremony {
     fn drop(&mut self) {
-        // Drop ephemeral and SAS state before Ceremony's Drop releases the authority guard.
+        // Drop ephemeral, SAS, and local-approval state before Ceremony's Drop releases the guard.
         self.state = State::Terminal;
     }
 }
@@ -668,13 +810,19 @@ mod tests {
         initiator.receive_responder_key(&rkey).unwrap();
         assert!(initiator.is_awaiting_approval());
         assert!(responder.is_awaiting_approval());
-        assert_eq!(initiator.sas_for_test(), responder.sas_for_test());
+        assert!(initiator.presentation().is_some());
+        assert_eq!(initiator.presentation(), responder.presentation());
+        assert_eq!(
+            initiator.sas_bytes_for_test(),
+            responder.sas_bytes_for_test()
+        );
         assert_eq!(executor_i.status().unwrap(), Status::Busy);
         assert_eq!(executor_r.status().unwrap(), Status::Busy);
         initiator.terminate().unwrap();
         responder.terminate().unwrap();
-        assert_eq!(initiator.sas_for_test(), None);
-        assert_eq!(responder.sas_for_test(), None);
+        assert_eq!(initiator.presentation(), None);
+        assert_eq!(responder.presentation(), None);
+        assert_eq!(initiator.sas_bytes_for_test(), None);
         assert_eq!(executor_i.status().unwrap(), Status::Ready { remaining: 9 });
         assert_eq!(executor_r.status().unwrap(), Status::Ready { remaining: 9 });
         drop(initiator);
@@ -1135,5 +1283,404 @@ mod tests {
         drop(responder);
         drop(executor);
         authority.release().unwrap();
+    }
+
+    struct Authorities {
+        i: TrustedAuthority,
+        ei: CeremonyExecutor,
+        r: TrustedAuthority,
+        er: CeremonyExecutor,
+    }
+    impl Authorities {
+        fn new(scope: &str) -> Self {
+            let (i, ei) = executor(format!("{scope}-i").as_bytes());
+            let (r, er) = executor(format!("{scope}-r").as_bytes());
+            Self { i, ei, r, er }
+        }
+        fn release(self) {
+            drop(self.ei);
+            drop(self.er);
+            self.i.release().unwrap();
+            self.r.release().unwrap();
+        }
+    }
+    struct Pair {
+        i: RemoteCeremony,
+        r: RemoteCeremony,
+        wire: [Vec<u8>; 4],
+    }
+    impl Pair {
+        fn identity(&self) -> [u8; 32] {
+            *self.i.presentation().unwrap().ceremony_identity()
+        }
+    }
+
+    fn vector_request_id() -> Vec<u8> {
+        request_id_of(&decoded("START")).unwrap().to_vec()
+    }
+
+    fn remaining(executor: &CeremonyExecutor) -> u8 {
+        executor.0.shared.lock().unwrap().remaining
+    }
+
+    fn assert_no_live_sas(run: &RemoteCeremony) {
+        assert_eq!(run.presentation(), None);
+        assert_eq!(run.sas_bytes_for_test(), None);
+        assert!(!run.is_awaiting_approval() && !run.is_locally_approved());
+    }
+
+    /// Runs one legal key exchange with the fixed-request-ID vector START and fresh keys.
+    /// No SAS presentation may exist, and no local decision may apply, before both keys.
+    fn establish(a: &Authorities) -> Pair {
+        let start = vector("START");
+        let mut i = RemoteCeremony::initiator(
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            &start,
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap();
+        assert_no_live_sas(&i);
+        i.start().unwrap();
+        let (mut r, accept) = RemoteCeremony::responder(
+            a.er.clone(),
+            a.er.begin(Role::Responder).unwrap(),
+            &start,
+            bootstrap(&decoded("ACCEPT"), false),
+            None,
+        )
+        .unwrap();
+        assert_no_live_sas(&r);
+        i.receive_accept(&accept).unwrap();
+        assert_eq!(i.approve_sas(&[0; 32]), Err(CeremonyError::NoLiveSas));
+        i.authorize(&a.i).unwrap();
+        let ikey = i.expose_key().unwrap();
+        assert_no_live_sas(&i);
+        r.receive_initiator_key(&ikey).unwrap();
+        assert_eq!(r.cancel_sas(&[0; 32]), Err(CeremonyError::NoLiveSas));
+        assert_no_live_sas(&r);
+        r.authorize(&a.r).unwrap();
+        let rkey = r.expose_key().unwrap();
+        assert_no_live_sas(&i);
+        i.receive_responder_key(&rkey).unwrap();
+        assert!(i.is_awaiting_approval() && r.is_awaiting_approval());
+        Pair {
+            i,
+            r,
+            wire: [start, accept, ikey, rkey],
+        }
+    }
+
+    fn matrix_decimal(bytes: &[u8; 6]) -> String {
+        let b = bytes.map(u16::from);
+        let first = ((b[0] << 5) | (b[1] >> 3)) + 1000;
+        let second = (((b[1] & 0x7) << 10) | (b[2] << 2) | (b[3] >> 6)) + 1000;
+        let third = (((b[3] & 0x3f) << 7) | (b[4] >> 1)) + 1000;
+        format!("{first:04} {second:04} {third:04}")
+    }
+
+    #[test]
+    fn complete_sas_is_presented_only_after_transcript_identity_is_fixed() {
+        let sas = &fixture()["sas"];
+        let raw: [u8; 6] = hex(sas["raw_bytes"]["hex"].as_str().unwrap())
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            matrix_decimal(&raw),
+            sas["decimal_values"]["rendered"].as_str().unwrap()
+        );
+
+        let a = Authorities::new("sas-presentation");
+        let pair = establish(&a);
+        let (pi, pr) = (
+            pair.i.presentation().unwrap(),
+            pair.r.presentation().unwrap(),
+        );
+        assert_eq!(pi, pr);
+        let wire: Vec<_> = pair
+            .wire
+            .iter()
+            .map(|b| protocol::decode(b).unwrap())
+            .collect();
+        let (identity, _) =
+            crypto::transcript_identity(&wire[0], &wire[1], &wire[2], &wire[3]).unwrap();
+        assert_eq!(*pi.ceremony_identity(), identity);
+        let bytes = pair.i.sas_bytes_for_test().unwrap();
+        assert_eq!(Some(bytes), pair.r.sas_bytes_for_test());
+        assert_eq!(pi.decimal(), matrix_decimal(&bytes));
+        assert!(
+            pi.decimal()
+                .split(' ')
+                .map(|g| g.parse::<u16>().unwrap())
+                .all(|g| (1000..=9191).contains(&g))
+        );
+        assert_eq!(pi.decimal().len(), 14);
+        assert_eq!(a.ei.status().unwrap(), Status::Busy);
+        assert_eq!(a.er.status().unwrap(), Status::Busy);
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn exact_identity_approval_is_local_only_idempotent_and_retains_mac_material() {
+        let a = Authorities::new("sas-approve");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let bytes = pair.i.sas_bytes_for_test();
+        for (run, role) in [
+            (&mut pair.i, Role::Initiator),
+            (&mut pair.r, Role::Responder),
+        ] {
+            let seen = run.seen.len();
+            assert_eq!(run.approve_sas(&id), Ok(SasApproval::Recorded));
+            assert!(run.is_locally_approved() && !run.is_awaiting_approval());
+            // The comparison prompt is complete; approval creates no new display.
+            assert_eq!(run.presentation(), None);
+            assert_eq!(run.approve_sas(&id), Ok(SasApproval::AlreadyRecorded));
+            assert!(run.is_locally_approved());
+            // No exposure authorization is issued, consumed, or reacquired; no wire output.
+            assert!(run.admission.authorization.is_none() && !run.admission.terminal);
+            assert_eq!(run.seen.len(), seen);
+            match &run.state {
+                State::LocallyApprovedAwaitingAuthentication { session } => {
+                    assert_eq!(session.role, role);
+                    assert_eq!(session.ceremony_identity, id);
+                    assert_eq!(Some(session.sas_bytes), bytes);
+                    assert_eq!(session.request_id, vector_request_id());
+                    let (initiator, responder) = (
+                        bootstrap(&decoded("START"), true),
+                        bootstrap(&decoded("ACCEPT"), false),
+                    );
+                    let expected = match role {
+                        Role::Initiator => (&initiator, &responder),
+                        Role::Responder => (&responder, &initiator),
+                    };
+                    assert_eq!(
+                        (&session.local_bootstrap, &session.peer_bootstrap),
+                        expected
+                    );
+                }
+                _ => panic!("approval did not retain the established session"),
+            }
+        }
+        assert_eq!(a.ei.status().unwrap(), Status::Busy);
+        assert_eq!(a.er.status().unwrap(), Status::Busy);
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn wrong_identity_or_request_id_callbacks_have_no_effect() {
+        let a = Authorities::new("sas-wrong-identity");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let before = pair.i.presentation();
+        let mut request_id_target = [0; 32];
+        request_id_target[..16].copy_from_slice(&vector_request_id());
+        for bit in [0, 7, 255] {
+            let mut wrong = id;
+            wrong[bit / 8] ^= 1 << (bit % 8);
+            for target in [wrong, request_id_target] {
+                for run in [&mut pair.i, &mut pair.r] {
+                    let mismatch = CeremonyError::CeremonyIdentityMismatch;
+                    assert_eq!(run.approve_sas(&target), Err(mismatch.clone()));
+                    assert_eq!(run.reject_sas(&target), Err(mismatch.clone()));
+                    assert_eq!(run.cancel_sas(&target), Err(mismatch));
+                    assert!(run.is_awaiting_approval());
+                    assert!(run.admission.authorization.is_none());
+                }
+            }
+        }
+        assert_eq!(pair.i.presentation(), before);
+        assert_eq!(a.ei.status().unwrap(), Status::Busy);
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+
+        pair.i.approve_sas(&id).unwrap();
+        let mut wrong = id;
+        wrong[31] ^= 0x80;
+        assert_eq!(
+            pair.i.cancel_sas(&wrong),
+            Err(CeremonyError::CeremonyIdentityMismatch)
+        );
+        assert!(pair.i.is_locally_approved());
+        assert_eq!(a.ei.status().unwrap(), Status::Busy);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn same_request_id_with_different_transcript_cannot_transfer_approval() {
+        let (first, second) = (
+            Authorities::new("sas-same-request-a"),
+            Authorities::new("sas-same-request-b"),
+        );
+        let mut a = establish(&first);
+        let mut b = establish(&second);
+        assert_eq!(a.wire[0], b.wire[0], "both runs use the identical START");
+        let request_id = |p: &Pair| match protocol::decode(&p.wire[3]).unwrap().message {
+            Message::ResponderKey { request_id, .. } => request_id,
+            _ => unreachable!(),
+        };
+        assert_eq!(request_id(&a), request_id(&b));
+        let (id_a, id_b) = (a.identity(), b.identity());
+        assert_ne!(
+            id_a, id_b,
+            "fresh key material yields a distinct transcript"
+        );
+
+        for run in [&mut b.i, &mut b.r] {
+            assert_eq!(
+                run.approve_sas(&id_a),
+                Err(CeremonyError::CeremonyIdentityMismatch)
+            );
+            assert!(run.is_awaiting_approval());
+        }
+        assert_eq!(a.i.approve_sas(&id_a), Ok(SasApproval::Recorded));
+        assert!(!b.i.is_locally_approved());
+        a.i.terminate().unwrap();
+        a.r.terminate().unwrap();
+        assert_eq!(
+            b.i.approve_sas(&id_a),
+            Err(CeremonyError::CeremonyIdentityMismatch)
+        );
+        assert_eq!(b.i.approve_sas(&id_b), Ok(SasApproval::Recorded));
+        assert_eq!(b.r.approve_sas(&id_b), Ok(SasApproval::Recorded));
+        drop(a);
+        drop(b);
+        first.release();
+        second.release();
+    }
+
+    fn assert_stale(run: &mut RemoteCeremony, id: &[u8; 32]) {
+        assert_no_live_sas(run);
+        assert_eq!(run.approve_sas(id), Err(CeremonyError::NoLiveSas));
+        assert_eq!(run.reject_sas(id), Err(CeremonyError::NoLiveSas));
+        assert_eq!(run.cancel_sas(id), Err(CeremonyError::NoLiveSas));
+        assert_no_live_sas(run);
+    }
+
+    #[test]
+    fn local_reject_is_terminal_and_keeps_the_opportunity_consumed() {
+        let a = Authorities::new("sas-reject");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        assert_eq!(pair.i.reject_sas(&id), Ok(()));
+        assert_stale(&mut pair.i, &id);
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        assert!(pair.i.admission.terminal);
+        // The peer is a separate endpoint; this increment sends it nothing.
+        assert!(pair.r.is_awaiting_approval());
+        assert_eq!(a.er.status().unwrap(), Status::Busy);
+        pair.r.approve_sas(&id).unwrap();
+        assert_eq!(pair.r.reject_sas(&id), Ok(()));
+        assert_stale(&mut pair.r, &id);
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn local_cancel_is_terminal_without_wire_output() {
+        let a = Authorities::new("sas-cancel");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let seen = pair.i.seen.len();
+        let () = pair.i.cancel_sas(&id).unwrap();
+        assert_eq!(pair.i.seen.len(), seen);
+        assert_stale(&mut pair.i, &id);
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        pair.r.approve_sas(&id).unwrap();
+        let () = pair.r.cancel_sas(&id).unwrap();
+        assert_stale(&mut pair.r, &id);
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn generic_termination_failure_and_drop_invalidate_sas() {
+        let a = Authorities::new("sas-terminate");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        pair.i.terminate().unwrap();
+        assert_stale(&mut pair.i, &id);
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        drop(pair.r);
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
+        drop(pair.i);
+
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let mut changed = pair.wire[3].clone();
+        *changed.last_mut().unwrap() ^= 1;
+        assert!(pair.i.receive_responder_key(&changed).is_err());
+        assert_stale(&mut pair.i, &id);
+        assert!(pair.r.receive_initiator_key(&pair.wire[0]).is_err());
+        assert_stale(&mut pair.r, &id);
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (8, 8));
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 8 });
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 8 });
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn terminated_approved_ceremony_cannot_be_revived_or_resumed() {
+        let a = Authorities::new("sas-approved-terminate");
+        let mut old = establish(&a);
+        let id = old.identity();
+        old.i.approve_sas(&id).unwrap();
+        old.r.approve_sas(&id).unwrap();
+        old.i.terminate().unwrap();
+        old.r.terminate().unwrap();
+        for run in [&mut old.i, &mut old.r] {
+            assert_stale(run, &id);
+            assert!(run.authorize(&a.i).is_err() && run.expose_key().is_err());
+        }
+        assert!(old.i.receive_responder_key(&old.wire[3]).is_err());
+        assert!(old.r.receive_initiator_key(&old.wire[2]).is_err());
+        assert_stale(&mut old.i, &id);
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
+
+        // R-OWNER-011: a retry is a new authorized exposure with a new identity.
+        let mut retry = establish(&a);
+        assert_ne!(retry.identity(), id);
+        assert_eq!(
+            retry.i.approve_sas(&id),
+            Err(CeremonyError::CeremonyIdentityMismatch)
+        );
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (8, 8));
+        drop(retry);
+        drop(old);
+        a.release();
+    }
+
+    #[test]
+    fn sas_is_invalidated_even_when_guard_release_is_uncertain() {
+        let a = Authorities::new("sas-uncertain-release");
+        let mut pair = establish(&a);
+        let id = pair.identity();
+        let poisoned = a.ei.clone();
+        let _ = std::thread::spawn(move || {
+            let _shared = poisoned.0.shared.lock().unwrap();
+            panic!("simulate uncertain guard state");
+        })
+        .join();
+        assert_eq!(
+            pair.i.reject_sas(&id),
+            Err(CeremonyError::Owner(OwnerError::OwnershipUncertain))
+        );
+        assert_stale(&mut pair.i, &id);
+        // Fail closed: invalidation is complete, but the guard is never released uncertainly.
+        match a.ei.0.shared.lock() {
+            Err(poisoned) => assert!(poisoned.into_inner().active.is_some()),
+            Ok(_) => panic!("shared state unexpectedly recovered"),
+        }
+        drop(pair);
+        a.release();
     }
 }
