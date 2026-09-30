@@ -5,6 +5,8 @@
 > Profile identifier: `sas-pairing-vodozemac-profile-draft-01`
 > Status: a protocol proposal for review, not a production protocol, implementation, or protocol freeze.
 
+> **CR-01 OPEN:** The owner selected a [one-shot remote-pairing direction](p3-one-shot-remote-pairing-decision.md), but a focused check found a cross-endpoint counterexample to its one-comparison claim. The multi-ceremony and `5,497`-opportunity policies below are historical candidate text and conflict with that direction. This draft is not implementable as a settled policy until the security review and reconciliation occur. The transcript-encoding correction in §9 is independent of that decision.
+
 ## 1. Purpose and status boundary
 
 This document defines one candidate remote pairing ceremony using the currently researched `vodozemac::sas` operations. It is intended to make the proposal reviewable against the requirements in [P1](threat-model.md). It does not establish that the proposal satisfies those requirements.
@@ -259,7 +261,7 @@ Once local inputs are supplied, the shared core owns exact-byte comparison, bind
 
 ## 9. Completion and result semantics
 
-The authoritative `ceremony_identity` is the existing transcript digest, exactly SHA-256 of `ASCII("sas-pairing-vodozemac-profile-draft-01/transcript/v1")` followed by the complete canonical `START`, `ACCEPT`, `INITIATOR_KEY`, and `RESPONDER_KEY` frames, each preceded by `u32be(length)`. It covers the profile/domain-separated exact messages, including the request ID in `START`, the responder commitment and bootstrap in `ACCEPT`, and both exact ephemeral-key messages. It becomes available once this transcript through `RESPONDER_KEY` is fixed. I computes it after receiving and verifying `RESPONDER_KEY`; R computes it when the canonical `RESPONDER_KEY` bytes are fixed for transmission. Both hash the same canonical frame bytes. No digest is included in the transcript it hashes.
+The authoritative `ceremony_identity` is the existing transcript digest, exactly SHA-256 of `u32be(len(domain)) || domain`, where `domain = ASCII("sas-pairing-vodozemac-profile-draft-01/transcript/v1")`, followed by the complete canonical `START`, `ACCEPT`, `INITIATOR_KEY`, and `RESPONDER_KEY` frames, each preceded by `u32be(length)`. It covers the profile/domain-separated exact messages, including the request ID in `START`, the responder commitment and bootstrap in `ACCEPT`, and both exact ephemeral-key messages. It becomes available once this transcript through `RESPONDER_KEY` is fixed. I computes it after receiving and verifying `RESPONDER_KEY`; R computes it when the canonical `RESPONDER_KEY` bytes are fixed for transmission. Both hash the same canonical frame bytes. No digest is included in the transcript it hashes.
 
 This identity is authoritative only after establishment; the request ID remains the pre-establishment routing handle. Since `ACCEPT` commits to fresh responder key material and the revealed fresh key is in the transcript, replaying an old request that causes R to generate fresh ephemeral material yields a different established ceremony identity, subject to the digest's collision resistance. This is a candidate security property requiring independent review, not a formally proven theorem.
 

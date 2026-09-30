@@ -2,6 +2,8 @@
 
 > **DETERMINISTIC TEST VECTORS FOR CANDIDATE PROFILES — NOT PRODUCTION APPROVAL**
 
+> **CR-01 OPEN:** The remote vector fixes ceremony bytes, not admission or attempt policy. The [owner's one-shot direction](p3-one-shot-remote-pairing-decision.md) is pending security verification. The remote transcript bytes already use `u32be(len(domain)) || domain`, matching the corrected candidate profile.
+
 ## Status and scope
 
 These fixtures instantiate the documented remote vodozemac candidate and authenticated-local candidate. P2 historically selected Candidate B; the owner later reopened its implementation direction for custom cryptographic ownership reasons. Candidate B remains a formal reference and possible fallback, not disproven. Vodozemac is the **FAVORED CANDIDATE — NOT SELECTED — REQUIRES INDEPENDENT SECURITY REVIEW**; the review package is ready, but no external review has occurred. The local profile remains candidate-only, and the Windows adapter remains **CANDIDATE — PRINCIPAL-BOUND ONLY — NOT APPROVED**. Nothing here selects a production profile, approves an adapter, or makes the project production-ready.

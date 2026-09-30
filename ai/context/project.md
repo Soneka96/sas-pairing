@@ -1,5 +1,7 @@
 # sas-pairing current manager context
 
+**Current CR-01 gate (2026-09-30):** The owner selected a [one-shot remote-pairing direction](../../docs/p3-one-shot-remote-pairing-decision.md), but a focused check found that one endpoint's pending SAS can still be tested against later candidates when the other endpoint is explicitly re-enabled. The owner direction needs revision; older remote multi-ceremony and `5,497`-opportunity descriptions below are historical candidate material. The 20-consumption process-session ceiling is abuse protection, not a cryptographic lifetime bound. CR-01 remains open, vodozemac is favored but not selected, and P4 is blocked. The remote profile's transcript prefix has been corrected to match its deterministic vector.
+
 ## Project purpose
 
 Language-neutral human-authenticated pairing for exchanging bootstrap data. The core should remain reusable and application-neutral; DovahLink is the original consumer, not the architectural owner. Consumer trust and authorization stay with consuming applications.

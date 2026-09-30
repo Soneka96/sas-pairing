@@ -2,6 +2,8 @@
 
 > Cases instantiate the candidate drafts for future Rust/Dart/.NET and adapter tests. They do not select a profile or grant production approval. “Reject before SAS charge” means before either endpoint's profile-defined key-release boundary; a post-boundary terminal failure never refunds an already reserved opportunity.
 
+> **CR-01 OPEN:** Remote cases below exercise the historical multi-ceremony/`5,497` epoch candidate. They must be revised for the [owner's one-shot direction](p3-one-shot-remote-pairing-decision.md) after security verification; they are not conformance evidence for that direction.
+
 Each row supplies a stable ID, precondition/input, expected outcome, and relevant accounting/resource boundary. `—` means the property does not apply. “Terminal” describes the active ceremony. Resource cases use the current frozen caps and state rules.
 
 ## Remote encoding

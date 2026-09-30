@@ -4,7 +4,9 @@
 
 **REVIEW PACKAGE READY — EXTERNAL REVIEW NOT YET OBTAINED.** This package describes a favored but unselected remote candidate. It is a request for independent analysis, not a claim of security or an owner selection decision. Candidate B was selected at P2 and later deliberately reopened by the owner because a concrete instantiation would require substantial project-owned cryptographic design and proof-mapping/maintenance. That engineering/security ownership decision does not disprove Candidate B. Vodozemac is favored for investigation because maintained primitives may reduce custom-crypto ownership; its use in this new composition does not inherit Matrix's protocol security argument.
 
-**Review question:** Under the stated threat model and exact draft profile, does the proposed vodozemac-based composition support the claimed active-network-MITM resistance and authenticated-bootstrap result, subject to the stated SAS human-comparison assumptions and aggregate attempt policy? Identify any attack, unsupported assumption, invalid reduction, missing protocol binding, or condition that must change before selection can be considered.
+**CR-01 update:** The owner selected a [one-shot remote-pairing direction](p3-one-shot-remote-pairing-decision.md), but a focused check found a cross-endpoint counterexample to its one-comparison claim. The older `N = 5,497`/`ε = 10^-8` and concurrent-ceremony descriptions in this package describe the pre-CR-01 candidate, not the current owner direction. Review must resolve that counterexample, assess the revised composition, and decide whether any persistent aggregate accounting is required. CR-01 is open; this package does not authorize P4.
+
+**Review question:** Under the stated threat model, does the proposed one-shot amendment close CR-01, and could the reconciled vodozemac-based composition support active-network-MITM resistance and authenticated-bootstrap results under the stated SAS human-comparison assumptions? Identify any attack, unsupported assumption, invalid reduction, missing protocol binding, or condition that must change before selection can be considered.
 
 The reviewer should give a finding for each question in §6, including a reasoned **go / no-go / conditional** conclusion, assumptions, attack preconditions, and any required profile change. This review does not itself select the candidate; owner selection remains a separate decision.
 
@@ -46,6 +48,8 @@ Primary sources checked for this package:
 
 ## Concrete attack and composition questions
 
+For CR-01, first address the [cross-endpoint counterexample](p3-one-shot-remote-pairing-decision.md): A's one exposed SAS stays pending while B is explicitly re-enabled for multiple separate one-shot ceremonies. Local one-shot guards alone do not satisfy the requested one-comparison claim. Then trace sequential reconnects, fresh transports, parallel and cross-role requests, selective abort, failure, timeout, disconnect, packet loss, and process restart. Establish that both roles consume the same local one-shot authority before their respective key exposures and that the shared active-ceremony guard cannot be bypassed by another connection, worker, or role. State the exact event to which `2^-39` applies; do not use the 20-attempt process ceiling as a lifetime cryptographic bound. Decide separately whether any persistent accounting is needed for an aggregate claim. The questions below also remain, with the old budget question read as historical context pending profile reconciliation.
+
 1. Does the full commit, key agreement, SAS, MAC, and completion composition provide the claimed active-MITM property under the stated ideal human-comparison model? Is the deterministic SHA-256 commitment adequately hiding and binding for this use, and what concrete assumption justifies that claim?
 2. Is the per-exposed-opportunity `≤ 2^-39` premise valid when the responder key is committed before the initiator key, and under adversarial abort, selective failure, retries, concurrency, and attacker-controlled session scheduling?
 3. Is the `N = 5,497`, `ε = 10^-8` aggregate policy mathematically valid under the proved opportunity bound? Can reset, rollback, multi-process operation, or exhaustion/restart behavior exceed the claimed budget?
@@ -58,6 +62,7 @@ Primary sources checked for this package:
 ## Review artifacts
 
 - [Threat model and requirements](threat-model.md)
+- [Owner one-shot decision and focused CR-01 analysis](p3-one-shot-remote-pairing-decision.md)
 - [Remote candidate protocol/profile](p3-vodozemac-ceremony-profile-draft.md)
 - [Candidate decision and evidence log](p3-vodozemac-security-decisions.md)
 - [Reuse assessment and alternatives](p3-vodozemac-reuse-assessment.md)
