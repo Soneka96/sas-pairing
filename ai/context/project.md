@@ -1,6 +1,6 @@
 # sas-pairing current manager context
 
-**Current CR-01 gate (2026-09-30):** The owner-selected [remote session safety policy](../../docs/p3-one-shot-remote-pairing-decision.md) permits one owning process per pairing authority, one live exposed ceremony, and 10 shared opportunities per owning process/session across both roles, threads, and connections; each new exposure requires fresh explicit local authorization. Exclusive ownership is atomic and fails closed if uncertain. Two AI reviews examined the per-pair question: review 1 supported the ideal `2^-39` term; review 2 found no concrete attack above it but concluded **PREVIOUS PROOF NOT ESTABLISHED**. F-02, the precise unpredictability/computational-hardness property needed before the attacker fixes its contribution, remains unresolved; do not assume its own Diffie–Hellman shared secret remains hidden. The corrected proposed argument is conditional and requires focused independent verification. Pair counting remains `n_A + n_B - 1`; at most 19 applies only in a joint 10/10 window where both endpoints remain within their process sessions, not across arbitrary restarts. CR-01 remains open. Older multi-ceremony/eight-slot/`5,497`-epoch material is historical and non-normative. Vodozemac is favored, not selected, and P4 is blocked. The transcript framing remains consistent with its vector.
+**Current status (2026-09-30):** Owner decision [0002](../../docs/decisions/0002-experimental-vodozemac-selection.md) selects the corrected vodozemac remote profile and owner policy for experimental implementation, pinned to vodozemac 0.11.0. P4 is authorized but not complete. The qualified-human-review gate was waived for experimental development, not completed; no professional audit or formal verification is claimed. F-02 is a false positive under the stated idealized assumptions: an attacker need not remain ignorant of its own DH shared secret after an honest public contribution is revealed; target SAS must be unpredictable before the attacker fixes its contribution. The complete per-pair argument remains conditional. Pair counting remains `n_A + n_B - 1`; 19 applies only to a joint 10/10 window within both process sessions, not arbitrary restarts. CR-01 retains residual assumptions and implementation verification limits. Older multi-ceremony/eight-slot/`5,497`-epoch material is historical and non-normative.
 
 ## Project purpose
 
@@ -8,7 +8,7 @@ Language-neutral human-authenticated pairing for exchanging bootstrap data. The 
 
 ## Current repository phase
 
-**PRE-ALPHA. P3 IS BLOCKED — REVIEW READY.** The review package for the favored vodozemac remote candidate is prepared. Two AI reviews examined the per-pair question, but qualified independent human review has not occurred and no remote construction is selected. No production cryptography is implemented. Documentation consolidation does not clear the security gate.
+**PRE-ALPHA. P3.5 FINDINGS DOCUMENTED; P3.6 EXPERIMENTAL SELECTION RECORDED; P4 AUTHORIZED.** No production cryptography is implemented. Production use and release are not approved.
 
 ## P1 result contract
 
@@ -16,7 +16,7 @@ P1 accepts mutual authentication of exact role-positioned bootstrap bytes and se
 
 ## P2 remote-construction state
 
-P2 originally selected Candidate B as the abstract remote construction. P3 concrete-instantiation work exposed substantial project-owned cryptographic design and proof-mapping/maintenance for Candidate B. The owner decided that this was too much custom cryptographic ownership for the project and deliberately reopened the implementation-direction choice. This is an engineering/security ownership decision, not a finding that Candidate B or its paper is insecure. Candidate B remains an important formal reference and possible fallback. The project now **FAVORS INVESTIGATING** a ceremony built from maintained vodozemac primitives because it may reduce custom-crypto ownership. That candidate has not replaced Candidate B and is **NOT SELECTED**; project-specific security analysis and independent review are still required. Current verdict: **NO REMOTE CONSTRUCTION READY FOR SELECTION.**
+P2 originally selected Candidate B as the abstract remote construction. P3 research exposed substantial custom design and maintenance responsibilities for its concrete instantiation. The owner reopened selection for that ownership reason, not because Candidate B was shown insecure; it remains a formal reference and possible fallback. The owner has selected the existing vodozemac-based remote candidate for experimental implementation. It does not inherit Matrix's protocol security argument or establish production security.
 
 ## Candidate B
 
@@ -24,13 +24,13 @@ Candidate B is Beskorovajnov–Müller-Quade mutual `π_SAS^×`: historically se
 
 ## Vodozemac candidate
 
-`sas-pairing-vodozemac-ceremony-profile-draft-01` is the **FAVORED CANDIDATE — NOT SELECTED**. It pins vodozemac 0.11.0 and specifies X25519, a SHA-256 responder commitment, canonical framing, transcript identity, Matrix decimal SAS, bootstrap/completion MACs, context, and candidate lifecycle. The current proposed argument assumes SHA-256 collision resistance for commitment binding; random-oracle-style SHA-256 commitment hiding; random-oracle-style behavior for the relevant HKDF-SHA256 construction; fresh unpredictable, non-reused ephemeral keys; accepted contributory X25519 inputs; correct exposure ordering; and atomic ownership/guard enforcement. Ordinary HKDF PRF security alone is not claimed sufficient where an attacker knows the derived secret on its leg. F-02 remains open as to which precise unpredictability or hardness property is required before the attacker fixes its contribution; do not assume the attacker is ignorant of its own DH shared secret. Neither SHA-256 nor HKDF-SHA256 is proven to behave as a random oracle. The proposed result is `P_per_pair ≤ 2^-39 + δ` and, only for a joint 10/10 window within both process sessions, `P_joint ≤ 19 × 2^-39 + ε`, with unsupported terms left symbolic. It is not a bound across arbitrary restarts, a lifetime bound, or a human-error bound. The second review verdict is **PREVIOUS PROOF NOT ESTABLISHED**; qualified human verification remains outstanding.
+The selected experimental baseline pins vodozemac 0.11.0 and specifies X25519, a SHA-256 responder commitment, canonical framing, transcript identity, Matrix decimal SAS, bootstrap/completion MACs, context, and lifecycle. Its argument assumes SHA-256 collision resistance for commitment binding; random-oracle-style SHA-256 commitment hiding and relevant HKDF-SHA256 behavior; fresh unpredictable non-reused ephemeral keys; accepted contributory X25519 inputs; correct exposure ordering; and atomic ownership/guard enforcement. Ordinary HKDF PRF security alone is not claimed sufficient where an attacker knows its leg's derived secret. F-02 is rejected under the stated idealized assumptions; the complete construction remains conditional and unverified. Neither SHA-256 nor HKDF-SHA256 is proven to behave as a random oracle. The proposed result remains `P_per_pair ≤ 2^-39 + δ` and, only for a joint 10/10 window within both process sessions, `P_joint ≤ 19 × 2^-39 + ε`, with unsupported terms symbolic. This is not an arbitrary-restart, lifetime, or human-error bound. Earlier AI review's **PREVIOUS PROOF NOT ESTABLISHED** verdict applies to the earlier argument; no professional audit or formal verification is claimed.
 
 ## Current construction status
 
 - Candidate B: historically selected at P2; remains a formal reference and possible fallback, not the current implementation direction. Its concrete instantiation remains unsupported, and the owner judged the custom cryptographic ownership too high for this project.
-- Vodozemac: favored candidate because maintained primitives may reduce custom-crypto ownership; complete project-specific security argument is not independently established; not selected.
-- Therefore neither remote construction meets the evidence threshold for final selection. A separate explicit owner selection remains required after review.
+- Vodozemac: selected for experimental implementation; no production-security or release approval.
+- Candidate B: historical P2 formal selection and reference/fallback; not shown insecure.
 
 ## P3 work completed
 
@@ -53,30 +53,30 @@ These artifacts remain useful candidate work; vectors demonstrate byte/derivatio
 
 Two fixture sets exist: remote vodozemac and authenticated-local. They demonstrate deterministic bytes and derivations only. The remote fixture covers commitment, transcript identity, SAS, bootstrap MACs, and completion MACs; the local fixture covers START, ACCEPT, transcript identity, APPROVE, REJECT, ACK, and outer record framing. The conformance matrix has 166 documented cases at the current branch head, including 18 documentation-only owner-policy cases; they are not executable tests.
 
-## Current blocker
+## Current phase boundary
 
-P3 cannot complete its remote-profile exit criteria while no remote construction is selected and required independent review remains outstanding. The review package is ready, but only an independent human review and subsequent explicit owner decision can advance selection. Local-profile/adapter gates also remain open. P3 must not be marked complete or treated as ready for P4.
+The remote experimental selection and baseline acceptance are recorded. This does not complete separate local-profile/adapter work, formally verify the argument, or meet production-readiness gates.
 
-## Single next security action
+## Next P4 action
 
-Use [the independent review package](../../docs/p3-vodozemac-independent-review-package.md) to obtain the smallest independent review that verifies the corrected conditional per-pair argument: candidate-pair event, conditioning point, adaptive scheduling/selective aborts, commitment SHA-256 binding/hiding, HKDF-SHA256 assumption, X25519 inputs, key freshness, and F-02's precise unpredictability/computational-hardness requirement. It must not assume an attacker participating in DH remains ignorant of its own shared secret. The review must assess the single-owner-process scope and remains required from a qualified independent human under the project's standing review requirement. This review does not preselect vodozemac; the owner must make a separate explicit selection decision afterward.
+Begin the Rust authority owner and atomic exposure reservation enforcing one process, one live ceremony, and the shared ten-opportunity budget before any contribution is released. Resolve any platform-specific ownership detail as an explicit P4 prerequisite before implementing it. Follow the [P4 roadmap](../../roadmap/P4-native-security-core.md); this is a recommendation, not a claim that implementation exists.
 
 ## Decisions that must not be silently changed
 
-- Do not extend vodozemac features, select it, or relabel it as Candidate B.
+- Do not change the selected vodozemac target, extend its features, or relabel it as Candidate B.
 - Do not invent a concrete Candidate B hash/commitment mapping.
-- Do not implement production cryptography or begin P4 security-core implementation.
+- P4 experimental implementation is authorized but not yet done; do not present it as production-approved.
 - Do not change protocol bytes or vector values, approve Windows, or mark any local adapter approved.
 - Do not claim vectors prove security or claim `2^-39` for the complete protocol as established.
 - Preserve Candidate B history and vodozemac candidate work; do not reopen frozen local mechanics without evidence.
 
-## Reusable work regardless of remote winner
+## Reusable work for future integrations
 
 Likely reusable: generic bootstrap/result semantics, exact authenticated-key-byte preservation, context/expected-peer concepts, distinction between authentication and proof of possession, consumer-owned durable trust, the local candidate, Windows adapter research, resource-limit lessons, fail-closed state/duplicate principles, and portions of conformance organization/tooling. Construction-specific vodozemac work includes its remote X25519 ceremony, SHA-256 commitment formula, Matrix decimal SAS, bootstrap/completion MAC structures, and remote fixture.
 
 ## Production status
 
-**PRE-ALPHA. NOT PRODUCTION READY. NO PRODUCTION CRYPTOGRAPHY IMPLEMENTED. NO REMOTE CONSTRUCTION READY FOR FINAL SELECTION. ZERO APPROVED SAME-DEVICE ADAPTERS. INDEPENDENT SECURITY REVIEW REQUIRED.**
+**PRE-ALPHA. NOT PRODUCTION READY. NO PRODUCTION CRYPTOGRAPHY IMPLEMENTED. VODOZEMAC SELECTED FOR EXPERIMENTAL IMPLEMENTATION. ZERO APPROVED SAME-DEVICE ADAPTERS. NO PROFESSIONAL AUDIT OR FORMAL VERIFICATION CLAIMED.**
 
 ## Standing project rules
 

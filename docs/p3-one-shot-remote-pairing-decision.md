@@ -1,8 +1,8 @@
 # Owner-selected remote pairing session safety policy
 
-**OWNER-SELECTED — ONE OWNING PROCESS PER PAIRING AUTHORITY; ONE LIVE EXPOSED CEREMONY; 10 SHARED EXPOSED OPPORTUNITIES PER PROCESS/SESSION. CR-01 REMAINS OPEN. VODOZEMAC FAVORED, NOT SELECTED. P4 BLOCKED.**
+**OWNER-SELECTED POLICY — ONE OWNING PROCESS PER PAIRING AUTHORITY; ONE LIVE EXPOSED CEREMONY; 10 SHARED EXPOSED OPPORTUNITIES PER PROCESS/SESSION. VODOZEMAC SELECTED FOR EXPERIMENTAL IMPLEMENTATION. P4 AUTHORIZED, NOT COMPLETE. CR-01 RETAINS CONDITIONAL ASSUMPTIONS AND VERIFICATION LIMITATIONS.** See [owner selection decision](decisions/0002-experimental-vodozemac-selection.md).
 
-This policy does not select a cryptographic construction, establish security, or authorize implementation. The normative vodozemac candidate profile must conform to it.
+This policy is the selected vodozemac experimental baseline. It does not establish production security or authorize production use. The vodozemac profile must conform to it.
 
 ## Remote ceremony policy
 
@@ -57,16 +57,16 @@ where `ε` covers applicable computational and randomness terms. `19 × 2^-39 �
 
 The proposed argument assumes random-oracle-style behavior for the relevant commitment and HKDF-SHA256 constructions, SHA-256 collision resistance for commitment binding, fresh unpredictable ephemeral keys, correct exposure ordering, atomic single-ceremony enforcement, and suitable treatment of adaptive scheduling/selective aborts. Ordinary HKDF PRF security alone is not asserted sufficient when the attacker knows the derived secret on its own protocol leg. Real SHA-256 and HKDF-SHA256 have not been proven to be random oracles.
 
-The precise unpredictability or computational-hardness property required before an attacker fixes its contribution remains disputed (F-02). An attacker participating in a Diffie–Hellman leg normally knows that leg's shared secret after the honest public contribution is revealed; the argument must not assert that this secret stays hidden from that attacker. The next independent reviewer must determine whether commitment hiding, honest-key freshness, and random-oracle assumptions already justify the required step, or whether another assumption is needed. Do not treat the per-pair argument as verified.
+**F-02 = FALSE POSITIVE UNDER THE STATED IDEALIZED ASSUMPTIONS.** A participating attacker normally calculates its own Diffie–Hellman shared secret after the honest public contribution is revealed, and the SAS argument does not require that secret to remain hidden after exposure. It requires the target SAS to remain unpredictable before the attacker fixes the relevant contribution. Under this model, the focused AI-assisted review found no additional X25519 hardness assumption necessary for that disputed property. The reasoning is conditional on fresh unpredictable honest ephemeral contributions, correct commitment timing and binding/hiding assumptions, correct role-specific ordering, the full injectively encoded SAS context, random-oracle-style assumptions for the relevant derivation, and correct exposure accounting. This disposition does not establish the complete per-pair argument or protocol security.
 
 ## CR-01 and construction status
 
-Pair counting is documented for the stated scope. The second independent adversarial AI review found no concrete attack above the ideal `2^-39` term but gave the verdict **PREVIOUS PROOF NOT ESTABLISHED** because assumptions and reasoning were incomplete. A corrected conditional argument is recorded in the normative candidate profile. CR-01 is **not fully closed**: the corrected argument and its assumptions require focused independent verification.
+Pair counting is documented for the stated scope and addresses the original structural comparison-accounting defect. The complete per-pair argument remains conditional and not formally verified. CR-01 status is: **STRUCTURAL REMEDIATION DOCUMENTED; RESIDUAL ASSUMPTIONS AND VERIFICATION REQUIREMENTS ACCEPTED FOR EXPERIMENTAL DEVELOPMENT.**
 
-The reviews were AI reviews, not qualified human audits or formal verification. Documentation reconciliation is not independent verification.
+The reviews were AI-assisted, not qualified human audits or formal verification. The owner explicitly waived the qualified-human-review gate for experimental development; the audit was not completed. This does not authorize production use or release.
 
-`VODOZEMAC = FAVORED, NOT SELECTED`
+`VODOZEMAC = SELECTED FOR EXPERIMENTAL IMPLEMENTATION`
 
-`P4 = BLOCKED`
+`P4 = EXPERIMENTAL DEVELOPMENT AUTHORIZED; NOT STARTED OR COMPLETE BY THIS DECISION`
 
 The transcript framing remains `u32be(len(domain)) || domain || ...`, consistent with the deterministic vector. No construction or message format is changed by this policy.

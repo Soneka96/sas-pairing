@@ -1,8 +1,8 @@
 # P3 conformance cases
 
-> These are documented conformance cases for future implementation work, not executable tests, profile selection, or production approval. “Reject before exposure” means before release of the role's SAS-enabling ephemeral public contribution.
+> These are documented conformance cases for experimental implementation work, not executable tests or production approval. The owner selected the remote vodozemac profile for experimental implementation. “Reject before exposure” means before release of the role's SAS-enabling ephemeral public contribution.
 
-> **HISTORICAL CANDIDATE CASES:** The existing remote state/accounting/resource cases below preserve the pre-owner multi-ceremony, eight-slot, persistent `5,497`-epoch candidate. They are historical and non-normative where they conflict with the current owner-selected policy. Current owner-policy cases are listed separately below. The per-pair security argument remains conditional and CR-01 remains open.
+> **HISTORICAL CANDIDATE CASES:** The existing remote state/accounting/resource cases below preserve the pre-owner multi-ceremony, eight-slot, persistent `5,497`-epoch candidate. They are historical and non-normative where they conflict with the current owner-selected policy. Current owner-policy cases are listed separately below. The per-pair security argument remains conditional; residual assumptions and implementation verification obligations are accepted for experimental development.
 
 Each row supplies a stable ID, precondition/input, expected outcome, and relevant accounting/resource boundary. `—` means the property does not apply. “Terminal” describes the active ceremony. Existing remote cases below the current owner-policy section preserve historical candidate accounting/admission behavior where stated; consult the current owner-policy cases above for current remote exposure rules.
 

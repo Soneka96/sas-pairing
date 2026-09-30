@@ -20,7 +20,8 @@ jobs:
             test -s "$file"
           done
           grep -Fq 'MIT OR Apache-2.0' README.md
-          grep -Fq 'has not been independently audited' README.md
-          grep -Fq 'Do not use this project to protect production systems yet.' README.md
+          grep -Fq 'no qualified professional audit or formal verification is claimed' README.md
+          grep -Fq 'This selection does not establish production security or approve production use.' README.md
+          grep -Fq 'Do not use this project to protect production systems.' README.md
           grep -Fq 'MIT License' LICENSE-MIT
           grep -Fq 'Apache License' LICENSE-APACHE

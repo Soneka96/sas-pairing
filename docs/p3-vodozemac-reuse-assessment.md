@@ -2,6 +2,8 @@
 
 **Research snapshot: 2026-09-28.** This is an architecture and security research assessment, not a protocol freeze, implementation approval, audit, or legal opinion. No source from the AGPL-licensed Dart packages is reproduced here.
 
+**Status note:** Candidate/favored/unselected descriptions and recommendations below record the assessment's status at the time of this 2026-09-28 snapshot, not current project status. Owner decision 0002 subsequently selected the existing vodozemac profile for experimental implementation only; it did not establish production security or replace this research analysis.
+
 ## 1. Executive decision question
 
 Can a shared application-neutral Rust ceremony around the maintained Apache-2.0 `vodozemac::sas` implementation reduce cryptographic implementation ownership for a future profile, given that the owner has reopened Candidate B's historical P2 implementation direction?

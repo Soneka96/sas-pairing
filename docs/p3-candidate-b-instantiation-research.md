@@ -6,7 +6,7 @@
 >
 > This document evaluates concrete instantiation options for Candidate B, which was selected at P2 and is now retained as a formal reference and possible fallback. It does not choose a wire format, hash, commitment, parameter set, or production implementation.
 
-**Current project status:** Candidate B's abstract construction was selected at P2, but the owner later reopened the implementation direction because concrete instantiation would require substantial custom cryptographic design and proof-mapping/maintenance. Candidate B remains a formal reference and possible fallback; this decision does not disprove it. Preserve the `STOP concrete cryptographic selection` conclusion below as a project-evidence limit. The vodozemac-based ceremony is favored for investigation but remains unselected; the historical P3.3 author-clarification recommendation is not the current project-level next security action. See [current manager context](../ai/context/project.md).
+**Current project status:** Candidate B's abstract construction was selected at P2, but the owner later reopened implementation direction because concrete instantiation would require substantial custom cryptographic design and proof-mapping/maintenance. Candidate B remains a formal reference and possible fallback; this does not disprove it. Preserve the `STOP concrete cryptographic selection` conclusion below as a project-evidence limit. Vodozemac is selected for experimental implementation by owner decision 0002; the historical P3.3 author-clarification recommendation is not the current project-level next action. See [current manager context](../ai/context/project.md).
 
 ## 1. Question
 
