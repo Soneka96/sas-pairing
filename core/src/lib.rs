@@ -7,6 +7,7 @@ use std::{
     },
 };
 
+mod crypto;
 pub mod protocol;
 
 const DOMAIN: &[u8] = b"sas-pairing-authority-v1";
