@@ -2,7 +2,7 @@
 
 > **DETERMINISTIC TEST VECTORS FOR CANDIDATE PROFILES — NOT PRODUCTION APPROVAL**
 
-> **CR-01 OPEN:** The remote vector fixes ceremony bytes, not admission or attempt policy. Current owner policy is one live exposed ceremony per pairing authority and 10 opportunities per process/session across both roles. A joint 10/10 window has at most 19 tested pairs. The proposed per-pair argument remains conditional and awaits independent verification. The remote transcript bytes remain `u32be(len(domain)) || domain`; this remediation changes no vector bytes.
+> **CR-01 OPEN:** The remote vector fixes ceremony bytes, not admission or attempt policy. Current owner policy is one owning process and one live exposed ceremony per pairing authority, with 10 opportunities shared across both roles, threads, and connections. The 19-pair maximum applies only to a joint 10/10 window where both endpoints remain within their process sessions; it is not a bound across arbitrary restarts. F-02 and the conditional per-pair argument remain open for independent verification. The remote transcript bytes remain `u32be(len(domain)) || domain`; this remediation changes no vector bytes.
 
 ## Status and scope
 

@@ -1,6 +1,6 @@
 # sas-pairing current manager context
 
-**Current CR-01 gate (2026-09-30):** The owner-selected [remote session safety policy](../../docs/p3-one-shot-remote-pairing-decision.md) is one live exposed ceremony per pairing authority and 10 exposed opportunities per process/session across both roles, with explicit local authorization for each new exposure. Two AI reviews examined the per-pair question: review 1 supported the ideal `2^-39` term; review 2 found no concrete attack above it but concluded **PREVIOUS PROOF NOT ESTABLISHED**. The corrected proposed argument is conditional and requires focused independent verification. Pair counting remains `n_A + n_B - 1`, at most 19 in a joint 10/10 window. CR-01 remains open. Older multi-ceremony/eight-slot/`5,497`-epoch material is historical and non-normative. Vodozemac is favored, not selected, and P4 is blocked. The transcript framing remains consistent with its vector.
+**Current CR-01 gate (2026-09-30):** The owner-selected [remote session safety policy](../../docs/p3-one-shot-remote-pairing-decision.md) permits one owning process per pairing authority, one live exposed ceremony, and 10 shared opportunities per owning process/session across both roles, threads, and connections; each new exposure requires fresh explicit local authorization. Exclusive ownership is atomic and fails closed if uncertain. Two AI reviews examined the per-pair question: review 1 supported the ideal `2^-39` term; review 2 found no concrete attack above it but concluded **PREVIOUS PROOF NOT ESTABLISHED**. F-02, the precise unpredictability/computational-hardness property needed before the attacker fixes its contribution, remains unresolved; do not assume its own Diffie–Hellman shared secret remains hidden. The corrected proposed argument is conditional and requires focused independent verification. Pair counting remains `n_A + n_B - 1`; at most 19 applies only in a joint 10/10 window where both endpoints remain within their process sessions, not across arbitrary restarts. CR-01 remains open. Older multi-ceremony/eight-slot/`5,497`-epoch material is historical and non-normative. Vodozemac is favored, not selected, and P4 is blocked. The transcript framing remains consistent with its vector.
 
 ## Project purpose
 
@@ -24,7 +24,7 @@ Candidate B is Beskorovajnov–Müller-Quade mutual `π_SAS^×`: historically se
 
 ## Vodozemac candidate
 
-`sas-pairing-vodozemac-ceremony-profile-draft-01` is the **FAVORED CANDIDATE — NOT SELECTED**. It pins vodozemac 0.11.0 and specifies X25519, a SHA-256 responder commitment, canonical framing, transcript identity, Matrix decimal SAS, bootstrap/completion MACs, context, and candidate lifecycle. The current proposed argument assumes SHA-256 collision resistance for commitment binding; random-oracle-style SHA-256 commitment hiding; random-oracle-style behavior for the relevant HKDF-SHA256 construction; fresh unpredictable, non-reused ephemeral keys; accepted contributory X25519 inputs; correct exposure ordering; and atomic one-live-ceremony enforcement. Ordinary HKDF PRF security alone is not claimed sufficient where an attacker knows the derived secret on its leg. Neither SHA-256 nor HKDF-SHA256 is proven to behave as a random oracle. The proposed result is `P_per_pair ≤ 2^-39 + δ` and, for a 10/10 joint window, `P_joint ≤ 19 × 2^-39 + ε`, with unsupported terms left symbolic. It is not a lifetime or human-error bound. The second review verdict is **PREVIOUS PROOF NOT ESTABLISHED**; qualified human verification remains outstanding.
+`sas-pairing-vodozemac-ceremony-profile-draft-01` is the **FAVORED CANDIDATE — NOT SELECTED**. It pins vodozemac 0.11.0 and specifies X25519, a SHA-256 responder commitment, canonical framing, transcript identity, Matrix decimal SAS, bootstrap/completion MACs, context, and candidate lifecycle. The current proposed argument assumes SHA-256 collision resistance for commitment binding; random-oracle-style SHA-256 commitment hiding; random-oracle-style behavior for the relevant HKDF-SHA256 construction; fresh unpredictable, non-reused ephemeral keys; accepted contributory X25519 inputs; correct exposure ordering; and atomic ownership/guard enforcement. Ordinary HKDF PRF security alone is not claimed sufficient where an attacker knows the derived secret on its leg. F-02 remains open as to which precise unpredictability or hardness property is required before the attacker fixes its contribution; do not assume the attacker is ignorant of its own DH shared secret. Neither SHA-256 nor HKDF-SHA256 is proven to behave as a random oracle. The proposed result is `P_per_pair ≤ 2^-39 + δ` and, only for a joint 10/10 window within both process sessions, `P_joint ≤ 19 × 2^-39 + ε`, with unsupported terms left symbolic. It is not a bound across arbitrary restarts, a lifetime bound, or a human-error bound. The second review verdict is **PREVIOUS PROOF NOT ESTABLISHED**; qualified human verification remains outstanding.
 
 ## Current construction status
 
@@ -37,7 +37,7 @@ Candidate B is Beskorovajnov–Müller-Quade mutual `π_SAS^×`: historically se
 - Remote vodozemac candidate profile and D-series decision record, including transcript identity, context/expected-peer semantics, attempt model, resource model, and timeout/admission rules.
 - Separate authenticated-local candidate profile, decisions, deterministic vector, and conformance cases.
 - Windows principal-bound named-pipe adapter candidate research.
-- Remote and local deterministic fixture sets and a conformance matrix with 162 documented cases, including 14 current owner-policy cases at this branch state.
+- Remote and local deterministic fixture sets and a conformance matrix with 166 documented cases, including 18 current owner-policy cases at this branch state.
 
 These artifacts remain useful candidate work; vectors demonstrate byte/derivation reproducibility, not security proof.
 
@@ -51,7 +51,7 @@ These artifacts remain useful candidate work; vectors demonstrate byte/derivatio
 
 ## Deterministic vectors
 
-Two fixture sets exist: remote vodozemac and authenticated-local. They demonstrate deterministic bytes and derivations only. The remote fixture covers commitment, transcript identity, SAS, bootstrap MACs, and completion MACs; the local fixture covers START, ACCEPT, transcript identity, APPROVE, REJECT, ACK, and outer record framing. The conformance matrix has 162 documented cases at the current branch head, including 14 documentation-only owner-policy cases; they are not executable tests.
+Two fixture sets exist: remote vodozemac and authenticated-local. They demonstrate deterministic bytes and derivations only. The remote fixture covers commitment, transcript identity, SAS, bootstrap MACs, and completion MACs; the local fixture covers START, ACCEPT, transcript identity, APPROVE, REJECT, ACK, and outer record framing. The conformance matrix has 166 documented cases at the current branch head, including 18 documentation-only owner-policy cases; they are not executable tests.
 
 ## Current blocker
 
@@ -59,7 +59,7 @@ P3 cannot complete its remote-profile exit criteria while no remote construction
 
 ## Single next security action
 
-Use [the independent review package](../../docs/p3-vodozemac-independent-review-package.md) to obtain the smallest independent review that verifies the corrected conditional per-pair argument: candidate-pair event, conditioning point, adaptive scheduling/selective aborts, commitment SHA-256 binding/hiding, HKDF-SHA256 assumption, X25519 inputs, and key freshness/authority-guard enforcement. It should be performed by a qualified independent human reviewer under the project's standing review requirement. This review does not preselect vodozemac; the owner must make a separate explicit selection decision afterward.
+Use [the independent review package](../../docs/p3-vodozemac-independent-review-package.md) to obtain the smallest independent review that verifies the corrected conditional per-pair argument: candidate-pair event, conditioning point, adaptive scheduling/selective aborts, commitment SHA-256 binding/hiding, HKDF-SHA256 assumption, X25519 inputs, key freshness, and F-02's precise unpredictability/computational-hardness requirement. It must not assume an attacker participating in DH remains ignorant of its own shared secret. The review must assess the single-owner-process scope and remains required from a qualified independent human under the project's standing review requirement. This review does not preselect vodozemac; the owner must make a separate explicit selection decision afterward.
 
 ## Decisions that must not be silently changed
 

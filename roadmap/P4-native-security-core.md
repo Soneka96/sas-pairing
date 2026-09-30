@@ -2,7 +2,7 @@
 
 ## Status
 
-🟡 Planned; gated on a completed P3.5 pre-implementation review and an explicit P3.6 owner selection/profile freeze.
+🔴 **BLOCKED** pending qualified independent review of the complete security argument (including F-02), any required remediation, and the explicit P3.6 owner selection/profile freeze.
 
 ## Goal
 
@@ -31,6 +31,8 @@ A native implementation of the reviewed candidate profile and evidence of implem
 ## Security invariants
 
 Preserve one production security implementation, fail-closed behavior, and the exact limits of claims justified by P2/P3.
+
+The implementation and its tests MUST establish exclusive ownership of each pairing authority before any remote ceremony can be exposed. Ownership acquisition must be atomic and uncertainty fails closed. P4 must verify crash/termination handling and that ownership is safely released before a replacement process can acquire it. The one owning process shares active remote state, one ceremony guard, and its 10-opportunity budget across roles, threads, and connections. Do not choose a platform-specific locking mechanism in this specification phase.
 
 ## Exit criteria
 
