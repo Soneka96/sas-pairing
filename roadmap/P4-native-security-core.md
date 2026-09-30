@@ -2,13 +2,13 @@
 
 ## Status
 
-🔵 **EXPERIMENTAL IMPLEMENTATION IN PROGRESS — FIRST SECURITY-FOUNDATION INCREMENT IMPLEMENTED; P4 NOT COMPLETE.** The Windows Rust foundation derives account-scoped lock ownership from the process token SID and Windows profile API, with canonical identity encoding unchanged. The owner accepted account-scoped authorities in decision 0003. Same-session process tests pass; same-user cross-session execution remains unverified and cryptographic contribution exposure must not begin until evidence is recorded. The owner selected the corrected vodozemac remote profile and owner policy as the experimental baseline and waived the qualified-human-review prerequisite for this phase. F-02 is recorded as a false positive under the stated idealized assumptions; the complete argument remains conditional and is not formally verified. No production-security approval is granted.
+🔵 **EXPERIMENTAL IMPLEMENTATION IN PROGRESS — FIRST SECURITY-FOUNDATION INCREMENT IMPLEMENTED; P4 NOT COMPLETE.** The Windows Rust foundation derives account-scoped lock ownership from the process token SID and Windows profile API, with canonical identity encoding unchanged. The owner accepted account-scoped authorities in decision 0003. Same-session process checks and the cross-session ownership verification below are complete. The owner selected the corrected vodozemac remote profile and owner policy as the experimental baseline and waived the qualified-human-review prerequisite for this phase. F-02 is recorded as a false positive under the stated idealized assumptions; the complete argument remains conditional and is not formally verified. No production-security approval is granted.
 
 ## First implementation step
 
 Build and verify the Rust authority-ownership and exposure-admission foundation before implementing protocol messages: canonical local authority identity registration; one OS-backed exclusive owner lease; one shared active-ceremony guard; and one shared volatile ten-opportunity counter. Reservation must require fresh authorization for that exact ceremony and acquire the guard plus opportunity with one atomic outcome before any public contribution can be released. Keep protocol message handling out of this first slice.
 
-The first increment implements this step's reservation foundation and a real Windows file-lock lease. Same-session process contention, forced termination, normal release, distinct authorities, shared guard/budget, authorization, and reservation lifecycle checks pass. A same-account Task Scheduler cross-session procedure is documented but unverified; no cryptographic contribution may be exposed until that evidence is recorded. Cryptographic ceremony implementation and protocol conformance remain future work.
+The first increment implements this step's reservation foundation and a real Windows file-lock lease. Same-session process contention, forced termination, normal release, distinct authorities, shared guard/budget, authorization, and reservation lifecycle checks pass. The same-account cross-session ownership requirement is complete based on the owner-run manual verification dated 2026-09-30 (see [core verification record](../core/README.md#cross-session-verification-manual-completed-2026-09-30)); this is not automated CI. Cryptographic ceremony implementation and protocol conformance remain future work.
 
 ## Goal
 
@@ -54,7 +54,7 @@ Implement and verify:
 - Deterministic-vector validation and conformance checks for the current normative requirements.
 - The finite pre-exposure transport/core caps, admission limits, and cleanup invariants in the authoritative profile, kept separate from SAS accounting.
 
-No P4 implementation may invent a security decision for an undecided normative detail. Record it as a prerequisite and resolve it before implementing affected behavior. Windows account-scoped ownership is accepted in decision 0003; target-specific mechanics and cross-session verification remain implementation work. Experimental P4 does not require a qualified professional audit, which is not currently planned. These requirements are not claimed as already implemented.
+No P4 implementation may invent a security decision for an undecided normative detail. Record it as a prerequisite and resolve it before implementing affected behavior. Windows account-scoped ownership is accepted in decision 0003; the distinct-session ownership verification requirement is complete in the tested configuration. Remaining experimental P4 requirements are not claimed as implemented. Experimental P4 does not require a qualified professional audit, which is not currently planned.
 
 ## Exit criteria
 
