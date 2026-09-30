@@ -82,6 +82,21 @@ The API receives the exact ASCII string:
 
 `purpose` is one of the fixed ASCII strings defined below. This transformation is injective for each purpose and preserves arbitrary context bytes across the vodozemac API's `&str` boundary. It is a project encoding rule, not a Matrix rule. Before constructing this string, implementations MUST use checked arithmetic to size the entire resulting string, including this prefix, and reject it if it would exceed 65,536 bytes.
 
+The complete set of outer purposes is `sas` (§7), `mac` (§§8–9), and `cancel` (§11.3). The non-wire frame types below share the §3.1 header but are never wire messages; wire message types `0x01`–`0x09` are assigned only in §6. No value in either table may be reused for another structure.
+
+| Type | Non-wire structure | Role | Outer purpose | Defined in |
+|---:|---|---|---|---|
+| `0x20` | Bootstrap record | Nested record | — | §4 |
+| `0x30` | SAS context | HKDF `info` context | `sas` | §7 |
+| `0x31` | Approval MAC context | MAC `info` context | `mac` | §8 |
+| `0x32` | Completion MAC context | MAC `info` context | `mac` | §9 |
+| `0x33` | `ApprovalAuthFrame` | MAC input | — | §8 |
+| `0x34` | `CancelAuthFrame` | MAC input | — | §11.3 |
+| `0x35` | `INITIATOR_FINISH` `CompletionAuthFrame` | MAC input | — | §9 |
+| `0x36` | `RESPONDER_FINISH_ACK` `CompletionAuthFrame` | MAC input | — | §9 |
+| `0x37` | `INITIATOR_FINISH_ACK` `CompletionAuthFrame` | MAC input | — | §9 |
+| `0x38` | `CancelMacContext` | MAC `info` context | `cancel` | §11.3 |
+
 ## 4. Request ID and bootstrap record
 
 For an honest local Initiator, the shared security core MUST generate each `request_id` as exactly 16 raw bytes using its reviewed OS-backed CSPRNG. Before emitting `START`, the core MUST atomically check and reserve the ID in the applicable active local routing namespace. If the generated ID collides with another active local request in that namespace, the core MUST regenerate before emitting `START`; no colliding local active state may be sent on the wire. The ID is public, non-secret, network-observable routing and diagnostic context. It MAY be logged subject to application privacy/logging policy. Applications SHOULD receive the generated ID for correlation, logs, diagnostics, and integration routing, but SHOULD NOT choose it under this candidate architecture.
@@ -188,7 +203,7 @@ The tagged vodozemac manifest enables `x25519-dalek/zeroize`. In the inspected p
 
 ## 6. Exact message flow
 
-Only the following messages exist in this draft. Every network message has the global frame header and the exact fields shown. Sender role is implicit only for message types that are direction-specific and can legally be sent by exactly one ceremony role. A message type valid in both directions carries its explicit sender-role field; the receiver MUST verify that the encoded sender role is the expected peer role for the active ceremony and reject a mismatch as a protocol error. Except for `START`, `ACCEPT`, and key-exchange messages, the message body is authenticated by a direction-specific vodozemac MAC as specified in §§8–11.3. For `CANCEL`, the wire message type is `0x09`; the separate non-wire `CancelAuthFrame / 0x34` defined in §11.3 is used only as MAC input/context. There are no transport-level acknowledgements that alter protocol state.
+Only the following messages exist in this draft. Every network message has the global frame header and the exact fields shown. Sender role is implicit only for message types that are direction-specific and can legally be sent by exactly one ceremony role. A message type valid in both directions carries its explicit sender-role field; the receiver MUST verify that the encoded sender role is the expected peer role for the active ceremony and reject a mismatch as a protocol error. Except for `START`, `ACCEPT`, and key-exchange messages, the message body is authenticated by a direction-specific vodozemac MAC as specified in §§8–11.3. For `CANCEL`, the wire message type is `0x09`; the separate non-wire `CancelAuthFrame / 0x34` (MAC input) and `CancelMacContext / 0x38` (MAC `info` context) defined in §11.3 are used only for authentication. There are no transport-level acknowledgements that alter protocol state.
 
 | # | Message/type | Sender → receiver | Fields after header | Permitted state and effect |
 |---|---|---|---|---|
@@ -435,7 +450,34 @@ Cancellation before shared SAS establishment is local behavior: the participant 
 
 After shared SAS establishment, the wire message remains `CANCEL / 0x09` as defined in §6. The sender includes its role, a reason code, and the raw 32-byte MAC. To calculate that MAC, construct the separate **non-wire** `CancelAuthFrame / 0x34` using the canonical frame encoding in §3.1, with these fields in exactly this order: protocol domain ASCII `org.sas-pairing`; profile-identifier ASCII bytes; version `u16be(1)`; sender role code (`0x01` I or `0x02` R); receiver role code (the other role); authoritative ceremony identity (the transcript digest); reason code. The `0x34` value is only this authentication frame's type byte; it is never a network message type. The receiver role is included to bind direction.
 
-The MAC input is exactly the unpadded Base64url encoding of the complete canonical `CancelAuthFrame` bytes. The sender calculates the MAC with the §3.2 context-string construction, purpose `cancel`, and a context containing the same protocol domain, profile identifier, version, sender role, receiver role, authoritative ceremony identity, and reason code. The wire MAC field is excluded from both the authentication frame and its input, so there is no circular definition. The receiver reconstructs the expected frame and context from the received wire `CANCEL` and local ceremony state, then verifies the raw 32-byte tag before terminating only that exact active ceremony. A missing, malformed, or invalid tag is terminal failure and is not authenticated peer cancellation. A valid cancel for an unknown or stale ceremony identity cannot affect another flow. Secret cleanup on terminal paths follows the exact X25519 zeroization boundary and limitations in §5; no protocol success is possible after terminal cleanup.
+The MAC input is exactly the unpadded Base64url encoding of the complete canonical `CancelAuthFrame` bytes. The MAC `info` context is the separate **non-wire** `CancelMacContext / 0x38`, a canonical §3.1 frame with these fields in exactly this order:
+
+1. protocol domain ASCII `org.sas-pairing`;
+2. profile identifier ASCII `sas-pairing-vodozemac-profile-draft-01`;
+3. version `u16be(1)`;
+4. sender role code (`0x01` I or `0x02` R);
+5. receiver role code (the other role);
+6. the exact 32-byte authoritative `ceremony_identity`;
+7. the exact one-byte reason code.
+
+`CancelMacContext` contains no inner purpose field: the cancellation purpose is carried only by the §3.2 outer purpose `cancel`, and the distinct type `0x38` separates it from the approval (`0x31`) and completion (`0x32`) contexts. Its fields are identical in value and order to `CancelAuthFrame`; only the type byte differs. The exact vodozemac `info` string is:
+
+```text
+ASCII("sas-pairing-vodozemac-profile-draft-01/cancel/")
+|| unpadded_Base64url(complete canonical type-0x38 CancelMacContext frame)
+```
+
+CANCEL MUST NOT use the `mac` outer purpose; `sas-pairing-vodozemac-profile-draft-01/mac/...` remains exclusively the approval and completion construction. The sender computes `EstablishedSas::calculate_mac(input, info)` and sends the 32 raw bytes from `Mac::as_bytes()`. The wire MAC field is excluded from the authentication frame, the context, and the MAC input, so there is no circular definition. Every generated input and `info` string is subject to the §3.1/§3.2 65,536-byte cap.
+
+**Reason binding.** The same exact one-byte reason code appears in three places: the wire `CANCEL / 0x09`, `CancelAuthFrame / 0x34`, and `CancelMacContext / 0x38`. Only after the received wire frame passes canonical codec validation, including a defined reason code, does the receiver reconstruct both non-wire structures using the received reason code. A tag authenticates exactly one reason; it cannot be reused under another reason.
+
+**Direction binding.** For I → R `CANCEL`, sender is `0x01` and receiver is `0x02`; for R → I, sender is `0x02` and receiver is `0x01`. The receiver MUST check that the wire sender role equals the expected peer role before treating the message as authenticated peer cancellation, and reconstructs both structures with that peer as sender and itself as receiver. Changing either role changes both structures and therefore invalidates the tag.
+
+**Ceremony binding.** Authenticated `CANCEL` exists only after shared SAS establishment, when the authoritative `ceremony_identity` exists. The request ID remains routing/correlation context and is not sufficient authentication. A tag valid for another ceremony—even with the same request ID, reason, and roles—MUST fail verification because `ceremony_identity` differs.
+
+The receiver reconstructs the expected frame and context from the received wire `CANCEL` and local ceremony state, then calls `verify_mac` with the raw 32-byte tag before terminating only that exact active ceremony. Any mismatch in reason, sender, receiver, or `ceremony_identity` causes MAC verification failure. A missing, malformed, or invalid tag is terminal protocol failure and is not reported as authenticated peer cancellation. A valid cancel for an unknown or stale ceremony identity cannot affect another flow.
+
+A locally initiated cancellation is terminal immediately; best-effort authenticated `CANCEL` transmission never delays local failure or cleanup while waiting for peer receipt. A verified peer `CANCEL` terminates that exact active ceremony, produces no `PairingResult`, invalidates SAS, approval, and session state, preserves any consumed opportunity, and releases the guard only after terminal invalidation is irrevocable (I1/I2). An exact duplicate received after terminal state cannot revive anything. There is no retry or resume. Secret cleanup on terminal paths follows the exact X25519 zeroization boundary and limitations in §5; no protocol success is possible after terminal cleanup.
 
 ### 11.4 Fail-closed cases
 
@@ -443,7 +485,7 @@ Malformed/truncated/noncanonical frame; unsupported profile/version; repeated or
 
 ## 12. Vector schema and current vector status
 
-The deterministic values remain in the [remote vodozemac fixture](../vectors/p3-remote-vodozemac-draft-01.json), documented in [P3 deterministic vectors](p3-deterministic-vectors.md). They specify bytes and derivations only; this remediation changes no vector bytes. Current state, ownership, resource admission, accounting, and cleanup requirements are documented in `R-OWNER-*`, `R-WIRE-*`, and `R-MAC-*` conformance cases. Historical eight-slot and 5,497-epoch cases remain clearly non-normative. These are documented cases, not executable tests.
+The deterministic values remain in the [remote vodozemac fixture](../vectors/p3-remote-vodozemac-draft-01.json), documented in [P3 deterministic vectors](p3-deterministic-vectors.md). They specify bytes and derivations only. The CANCEL-encoding clarification in §11.3 added authenticated `CANCEL` material for both directions and changed no pre-existing vector bytes. Current state, ownership, resource admission, accounting, and cleanup requirements are documented in `R-OWNER-*`, `R-WIRE-*`, and `R-MAC-*` conformance cases. Historical eight-slot and 5,497-epoch cases remain clearly non-normative. These are documented cases, not executable tests.
 
 - profile identifier/version, role, request ID, and both bootstrap field values;
 - the established transcript bytes: the exact canonical `START`, `ACCEPT`, `INITIATOR_KEY`, and `RESPONDER_KEY` frames;
@@ -454,7 +496,7 @@ The deterministic values remain in the [remote vodozemac fixture](../vectors/p3-
 - SAS context frame and exact HKDF `info` string;
 - raw six SAS bytes and three decimal values/rendered string;
 - both canonical bootstrap frames, each MAC context/info string, stringified MAC input, and raw MAC tag;
-- all approval/completion MAC inputs, contexts, and tags;
+- all approval/completion/cancellation MAC inputs, contexts, and tags, including I → R and R → I `CancelAuthFrame / 0x34`, `CancelMacContext / 0x38`, `cancel` info strings, and wire `CANCEL / 0x09` frames with distinct reason codes;
 - a replay case using the same request ID with fresh responder material, demonstrating a different transcript digest / authoritative ceremony identity;
 - positive full ceremony result and negative mutation cases for role, request ID, profile/version, context, key, commitment, bootstrap, MAC, transcript, ordering, replay, and completion.
 

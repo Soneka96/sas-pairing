@@ -34,6 +34,8 @@ Verification used two independent calculation paths after inspecting that source
 
 The paths agreed for both public keys, the shared secret, commitment, transcript digest, six SAS bytes, decimal values, both bootstrap MACs, and all three completion MACs. The crate archive checksum also matched the pinned checksum. These checks establish fixture consistency with the inspected source operations; they are not an invocation of a deterministic vodozemac constructor or a security review.
 
+The authenticated `CANCEL` material was added later under the same fixed test inputs. Before any CANCEL tag was derived, a fresh source-derived Python recomputation (pure-Python RFC 7748 X25519 plus standard-library SHA-256, HMAC, and RFC 5869 HKDF with absent salt, matching the pinned `get_mac_key`/`calculate_mac` path) rebuilt every frame from raw inputs and reproduced the checked-in public keys, shared secret, `START`/`ACCEPT`/key frames, `ceremony_identity`, six SAS bytes, both `BOOTSTRAP_MAC` tags and wire frames, and all three completion tags and wire frames byte-for-byte. Only then did it derive the CANCEL values. A separate Node/OpenSSL check derived the shared secret with OpenSSL X25519, re-reproduced an existing completion and bootstrap tag, strictly parsed every new CANCEL frame (magic, version, type, field count/order, big-endian length prefixes, no trailing bytes), checked the URL-safe unpadded Base64url strings and the exact `/cancel/` prefix, and recomputed each HKDF key and 32-byte tag. The scratch calculations are vector tooling only and are not committed; no production fixed-key constructor or project-owned production HMAC/HKDF code exists.
+
 ## Remote fixture walkthrough
 
 The canonical bootstrap frames use type `0x20` and the ordered fields `application_identity`, `key_algorithm`, `public_key`, `shared_context`. `START`, `ACCEPT`, `INITIATOR_KEY`, and `RESPONDER_KEY` use wire types `0x01` through `0x04`, with the profile ID and 16-byte request ID common fields.
@@ -71,6 +73,23 @@ Bootstrap approval uses canonical type `0x33` with the fixed SAS bytes, identity
 
 Each completion MAC has its own non-wire auth frame (`0x35`, `0x36`, `0x37`) and a type `0x32` context. The three actual wire frames (`0x06`, `0x07`, `0x08`) carry the common fields, transcript digest, and raw tag. JSON records every canonical frame, info string, Base64url input, derived test key, and raw MAC. The final result objects are semantic fixtures; they do not invent a binary `PairingResult` serialization.
 
+### Authenticated CANCEL
+
+The `cancellation` section and `wire_messages.CANCEL` record one authenticated cancellation per direction for the same established ceremony. Each uses the non-wire `CancelAuthFrame / 0x34` as MAC input and the non-wire `CancelMacContext / 0x38` as MAC context. Both frames carry the same seven fields in this order: protocol domain, profile identifier, `u16be(1)` version, sender role, receiver role, 32-byte `ceremony_identity`, and one-byte reason code; the context has no inner purpose field. The outer §3.2 purpose is `cancel`, never `mac`:
+
+```text
+input = unpadded_Base64url(complete canonical 0x34 CancelAuthFrame)
+info  = ASCII("sas-pairing-vodozemac-profile-draft-01/cancel/")
+        || unpadded_Base64url(complete canonical 0x38 CancelMacContext)
+```
+
+| Direction | Sender → receiver | Reason | Raw tag | Wire `CANCEL / 0x09` length |
+|---|---|---|---|---:|
+| Initiator | `0x01` → `0x02` | `0x02` user cancellation | `e4289b39d4ab4e17ef95398f926642bcdf203d21d3d93c33f16785838ebb7652` | 118 |
+| Responder | `0x02` → `0x01` | `0x03` timeout | `61c6ca7fa28eba2cd2fd3e3fdc262f9253ffadb8586b3f2fe96d5c9889a4ad42` | 118 |
+
+The two examples use different directions and different reason codes, so the same reason byte is visibly bound in the wire frame, auth frame, and context. JSON records each canonical auth frame, context frame, Base64url input, exact info string, test-only derived key, raw tag, and complete wire frame (common fields, sender role, reason, raw tag). The tags are derived from the public fixed test shared secret and are **TEST VECTOR ONLY**; they demonstrate deterministic encoding and derivation, not cancellation security.
+
 ## Local fixture walkthrough
 
 The local vector fixes two 16-byte test nonces and matching local contexts. `LOCAL_START` (`0x40`) and `LOCAL_ACCEPT` (`0x41`) use the ordered schemas in the local profile. The transcript hashes the exact canonical payloads, excluding their outer length prefixes, under the documented local transcript domain. `LOCAL_APPROVE` (`0x42`) and alternate-branch `LOCAL_REJECT` (`0x43`) carry the same 32-byte identity with Responder-to-Initiator roles; `LOCAL_ACK` (`0x44`) carries that identity with Initiator-to-Responder roles. Each complete record is stored with its exact four-byte big-endian payload length.
@@ -81,4 +100,4 @@ The success result fixtures contain only the specified profile, version, peer ro
 
 ## Limits
 
-The vectors demonstrate byte and derivation agreement for one synthetic positive ceremony per profile. They do not establish vodozemac candidate selection, protocol security, production readiness, Windows behavior, OS credentials, or external review. Negative and boundary behavior is listed separately in [the conformance matrix](p3-conformance-cases.md). This documentation-only remediation changes no vector bytes.
+The vectors demonstrate byte and derivation agreement for one synthetic positive ceremony per profile. They do not establish vodozemac candidate selection, protocol security, production readiness, Windows behavior, OS credentials, or external review. Negative and boundary behavior is listed separately in [the conformance matrix](p3-conformance-cases.md). The authenticated-CANCEL addition is additive: it changes no pre-existing vector bytes.

@@ -50,7 +50,7 @@ These cases describe requirements only. They are not executable tests or evidenc
 
 | ID | Precondition; input or mutation | Expected outcome | SAS charge; slot; prompt; terminal |
 |---|---|---|---|
-| R-WIRE-001 | Positive vector: canonical bootstrap, START, ACCEPT, both key frames, approval MAC frames, and three finish frames | Accept exact canonical bytes; consume each frame fully | Per exposure rules; slot follows state; prompt only at SAS approval; no failure |
+| R-WIRE-001 | Positive vector: canonical bootstrap, START, ACCEPT, both key frames, approval MAC frames, three finish frames, and both authenticated `CANCEL / 0x09` frames | Accept exact canonical bytes; consume each frame fully | Per exposure rules; slot follows state; prompt only at SAS approval; no failure |
 | R-WIRE-002 | Replace `SASPAIR` magic | Reject before state transition | No new charge; no new slot; no prompt; terminal if active |
 | R-WIRE-003 | Unsupported u16be version | Reject unsupported version | No new charge; no new slot; no prompt; terminal if active |
 | R-WIRE-004 | Unknown message type | Reject unknown type | No new charge; no new slot; no prompt; terminal if active |
@@ -95,6 +95,15 @@ These cases describe requirements only. They are not executable tests or evidenc
 | R-MAC-012 | Positive `INITIATOR_FINISH_ACK` authentication | Receiver reconstructs type `0x37` auth frame/context and verifies its 32-byte MAC | No refund; state advances to local success |
 | R-MAC-013 | Finish carries a wrong transcript digest or finish type/MAC | Reject before state transition/result | No refund; terminal |
 | R-MAC-014 | Add `=` padding or noncanonical characters to context Base64url | Reject noncanonical context encoding | No charge before exposure; otherwise no refund; terminal |
+| R-MAC-015 | Positive authenticated `CANCEL` after shared SAS establishment, I → R (`0x02` user cancellation) and R → I (`0x03` timeout) JSON vectors | After canonical codec validation and expected-peer sender check, receiver reconstructs `CancelAuthFrame / 0x34` input and `CancelMacContext / 0x38` under outer purpose `cancel` with the received reason, verifies the 32-byte tag, and terminates only that exact ceremony: no `PairingResult`; SAS, approval, and session state invalidated; guard released only after invalidation is irrevocable | Consumed opportunity never refunded; terminal |
+| R-MAC-016 | Verify a valid `CANCEL` tag with sender/receiver roles swapped in the reconstructed `0x34` frame and `0x38` context, or accept an I → R tag as R → I | MAC verification fails; not authenticated peer cancellation (wire sender-role mismatch is `R-WIRE-017`) | No refund; terminal protocol failure |
+| R-MAC-017 | Reconstruct `CANCEL` frame/context with a different `ceremony_identity` | MAC verification fails; not authenticated peer cancellation | No refund; terminal protocol failure |
+| R-MAC-018 | Replay a valid `CANCEL` from another ceremony with the same request ID, reason, and roles | Verification fails because `ceremony_identity` differs; request ID is not authentication; the other ceremony is unaffected | No refund; terminal protocol failure for the receiving active run |
+| R-MAC-019 | Change the wire `CANCEL` reason code to another defined reason while keeping the tag | Receiver reconstructs both non-wire structures with the received reason; verification fails; a tag cannot be reused under another reason. An undefined reason code is rejected by the codec before MAC work | No refund; terminal protocol failure |
+| R-MAC-020 | Flip one bit of the `CANCEL` MAC, or supply a tag that is not exactly 32 bytes | Reject; not authenticated peer cancellation | No refund; terminal protocol failure |
+| R-MAC-021 | Compute or verify `CANCEL` with outer purpose `mac`, an inner `cancel` purpose field, or any context type other than `0x38` (for example `0x31`, `0x32`, or `0x34`) | Not the frozen encoding; MAC verification fails | No refund; terminal protocol failure |
+| R-MAC-022 | Wire `CANCEL` arrives while active but before shared SAS establishment | Invalid protocol input, never authenticated peer cancellation; no MAC is computed | No charge if before exposure; otherwise no refund; terminal |
+| R-MAC-023 | Exact duplicate or any `CANCEL` arrives after the ceremony is terminal (including after a verified `CANCEL`); or the local endpoint cancels | Terminal state and absence of result are immutable; nothing is revived. Local cancellation is terminal immediately; best-effort authenticated `CANCEL` send does not wait for peer receipt | No refund; no second outcome; no retry or resume |
 
 ## Remote state machine
 
