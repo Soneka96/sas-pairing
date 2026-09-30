@@ -1,10 +1,31 @@
 # P3 conformance cases
 
-> Cases instantiate the candidate drafts for future Rust/Dart/.NET and adapter tests. They do not select a profile or grant production approval. “Reject before SAS charge” means before either endpoint's profile-defined key-release boundary; a post-boundary terminal failure never refunds an already reserved opportunity.
+> These are documented conformance cases for future implementation work, not executable tests, profile selection, or production approval. “Reject before exposure” means before release of the role's SAS-enabling ephemeral public contribution.
 
-> **HISTORICAL CANDIDATE CASES:** Remote cases below exercise the pre-owner multi-ceremony/`5,497` epoch candidate and are not conformance evidence for the current owner-selected 10-opportunity process/session policy. That policy and its 10/10 joint-window pair-count model are recorded in the [owner decision](p3-one-shot-remote-pairing-decision.md). These fixtures remain unchanged; the per-tested-pair `2^-39` premise is still open and parent CR-01 remains open.
+> **HISTORICAL CANDIDATE CASES:** The existing remote state/accounting/resource cases below preserve the pre-owner multi-ceremony, eight-slot, persistent `5,497`-epoch candidate. They are historical and non-normative where they conflict with the current owner-selected policy. Current owner-policy cases are listed separately below. The per-pair security argument remains conditional and CR-01 remains open.
 
-Each row supplies a stable ID, precondition/input, expected outcome, and relevant accounting/resource boundary. `—` means the property does not apply. “Terminal” describes the active ceremony. Resource cases use the current frozen caps and state rules.
+Each row supplies a stable ID, precondition/input, expected outcome, and relevant accounting/resource boundary. `—` means the property does not apply. “Terminal” describes the active ceremony. Existing remote cases below the current owner-policy section preserve historical candidate accounting/admission behavior where stated; consult the current owner-policy cases above for current remote exposure rules.
+
+## Current owner-policy cases (documentation only)
+
+| ID | Precondition; input or mutation | Expected outcome |
+|---|---|---|
+| R-OWNER-001 | Initiator receives valid `ACCEPT` | Validate all required fields first; only then generate a fresh Initiator ephemeral key; do not send `I_pub` until explicit local authorization and atomic guard/opportunity reservation succeed. |
+| R-OWNER-002 | A live exposed ceremony holds the pairing-authority guard; a competing request arrives through another role, connection, or instance | Refuse before second exposure. No second SAS candidate and no additional opportunity consumed for pre-exposure refusal. |
+| R-OWNER-003 | Concurrent requests/callbacks race to cross the exposure boundary | Authority-wide guard acquisition and process/session opportunity reservation have one atomic outcome; at most one succeeds. No unguarded or uncharged public contribution is released. |
+| R-OWNER-004 | Malformed/pre-exposure traffic, failed local authorization, or BUSY refusal | No public contribution is released and no exposed opportunity is consumed. |
+| R-OWNER-005 | Either role successfully reserves immediately before releasing its SAS-enabling ephemeral public contribution; the ceremony later fails or succeeds | Consume exactly one opportunity at the atomic exposure boundary; never refund it for an ambiguous/failed write or later success, mismatch, rejection, timeout, disconnect, cancellation, or protocol failure. |
+| R-OWNER-006 | Ten opportunities have been exposed across both roles in one process/session | Refuse further remote exposure for the remainder of that session. A process restart starts a new local session budget; no lifetime bound is claimed. |
+| R-OWNER-007 | Terminal ceremony receives a delayed message, acknowledgement, reconnect, or callback | Preserve terminal state; never transition to success after termination (I1). |
+| R-OWNER-008 | Approval callback targets a terminated ceremony or a different transcript identity | Reject callback; it cannot approve any live or later ceremony (I1/I2). |
+| R-OWNER-009 | Ceremony terminates while its SAS is displayed | Invalidate SAS and withdraw it from the active comparison interface; reject later approval for that ceremony (I2). |
+| R-OWNER-010 | Terminal cleanup begins while the pairing-authority guard is held | Keep guard occupied until terminal state and SAS/callback invalidation are irrevocable; only then release it. |
+| R-OWNER-011 | User retries or a connection reconnects after termination | Do not resume or automatically retry. Require fresh explicit local authorization and a new ceremony with new ephemeral material. |
+| R-OWNER-012 | Another process/instance shares the pairing authority | Enforce the same active guard across instances; a process-local mutex is insufficient. If coordination cannot be verified, fail closed before exposure. |
+| R-OWNER-013 | Fork, VM snapshot, restored process state, RNG failure, or duplicated cryptographic state may repeat key material | Do not expose a key unless freshness and unpredictability are restored by a verified mechanism; make no unverified snapshot/rollback-resistance claim. |
+| R-OWNER-014 | Responder continuously listens for `START` | Listening and pre-exposure validation may continue, but each fresh exposure still requires explicit local user authorization. |
+
+These cases describe requirements only. They are not executable tests or evidence that the implementation conforms.
 
 ## Remote encoding
 

@@ -2,11 +2,11 @@
 
 > **DETERMINISTIC TEST VECTORS FOR CANDIDATE PROFILES — NOT PRODUCTION APPROVAL**
 
-> **CR-01 PAIR-COUNTING REMEDIATION DOCUMENTED — PER-PAIR PREMISE OPEN:** The remote vector fixes ceremony bytes, not admission or attempt policy. The owner-selected policy is 10 exposed opportunities per process/session per core, with at most 19 tested pairs in a 10/10 joint window under the reviewed pair-count model. The remote transcript bytes remain `u32be(len(domain)) || domain`, matching the candidate profile; this policy decision changes no vector bytes.
+> **CR-01 OPEN:** The remote vector fixes ceremony bytes, not admission or attempt policy. Current owner policy is one live exposed ceremony per pairing authority and 10 opportunities per process/session across both roles. A joint 10/10 window has at most 19 tested pairs. The proposed per-pair argument remains conditional and awaits independent verification. The remote transcript bytes remain `u32be(len(domain)) || domain`; this remediation changes no vector bytes.
 
 ## Status and scope
 
-These fixtures instantiate the documented remote vodozemac candidate and authenticated-local candidate. P2 historically selected Candidate B; the owner later reopened its implementation direction for custom cryptographic ownership reasons. Candidate B remains a formal reference and possible fallback, not disproven. Vodozemac is the **FAVORED CANDIDATE — NOT SELECTED — REQUIRES INDEPENDENT SECURITY REVIEW**; the review package is ready, but no external review has occurred. The local profile remains candidate-only, and the Windows adapter remains **CANDIDATE — PRINCIPAL-BOUND ONLY — NOT APPROVED**. Nothing here selects a production profile, approves an adapter, or makes the project production-ready.
+These fixtures instantiate the documented remote vodozemac candidate and authenticated-local candidate. P2 historically selected Candidate B; the owner later reopened its implementation direction for custom cryptographic ownership reasons. Candidate B remains a formal reference and possible fallback, not disproven. Vodozemac is the **FAVORED CANDIDATE — NOT SELECTED — REQUIRES INDEPENDENT SECURITY REVIEW**; two AI reviews examined the per-pair argument, but qualified independent human review has not occurred. The local profile remains candidate-only, and the Windows adapter remains **CANDIDATE — PRINCIPAL-BOUND ONLY — NOT APPROVED**. Nothing here selects a production profile, approves an adapter, or makes the project production-ready.
 
 | Candidate fixture | Profile identifier | Version |
 |---|---|---:|
@@ -81,4 +81,4 @@ The success result fixtures contain only the specified profile, version, peer ro
 
 ## Limits
 
-The vectors demonstrate byte and derivation agreement for one synthetic positive ceremony per profile. They do not establish vodozemac candidate selection, protocol security, production readiness, Windows behavior, OS credentials, or external review. Negative and boundary behavior is listed separately in [the conformance matrix](p3-conformance-cases.md); the historical 5,497-attempt candidate accounting is not simulated there and is not current owner policy.
+The vectors demonstrate byte and derivation agreement for one synthetic positive ceremony per profile. They do not establish vodozemac candidate selection, protocol security, production readiness, Windows behavior, OS credentials, or external review. Negative and boundary behavior is listed separately in [the conformance matrix](p3-conformance-cases.md). This documentation-only remediation changes no vector bytes.

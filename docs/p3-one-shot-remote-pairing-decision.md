@@ -1,53 +1,64 @@
 # Owner-selected remote pairing session safety policy
 
-**OWNER-SELECTED SESSION POLICY — 10 EXPOSED OPPORTUNITIES PER PROCESS/SESSION PER CORE. PAIR-COUNTING REMEDIATION DOCUMENTED — PER-PAIR `2^-39` PREMISE STILL REQUIRES VERIFICATION. VODOZEMAC FAVORED, NOT SELECTED. P4 BLOCKED.**
+**OWNER-SELECTED — ONE LIVE EXPOSED CEREMONY PER PAIRING AUTHORITY; 10 EXPOSED OPPORTUNITIES PER PROCESS/SESSION. CR-01 REMAINS OPEN. VODOZEMAC FAVORED, NOT SELECTED. P4 BLOCKED.**
 
-This is the current owner decision for generic remote pairing safety. It does not select a cryptographic construction, establish its security, or authorize implementation. The larger durable-epoch and eight-Responder-slot rules retained in the vodozemac candidate are historical candidate text and do not describe the current owner policy.
+This policy does not select a cryptographic construction, establish security, or authorize implementation. The normative vodozemac candidate profile must conform to it.
 
 ## Remote ceremony policy
 
-- **One live exposed ceremony:** At most one exposed remote pairing ceremony is active per pairing authority in total, across Initiator and Responder roles, connections, and relevant instances sharing that authority. A competing request receives no second SAS candidate and is refused before exposure.
-- **Explicit retry only:** There is no automatic retry, resume, or reconnect continuation. Every new exposed opportunity requires a fresh explicit local user pairing action.
-- **Terminal irreversibility (I1):** A terminated ceremony cannot later succeed. Release the active-ceremony guard only after irrevocable terminal state. Delayed messages, callbacks, reconnects, duplicate or reordered packets, and delayed acknowledgements cannot revive it.
-- **SAS lifetime (I2):** A SAS is valid/comparable only while its ceremony is live. Termination immediately invalidates the SAS and consumer/UI state; stale approval cannot target it.
-- **Network locality is not trust:** LAN, Wi-Fi, Ethernet, private IP addresses, discovery proximity, and loopback remain remote/untrusted. Successful pairing trusts the peer identity, not the LAN. Any future SAS-free local profile requires an independently approved OS-authenticated local IPC mechanism.
+- **Single live exposure:** At most one exposed remote ceremony may be live for a pairing authority, across Initiator and Responder roles, all remote connections, and all relevant instances. A process-local mutex alone does not satisfy this scope. Instances sharing an authority must coordinate the guard; if they cannot, they must fail closed before exposure.
+- **Atomic admission:** The active-ceremony guard and the process/session opportunity reservation are acquired atomically before the role-specific ephemeral public contribution is released. A competing ceremony cannot cross exposure while the guard is occupied.
+- **Explicit retry only:** There is no automatic retry, resume, or reconnect continuation. Every new exposed ceremony requires fresh explicit local user authorization. A continuously listening Responder may reject pre-exposure traffic, but continuous listening or admission is not authorization for an exposed ceremony.
+- **Exposure accounting:** The successful atomic reservation is the exposure-boundary operation and occurs immediately before release of the role-specific ephemeral public contribution. It consumes exactly one opportunity and is never refunded if the following release outcome is ambiguous or fails. A refusal before reservation, including BUSY, consumes none. Count success and failure alike.
+- **Terminal irreversibility (I1):** A terminated ceremony can never later succeed. Release the active guard only after terminal state is irrevocable. Delayed messages, callbacks, reconnects, duplicate/reordered packets, and acknowledgements cannot revive it.
+- **SAS lifetime (I2):** A SAS is valid for human comparison only while its ceremony is live. Termination invalidates and withdraws it from the active comparison interface and rejects callbacks for that ceremony.
+- **Human comparison:** The security argument assumes people compare the currently live SAS values. Software cannot prevent users from remembering or verbally reusing old values.
+- **Network locality is not trust:** LAN, Wi-Fi, Ethernet, private IP addresses, discovery proximity, and loopback remain remote/untrusted.
 
 ## Owner-selected process/session ceiling
 
 `MAX_REMOTE_SAS_OPPORTUNITIES_PER_PROCESS_SESSION = 10`
 
-This is a conservative owner-selected abuse/safety ceiling, not a lifetime counter or a cryptographic constant. It applies per core, across both roles and all network connections handled by that pairing authority, to exposed remote SAS opportunities only.
+This is a conservative owner-selected session safety ceiling, not a lifetime counter or mathematically derived cryptographic constant. It applies across both roles for the local process/session. Once consumed, remote pairing cannot cross exposure again during that session. A process restart creates a new local session budget; no persistent lifetime accounting is selected.
 
-An opportunity counts when the ceremony crosses the current profile's SAS-enabling exposure boundary. The current profile's exposure semantics are unchanged. Once exposed, count the opportunity regardless of success, mismatch, rejection, cancellation, timeout, disconnect, MAC/authentication failure, or protocol error. Malformed pre-exposure input, rejected pre-exposure admission, BUSY/PAIRING_IN_PROGRESS, and connections that never cross the boundary do not count.
-
-At 10 consumed opportunities, the core exposes a local limit-exhausted state/result and prevents any further remote ceremony from crossing the exposure boundary for the rest of that process/session. Any peer response is generic unavailable/busy-style behavior. A process restart creates a new local budget; there is no persistent cryptographic accounting or lifetime claim. Consumer applications choose any notification text.
+The guard is scoped to the pairing authority and may span multiple processes or instances. The 10-opportunity budget is scoped to each process/session. An implementation must coordinate guard acquisition and reservation so that a ceremony cannot expose a key without holding the authority-wide guard and consuming exactly one available local opportunity. It must not assume that a process-local lock coordinates other instances.
 
 ## Pair-count model
 
-For two honest endpoints A and B within one **joint window**, let `n_A` and `n_B` be their exposed opportunities. Under one live exposed ceremony per core, I1, I2, and explicit retries only, the maximum total number of security-relevant tested candidate pairs is:
+For two honest endpoints A and B with overlapping live-ceremony intervals, let `n_A` and `n_B` be their actual exposed opportunities. Under one live exposed ceremony per pairing authority and I1/I2, the maximum number of security-relevant tested candidate pairs is:
 
 `n_A + n_B - 1` when both are at least 1; otherwise `0`.
 
-A held candidate may take part in several sequential comparisons. Do not claim that one local action equals one global comparison. The bound is on the total number of security-relevant candidate pairs.
+A held SAS may be compared against several sequentially authorized ceremonies at the other endpoint. Do not claim that one local action participates in only one global comparison.
 
-With `n_A <= 10` and `n_B <= 10` in one joint window:
+For a joint window in which both endpoints remain within their respective 10-opportunity process/session budgets:
 
-`10 + 10 - 1 = 19`
+`maximum tested candidate pairs = 10 + 10 - 1 = 19`
 
-Thus 19 is the maximum pair-count result for the owner-selected 10/10 joint-window policy. It applies only while both endpoints remain within their current process/session budgets. Restart resets that endpoint's local 10-opportunity budget; 19 is not a lifetime, per-device-forever, or one-endpoint-process bound when the other endpoint repeatedly restarts. For arbitrary exposure counts, the structural formula remains `pairs <= N_A + N_B - 1`, subject to the same one-live-ceremony invariants.
+This 19-pair maximum is not a lifetime bound. Restarts reset the local budget. Over longer periods, the structural result uses actual total exposure counts; no fixed lifetime numeric bound is established.
 
 ## Conditional probability wording
 
-> If each security-relevant tested candidate pair has conditional ideal full-SAS match probability at most `2^-39`, then a 10/10 joint window containing at most 19 tested pairs has a union-bound random-match term of at most `19 × 2^-39`.
+The proposed corrected per-pair statement is conditional:
 
-`19 × 2^-39 ≈ 3.456 × 10^-11`. This is conditional on the per-pair premise; independence is not required for the union bound. It is an ideal random-SAS-match term, not a real-human error probability, not a lifetime bound, and not a complete proof of the vodozemac construction. The per-tested-pair `2^-39` premise remains OPEN for independent verification. Do not describe the protocol as having established `3.456 × 10^-11` MITM security.
+`P_per_pair ≤ 2^-39 + δ`
+
+Here `δ` represents applicable computational and cryptographic-assumption error terms. The review found no concrete attack exceeding the ideal term but concluded **PREVIOUS PROOF NOT ESTABLISHED**; it did not establish concrete standard-model security. Under the stated assumptions, a 10/10 joint window has:
+
+`P_joint ≤ 19 × 2^-39 + ε`
+
+where `ε` covers applicable computational and randomness terms. `19 × 2^-39 ≈ 3.456 × 10^-11`. No numeric value for `δ` or `ε` is asserted without a supported derivation. These are idealized SAS random-match bounds, not human-error probabilities, lifetime bounds, complete authentication guarantees, or formal proofs of the concrete implementation.
+
+The proposed argument assumes random-oracle-style behavior for the relevant commitment and HKDF-SHA256 constructions, SHA-256 collision resistance for commitment binding, fresh unpredictable ephemeral keys, correct exposure ordering, atomic single-ceremony enforcement, and suitable treatment of adaptive scheduling/selective aborts. Ordinary HKDF PRF security alone is not asserted sufficient when the attacker knows the derived secret on its own protocol leg. Real SHA-256 and HKDF-SHA256 have not been proven to be random oracles.
 
 ## CR-01 and construction status
 
-**CR-01 PAIR-COUNTING REMEDIATION DOCUMENTED — PER-PAIR `2^-39` PREMISE STILL REQUIRES VERIFICATION.** The owner policy and previously reviewed `n_A + n_B - 1` model resolve the unbounded candidate-pair accounting flaw for the stated scope. Keep the parent CR-01 item OPEN until independent review verifies whether each security-relevant tested candidate pair in the corrected composition has conditional ideal full-SAS match probability at most `2^-39` under active MITM scheduling and the stated cryptographic assumptions. This does not establish the construction's security.
+Pair counting is documented for the stated scope. The second independent adversarial AI review found no concrete attack above the ideal `2^-39` term but gave the verdict **PREVIOUS PROOF NOT ESTABLISHED** because assumptions and reasoning were incomplete. A corrected conditional argument is recorded in the normative candidate profile. CR-01 is **not fully closed**: the corrected argument and its assumptions require focused independent verification.
+
+The reviews were AI reviews, not qualified human audits or formal verification. Documentation reconciliation is not independent verification.
 
 `VODOZEMAC = FAVORED, NOT SELECTED`
 
 `P4 = BLOCKED`
 
-The transcript framing correction remains `u32be(len(domain)) || domain || ...`, consistent with deterministic vectors. It is unchanged by this policy decision. This document is generic library policy; consumer-specific warning text is outside its scope.
+The transcript framing remains `u32be(len(domain)) || domain || ...`, consistent with the deterministic vector. No construction or message format is changed by this policy.

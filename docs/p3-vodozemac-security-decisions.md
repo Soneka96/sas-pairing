@@ -8,7 +8,7 @@ P2 historically selected Candidate B as the abstract remote construction. During
 
 The assessment recommends the shared Rust-core direction only as promising reuse, subject to a complete profile and independent review ([reuse assessment](p3-vodozemac-reuse-assessment.md), §18). Vodozemac primitives and Matrix ceremony behavior are precedent, not evidence that this generic composition is secure.
 
-**CR-01 update:** The owner selected the [10-opportunity remote process/session policy](p3-one-shot-remote-pairing-decision.md). The owner policy and the previously reviewed `n_A + n_B - 1` model document pair-counting remediation, with at most 19 tested pairs for a 10/10 joint window. D7–D10 and D15 record the earlier multi-ceremony/`5,497` epoch candidate and do not override current owner policy. The per-tested-pair `2^-39` premise remains open for independent verification, so parent CR-01 remains open, vodozemac remains unselected, and P4 remains blocked.
+**Current owner policy:** One live exposed ceremony per pairing authority and 10 exposed opportunities per process/session across roles. See the [owner decision](p3-one-shot-remote-pairing-decision.md). D7–D10 and D15 below are retained as **historical, non-normative candidate decisions**; their eight-slot, durable `5,497` epoch, continuous acceptance, and global-rate rules do not override the current policy. The second adversarial AI review found no concrete attack exceeding the ideal per-pair `2^-39` term but concluded **PREVIOUS PROOF NOT ESTABLISHED**. The corrected argument is conditional on explicit assumptions recorded in the profile. CR-01 remains open pending focused independent verification; vodozemac remains unselected and P4 blocked. These AI reviews are not qualified human audits or formal verification.
 
 ## Decision records
 
@@ -156,9 +156,9 @@ On restart, active state and pending approval are discarded; historical request 
 
 **Independent-review status:** The per-opportunity bound, human-comparison assumptions, and aggregate policy remain for independent review.
 
-### D7 — Reserve SAS attempts before key exposure; never refund
+### D7 — Historical: durable SAS attempt counter
 
-**Status:** Candidate security-policy decision.
+**Status:** Historical, non-normative candidate policy; superseded by the owner-selected 10-opportunity process/session ceiling and authority-wide single-live-exposure guard.
 
 **Decision:** The Initiator durably reserves an attempt before releasing `INITIATOR_KEY / I_pub`. The Responder reserves after validating `I_pub` and before revealing `RESPONDER_KEY / R_pub`. Once charged, an attempt is never refunded after abort, mismatch, timeout, cancellation, later failure, or success.
 
@@ -174,9 +174,9 @@ On restart, active state and pending approval are discarded; historical request 
 
 **Independent-review status:** Exposure boundary, atomicity, persistence, recovery, and no-refund behavior remain for review.
 
-### D8 — Aggregate SAS candidate policy
+### D8 — Historical: `5,497` aggregate SAS candidate policy
 
-**Status:** Project-owner candidate policy decision; not an external standard's target.
+**Status:** Historical, non-normative candidate policy; superseded by the current owner decision. Its `ε = 10^-8` / `N = 5,497` arithmetic is not current policy.
 
 **Decision:** Candidate per-opportunity term `≤ 2^-39`, subject to review; target `ε = 10^-8` per local epoch; maximum `N = 5,497` charged opportunities per epoch.
 
@@ -192,9 +192,9 @@ On restart, active state and pending approval are discarded; historical request 
 
 **Independent-review status:** The `2^-39` premise and the policy's fit remain for independent review.
 
-### D9 — Durable accounting epoch and explicit reset
+### D9 — Historical: durable accounting epoch and explicit reset
 
-**Status:** Candidate policy decision.
+**Status:** Historical, non-normative candidate policy; current owner policy resets the local opportunity budget on process restart and makes no lifetime claim.
 
 **Decision:** Maintain a durable local SAS security-accounting epoch. Do not replenish by timer; successful pairing does not reset the count. Exhaustion blocks further remote SAS opportunities. Only an explicit locally authorized reset creates a new epoch; a network-only attacker cannot trigger it. Reset does not erase earlier statistical exposure.
 
@@ -210,9 +210,9 @@ On restart, active state and pending approval are discarded; historical request 
 
 **Independent-review status:** Reset authorization, durable storage, epoch scope, and rollback claims remain for review.
 
-### D10 — Deterministic resource maxima and responder admission
+### D10 — Historical: eight-slot responder resource policy
 
-**Status:** Candidate resource-policy decision.
+**Status:** Historical, non-normative candidate resource policy. The byte/frame maxima remain in the candidate profile; the eight-active-Responder rule is superseded by the one-live-exposed-ceremony owner policy.
 
 **Decision:** Retain maxima of 65,536 bytes per complete wire frame; 16,384 per bootstrap; request ID 1–64; application identity 1–1,024; key algorithm 1–64 ASCII; public key 1–4,096; shared context 0–8,192; 65,536 bytes per generated Base64url cryptographic input; and at most eight active Responder ceremonies globally per applicable local security core.
 
@@ -296,9 +296,9 @@ On restart, active state and pending approval are discarded; historical request 
 
 **Independent-review status:** Candidate semantics are now defined; they are not externally reviewed or approved. Independent review must assess their fit with the complete candidate and confirm the pre-exposure ordering. Candidate B remains the prior P2 abstract selection; this vodozemac profile remains CANDIDATE — NOT SELECTED, and no remote construction is ready for final selection.
 
-### D15 — Remote admission, timeout, and exhaustion-resistance policy
+### D15 — Historical: remote admission and exhaustion-resistance policy
 
-**Status:** Candidate decision; independent review remains required.
+**Status:** Historical, non-normative candidate decision; its continuous-enabled exposure, exhaustion epoch, and related rate policies are superseded by the owner decision. Its timeout text remains candidate material where not in conflict.
 
 **Decision:** A Responder integration MUST provide an independently locally controlled remote-pairing admission policy. Reference/general interactive integrations SHOULD default to disabled and enable only after deliberate local action. Consumers MAY deliberately choose continuous enablement; it is permitted, remains subject to all counters, and accepts greater remote-exhaustion availability risk without violating the candidate's SAS bound by itself. A disabled gate rejects new `START`s before semantic/cryptographic work and is rechecked atomically at the responder SAS-exposure boundary. Closing or expiring the local admission window aborts active Responder runs and never resumes them. Neither admission changes nor the window reset/refund the durable SAS epoch.
 
@@ -324,6 +324,22 @@ An unauthenticated remote attacker may repeat `START → ACCEPT → valid attack
 
 **Independent-review status:** These are candidate decisions, not external review or approval. Candidate B remains the prior P2 abstract selection with its concrete instantiation gated. The vodozemac ceremony remains CANDIDATE — NOT SELECTED; no remote construction is ready for final selection, no production protocol is approved, and independent external review remains mandatory.
 
+### D16 — Corrected conditional per-pair argument and owner-selected exposure policy
+
+**Status:** Current proposed specification alignment; security argument remains unverified.
+
+**Decision:** Normative candidate behavior follows the owner policy: one live exposed remote ceremony per pairing authority; an authority-wide guard and process/session opportunity reservation are atomic; the 10-opportunity ceiling covers both roles and resets on process restart; each fresh exposure requires explicit local authorization. No persistent lifetime accounting is claimed. The proposed argument is `P_per_pair ≤ 2^-39 + δ`, and for a 10/10 joint window `P_joint ≤ 19 × 2^-39 + ε`, with symbolic assumption-dependent terms only.
+
+**Corrected argument boundary:** Define the match event over a pair of full SAS values from two live ceremonies between honest endpoints, mediated by an active network attacker. Allow adaptive scheduling, selective aborts, and learning one leg's SAS before choosing a contribution on another. Condition immediately before the remaining honest contribution becomes available: after `ACCEPT` validation and before fresh Initiator key exposure, or after attacker `I_pub` and before reveal of the Responder's committed key. Count a candidate pair when both SAS values are fixed and their live intervals overlap, without conditioning on an attacker view already containing both completed SAS values. The precise game and protocol-order argument are in profile §7.
+
+**Assumptions:** SHA-256 collision resistance for commitment binding; random-oracle-style SHA-256 commitment hiding; random-oracle-style treatment of the relevant HKDF-SHA256 construction; fresh unpredictable non-reused ephemeral keys; accepted 32-byte contributory X25519 inputs; correct exposure ordering; atomic authority-wide guard enforcement; and suitable treatment of adaptive scheduling. Ordinary HKDF PRF security alone is not claimed sufficient when the attacker knows the derived secret on its own leg. Concrete SHA-256/HKDF are not proven random oracles.
+
+**Review record:** The first AI review supported an ideal `2^-39` bound. The second adversarial AI review found no concrete attack exceeding that ideal term, but returned **PREVIOUS PROOF NOT ESTABLISHED** because assumptions and reasoning were incomplete. This decision records a conditional reconstruction, not concrete standard-model security, a qualified human audit, formal verification, or closure of CR-01.
+
+**Implementation obligations:** Fresh unpredictable ephemeral key material is required for each exposed ceremony. P4 must review fork, VM snapshot, restored-state, RNG-failure, and duplicated-state behavior on supported targets. Do not claim snapshot/rollback resistance without a verified mechanism. A deployment unable to guarantee freshness fails closed or falls outside the argument.
+
+**Does not establish:** The per-pair premise, numeric `δ`/`ε`, the concrete implementation's security, a lifetime bound, human-error probability, or protocol selection. Authority-wide cross-instance coordination mechanism remains an implementation obligation; a process-local mutex does not satisfy it.
+
 ## Current unresolved P3 gates
 
 These gates are based on the current candidate profile, P3 roadmap, and supporting assessments. They are not resolved by recording the decisions above.
@@ -331,8 +347,9 @@ These gates are based on the current candidate profile, P3 roadmap, and supporti
 - Request-ID generation, active-local collision handling, and routing policy are defined as candidate decisions (profile §4, D12); they are not an undecided candidate-design gate, but remain subject to independent review as part of the complete profile. Incoming peer-selected IDs remain attacker-controlled within the 1–64-byte syntax.
 - Exact vodozemac release, candidate feature selection, known RNG path, X25519 contributory behavior, and basic long-lived secret lifecycle are now specified as candidate decisions (profile §5, D13); they remain subject to independent review. Still open are independent acceptance of ThreadRng/getrandom and entropy adequacy, the actual P4 resolved dependency versions, supported target-platform RNG assumptions, Linux fork integration where applicable, and adequacy of temporary-material zeroization.
 - Application-context and expected-peer semantics are now defined as candidate local inputs, exact comparisons, and pre-exposure checks (profile §§4, 8, 10); their fit and enforcement still require independent review.
-- Local remote-admission semantics, the five-minute absolute timeout, 60-second inactivity timeout, global START limiter requirement, and global SAS-exposure limiter requirement are defined as candidate decisions (profile §11.1.1–§11.3, D15) and remain subject to independent review.
-- Exact numeric rates, cross-process/storage implementation, clock/suspend behavior, rate-state persistence needed for time-to-exhaustion claims, and multi-process coordination of admission, eight slots, both limiters, and the durable counter remain open (profile §§11.1.1–11.3, D15).
+- Current owner-policy requirements are one live exposed ceremony per pairing authority, one atomic authority-guard/session-opportunity reservation, explicit local authorization per exposure, and a 10-opportunity process/session ceiling across roles. The coordination mechanism and failure behavior require implementation review; a process-local mutex is insufficient.
+- Ephemeral freshness across supported targets remains open for P4 review, including fork, VM snapshot, restored state, RNG failure, and duplicated cryptographic state. No snapshot/rollback resistance is claimed without a verified mechanism. Clock/suspend behavior for the existing candidate timeouts also remains open.
+- Historical D15 global rate controls and eight-slot/durable-counter rules are non-normative; exact numeric rate decisions are not current protocol requirements.
 - The separate abstract same-device profile defines local framing/identity mechanics in its own profile and decision log; platform adapters and independent review remain P3 work. It is not defined by this vodozemac candidate.
 - Deterministic remote candidate vector values are now recorded in `vectors/p3-remote-vodozemac-draft-01.json`; broader state-machine, boundary, and deployment conformance coverage remains open (see [P3 conformance cases](p3-conformance-cases.md)).
 - Independent audit of the complete candidate remains open; internal research is not independent external security review.
@@ -342,9 +359,9 @@ These gates are based on the current candidate profile, P3 roadmap, and supporti
 ## Evidence and review boundaries
 
 - **Primary/external precedent:** [Matrix Client-Server v1.18 SAS ceremony](https://spec.matrix.org/v1.18/client-server-api/#short-authentication-string-sas-verification), [vodozemac SAS/MAC APIs](https://docs.rs/vodozemac/latest/vodozemac/sas/index.html), and [RFC 4648 Base64url](https://www.rfc-editor.org/rfc/rfc4648.html#section-5). These support only the behavior and APIs within their own scopes.
-- **Project adaptation:** Generic binary framing, bootstrap and context schema, transcript-derived ceremony identity, completion/cancellation details, decimal SAS adoption, `ε = 10^-8`, `N = 5,497`, accounting epochs, and resource maxima.
-- **Internal analysis:** Branch decisions and their alternatives were refined through repository research and internal adversarial analysis. This work is useful engineering rationale, not independent security review.
-- **Independent external review:** Still required. No internal AI, fresh-agent, or repository review is described here as an external audit or approval.
+- **Project adaptation:** Generic binary framing, bootstrap and context schema, transcript-derived ceremony identity, completion/cancellation details, decimal SAS adoption, current 10-opportunity session ceiling, and resource maxima. Historical `ε = 10^-8`, `N = 5,497`, and durable epochs are non-normative.
+- **Internal analysis:** The first AI review supported the ideal per-pair `2^-39` term. The second adversarial AI review found no concrete attack exceeding it but concluded **PREVIOUS PROOF NOT ESTABLISHED**. This work is engineering analysis, not a qualified human audit or formal verification.
+- **Independent external review:** Focused qualified human review of the corrected conditional argument and assumptions remains required. No AI or repository review substitutes for it.
 
 ## Repository history trace
 
