@@ -11,7 +11,7 @@ Device B:  4442 5768 1708
 If the values match, approve pairing.
 ```
 
-The value is compared on both devices. It is not typed and is not a password. The owner selected the vodozemac-based remote profile for experimental implementation; it has not been implemented or approved for production. No qualified professional audit or formal verification is claimed. **Do not use this project to protect production systems.**
+The value is compared on both devices. It is not typed and is not a password. The owner selected the vodozemac-based remote profile for experimental implementation. Its first native security-foundation increment is in progress; the pairing ceremony has not been implemented or approved for production. No qualified professional audit or formal verification is claimed. **Do not use this project to protect production systems.**
 
 ## Intended properties
 

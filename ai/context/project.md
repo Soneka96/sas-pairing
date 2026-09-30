@@ -8,7 +8,7 @@ Language-neutral human-authenticated pairing for exchanging bootstrap data. The 
 
 ## Current repository phase
 
-**PRE-ALPHA. P3 REMOTE EXPERIMENTAL SPECIFICATION FINALIZED; P4 IS NEXT AND AUTHORIZED.** No Rust implementation or executable cryptographic conformance tests are complete. Production use and release are not approved. The separate same-device profile and platform adapters remain candidate-only and do not block remote P4.
+**PRE-ALPHA. P3 REMOTE EXPERIMENTAL SPECIFICATION FINALIZED; P4 SECURITY FOUNDATION IN PROGRESS.** The first Windows Rust core increment implements OS-backed process ownership, ceremony authorization, shared exposure admission/accounting, and terminal cleanup, with same-session process tests. The remote cryptographic ceremony and conformance suite are not implemented. Cross-logon-session ownership verification is pending. Production use and release are not approved. The separate same-device profile and platform adapters remain candidate-only and do not block remote P4.
 
 ## P1 result contract
 

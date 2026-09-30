@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted as the intended implementation architecture; implementation has not started.
+Accepted as the intended implementation architecture. The first Rust security-foundation increment is underway in P4; protocol implementation and bindings remain incomplete.
 
 ## Context
 

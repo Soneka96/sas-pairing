@@ -2,13 +2,13 @@
 
 ## Status
 
-🔵 **EXPERIMENTAL IMPLEMENTATION AUTHORIZED — NOT STARTED OR COMPLETE.** The owner selected the corrected vodozemac remote profile and owner policy as the experimental baseline and waived the qualified-human-review prerequisite for this phase. F-02 is recorded as a false positive under the stated idealized assumptions; the complete argument remains conditional and is not formally verified. No production-security approval is granted.
+🔵 **EXPERIMENTAL IMPLEMENTATION IN PROGRESS — FIRST SECURITY-FOUNDATION INCREMENT IMPLEMENTED; P4 NOT COMPLETE.** The Windows Rust foundation now provides canonical trusted-scope registration, process ownership, ceremony-specific authorization, a shared guard and volatile ten-opportunity budget, and terminal cleanup. Same-session process tests pass. Cross-logon-session verification remains pending. The owner selected the corrected vodozemac remote profile and owner policy as the experimental baseline and waived the qualified-human-review prerequisite for this phase. F-02 is recorded as a false positive under the stated idealized assumptions; the complete argument remains conditional and is not formally verified. No production-security approval is granted.
 
 ## First implementation step
 
 Build and verify the Rust authority-ownership and exposure-admission foundation before implementing protocol messages: canonical local authority identity registration; one OS-backed exclusive owner lease; one shared active-ceremony guard; and one shared volatile ten-opportunity counter. Reservation must require fresh authorization for that exact ceremony and acquire the guard plus opportunity with one atomic outcome before any public contribution can be released. Keep protocol message handling out of this first slice.
 
-The step is complete only when two independent processes racing on the same authority produce exactly one owner, ambiguous acquisition fails closed, missing/stale authorization cannot reserve, a second thread/connection/role cannot win a second guard or overrun the tenth reservation, reservations are never refunded after a simulated post-reservation failure, clean release permits one replacement, and crash/recovery testing proves replacement cannot overlap a still-capable old owner. Use a second distinct authority to confirm independent state. Windows same-session and cross-session cases must be included before selecting/enabling a Windows mechanism. These are future implementation checks, not completed evidence.
+The first increment implements this step's reservation foundation and a real Windows file-lock lease. Same-session process contention, forced termination, normal release, distinct authorities, shared guard/budget, authorization, and reservation lifecycle checks pass. Cross-logon-session behavior has a reproducible manual procedure but remains unverified here. Cryptographic ceremony implementation and protocol conformance remain future work.
 
 ## Goal
 
