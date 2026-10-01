@@ -8,6 +8,7 @@ const MAGIC: &[u8; 7] = b"SASPAIR";
 pub(crate) const VERSION: u16 = 1;
 pub const MAX_FRAME: usize = 65_536;
 pub const MAX_BOOTSTRAP_FRAME: usize = 16_384;
+const START_TYPE: u8 = 0x01;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodecError {
@@ -215,7 +216,11 @@ impl Message {
             Self::Start {
                 request_id,
                 bootstrap,
-            } => (1, request_id, vec![bootstrap.canonical_bytes().to_vec()]),
+            } => (
+                START_TYPE,
+                request_id,
+                vec![bootstrap.canonical_bytes().to_vec()],
+            ),
             Self::Accept {
                 request_id,
                 commitment,
@@ -274,17 +279,11 @@ impl Message {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<DecodedMessage, CodecError> {
-    if bytes.len() > MAX_FRAME {
-        return Err(CodecError::Oversized);
+    let (kind, f) = parse_wire(bytes)?;
+    if kind == START_TYPE {
+        // The one START path: candidate structure first, then bootstrap semantics.
+        return StartCandidate::from_wire(bytes, &f)?.decode();
     }
-    let (kind, f) = parse(bytes)?;
-    if !(1..=9).contains(&kind) {
-        return Err(CodecError::UnknownType(kind));
-    }
-    if f.len() < 2 || f[0] != PROFILE_ID {
-        return Err(CodecError::InvalidField("profile_id"));
-    }
-    bounded(f[1], 1, 64, "request_id")?;
     let fixed = |i: usize| -> Result<[u8; 32], CodecError> {
         (*f.get(i).ok_or(CodecError::Truncated)?)
             .try_into()
@@ -292,10 +291,6 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedMessage, CodecError> {
     };
     let request_id = f[1].to_vec();
     let message = match kind {
-        1 if f.len() == 3 => Message::Start {
-            request_id,
-            bootstrap: Bootstrap::decode(f[2])?,
-        },
         2 if f.len() == 4 => Message::Accept {
             request_id,
             commitment: fixed(2)?,
@@ -347,6 +342,69 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedMessage, CodecError> {
         message,
         canonical: bytes.to_vec(),
     })
+}
+
+/// A complete syntactically framed START (P3 §11.1.1 START candidate boundary): one canonical
+/// §3.1 wire frame within `MAX_FRAME` with exact magic, version, field boundaries, and no
+/// trailing bytes; message type START with exactly its three fields; the exact profile ID; and
+/// a 1–64-byte request ID. The bootstrap field is still opaque, unvalidated bytes: its nested
+/// frame, size maxima, `key_algorithm` grammar, and every §8 check are START semantic
+/// validation, run by `decode` only after the authority START limiter has charged. It carries
+/// no authority, authentication, trust, ceremony identity, or limiter state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StartCandidate<'a> {
+    request_id: &'a [u8],
+    bootstrap: &'a [u8],
+    canonical: &'a [u8],
+}
+
+impl<'a> StartCandidate<'a> {
+    /// The START-specific structure on top of `parse_wire`; shared with `decode`.
+    fn from_wire(canonical: &'a [u8], f: &[&'a [u8]]) -> Result<Self, CodecError> {
+        if f.len() != 3 {
+            return Err(CodecError::InvalidField("field_count"));
+        }
+        Ok(Self {
+            request_id: f[1],
+            bootstrap: f[2],
+            canonical,
+        })
+    }
+
+    /// START semantic decoding of the opaque bootstrap field into the canonical message.
+    pub(crate) fn decode(self) -> Result<DecodedMessage, CodecError> {
+        Ok(DecodedMessage {
+            message: Message::Start {
+                request_id: self.request_id.to_vec(),
+                bootstrap: Bootstrap::decode(self.bootstrap)?,
+            },
+            canonical: self.canonical.to_vec(),
+        })
+    }
+}
+
+/// Structural START classification only; see `StartCandidate`. Any other wire type, and every
+/// frame/header/profile/request-ID failure, is a codec rejection and not a candidate.
+pub(crate) fn start_candidate(bytes: &[u8]) -> Result<StartCandidate<'_>, CodecError> {
+    let (kind, f) = parse_wire(bytes)?;
+    if kind != START_TYPE {
+        return Err(CodecError::InvalidField("message_type"));
+    }
+    StartCandidate::from_wire(bytes, &f)
+}
+
+/// The outer wire-message structure shared by `decode` and `start_candidate`: frame maximum,
+/// §3.1 framing, a defined wire type, and both common fields. Nothing type-specific.
+fn parse_wire(bytes: &[u8]) -> Result<(u8, Vec<&[u8]>), CodecError> {
+    let (kind, f) = parse(bytes)?;
+    if !(1..=9).contains(&kind) {
+        return Err(CodecError::UnknownType(kind));
+    }
+    if f.len() < 2 || f[0] != PROFILE_ID {
+        return Err(CodecError::InvalidField("profile_id"));
+    }
+    bounded(f[1], 1, 64, "request_id")?;
+    Ok((kind, f))
 }
 
 fn one(field: &[u8], name: &'static str) -> Result<u8, CodecError> {
@@ -587,5 +645,155 @@ mod tests {
         assert!(decode(&oversized_start).is_err());
         assert!(Bootstrap::new(vec![b'a'], vec![b'a'; 64], vec![0], vec![0; 8192]).is_ok());
         assert!(Bootstrap::new(vec![b'a'], b"a".to_vec(), vec![0], vec![0; 8193]).is_err());
+    }
+
+    /// A wire START carrying `bootstrap` verbatim as its opaque third field.
+    fn start_with_field(request_id: &[u8], bootstrap: &[u8]) -> Vec<u8> {
+        encode_frame(START_TYPE, &[PROFILE_ID, request_id, bootstrap], MAX_FRAME).unwrap()
+    }
+
+    #[test]
+    fn start_candidates_and_full_decode_share_one_structure() {
+        // Every authoritative vector: only START is a candidate, and its semantic decode is
+        // exactly the full decoder's result. No other type is reinterpreted.
+        for vector in [START, ACCEPT, IK, RK, BM, IF, RFA, IFA, CANCEL_I, CANCEL_R] {
+            let bytes = hex(vector);
+            match start_candidate(&bytes) {
+                Ok(candidate) => {
+                    assert_eq!(bytes[9], START_TYPE);
+                    assert_eq!(candidate.canonical, bytes.as_slice());
+                    assert_eq!(candidate.request_id, hex(RID).as_slice());
+                    assert_eq!(candidate.bootstrap, hex(IBOOT).as_slice());
+                    assert_eq!(candidate.decode().unwrap(), decode(&bytes).unwrap());
+                }
+                Err(error) => {
+                    assert_ne!(bytes[9], START_TYPE);
+                    assert_eq!(error, CodecError::InvalidField("message_type"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn structural_start_failures_are_not_candidates_and_match_decode() {
+        let valid = hex(START);
+        let profile_len_at = 10;
+        let request_id_len_at = 14 + PROFILE_ID.len();
+        let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
+        let mut bytes = valid.clone();
+        bytes[0] = b'X';
+        cases.push(("magic", bytes));
+        let mut bytes = valid.clone();
+        bytes[8] = 2;
+        cases.push(("version", bytes));
+        let mut bytes = valid.clone();
+        bytes[9] = 0x7f;
+        cases.push(("unknown type", bytes));
+        let mut bytes = valid.clone();
+        bytes[profile_len_at + 4] ^= 1;
+        cases.push(("profile", bytes));
+        cases.push(("request ID 0", start_with_field(&[], &hex(IBOOT))));
+        cases.push((
+            "request ID 65",
+            encode_frame(START_TYPE, &[PROFILE_ID, &[7; 65], &hex(IBOOT)], MAX_FRAME).unwrap(),
+        ));
+        cases.push(("truncated", valid[..valid.len() - 1].to_vec()));
+        cases.push(("trailing", [valid.as_slice(), &[0]].concat()));
+        cases.push(("extra field", [valid.as_slice(), &[0, 0, 0, 0]].concat()));
+        cases.push((
+            "missing field",
+            encode_frame(START_TYPE, &[PROFILE_ID, &hex(RID)], MAX_FRAME).unwrap(),
+        ));
+        let mut bytes = valid.clone();
+        bytes[request_id_len_at..request_id_len_at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        cases.push(("length overflow", bytes));
+        let field = MAX_FRAME + 1 - (10 + 4 + PROFILE_ID.len() + 4 + 16 + 4);
+        let oversized = [
+            &valid[..10],
+            &(PROFILE_ID.len() as u32).to_be_bytes(),
+            PROFILE_ID,
+            &16u32.to_be_bytes(),
+            &hex(RID),
+            &(field as u32).to_be_bytes(),
+            &vec![0; field],
+        ]
+        .concat();
+        assert_eq!(oversized.len(), MAX_FRAME + 1);
+        cases.push(("oversized", oversized));
+        for (name, bytes) in cases {
+            let candidate = start_candidate(&bytes).expect_err(name);
+            assert_eq!(decode(&bytes).unwrap_err(), candidate, "{name}");
+        }
+    }
+
+    #[test]
+    fn bootstrap_contents_are_start_semantics_after_the_candidate_boundary() {
+        let rid = hex(RID);
+        let valid = Bootstrap::decode(&hex(IBOOT)).unwrap();
+        let mut wrong_type = hex(IBOOT);
+        wrong_type[9] = 0x21;
+        let with = |key_algorithm: &[u8]| {
+            encode_frame(
+                0x20,
+                &[
+                    valid.application_identity(),
+                    key_algorithm,
+                    valid.public_key(),
+                    valid.shared_context(),
+                ],
+                MAX_FRAME,
+            )
+            .unwrap()
+        };
+        // A complete nested bootstrap above 16,384 bytes inside an outer frame within 65,536.
+        let over_cap = encode_frame(
+            0x20,
+            &[
+                &[b'a'; 1024],
+                b"ed25519",
+                &[0; 4096],
+                &[0; 3 * MAX_BOOTSTRAP_FRAME / 2],
+            ],
+            MAX_FRAME,
+        )
+        .unwrap();
+        assert!(over_cap.len() > MAX_BOOTSTRAP_FRAME);
+        for (name, bootstrap, expected) in [
+            ("garbage", vec![0xFF; 3], CodecError::Truncated),
+            ("empty", Vec::new(), CodecError::Truncated),
+            (
+                "nested type",
+                wrong_type,
+                CodecError::InvalidField("bootstrap"),
+            ),
+            (
+                "trailing",
+                [hex(IBOOT), vec![0]].concat(),
+                CodecError::Truncated,
+            ),
+            (
+                "key_algorithm grammar",
+                with(b"Ed25519"),
+                CodecError::InvalidField("key_algorithm"),
+            ),
+            (
+                "key_algorithm leading dot",
+                with(b".ed25519"),
+                CodecError::InvalidField("key_algorithm"),
+            ),
+            ("bootstrap maximum", over_cap, CodecError::Oversized),
+            (
+                "field maximum",
+                encode_frame(0x20, &[b"a", b"a", b"k", &[0; 8193]], MAX_FRAME).unwrap(),
+                CodecError::InvalidField("shared_context"),
+            ),
+        ] {
+            let bytes = start_with_field(&rid, &bootstrap);
+            assert!(bytes.len() <= MAX_FRAME, "{name}");
+            let candidate = start_candidate(&bytes).expect(name);
+            assert_eq!(candidate.bootstrap, bootstrap.as_slice(), "{name}");
+            assert_eq!(candidate.decode().unwrap_err(), expected, "{name}");
+            assert_eq!(decode(&bytes).unwrap_err(), expected, "{name}");
+        }
     }
 }

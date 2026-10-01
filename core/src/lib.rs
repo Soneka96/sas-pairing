@@ -13,6 +13,10 @@ mod crypto;
 mod deadline;
 pub mod protocol;
 mod request_id;
+mod start_limiter;
+
+use deadline::{Clock, system_clock};
+use start_limiter::{StartAdmission, StartLimiter};
 
 const DOMAIN: &[u8] = b"sas-pairing-authority-v1";
 const MAX_OPPORTUNITIES: u8 = 10;
@@ -93,6 +97,10 @@ struct State {
     identity: Vec<u8>,
     shared: Mutex<Shared>,
     ownership: Mutex<Option<os_lock::Lease>>,
+    /// The authority's one monotonic START-limiter clock for its whole owner lifetime, so all
+    /// limiter instants share one origin. Never a ceremony's clock; never wall-clock time.
+    /// Read only while `shared` is held; it must never take `shared` itself.
+    limiter_clock: Clock,
 }
 
 struct Shared {
@@ -106,6 +114,9 @@ struct Shared {
     pending_responders: usize,
     /// Expensive preliminary operations in progress, each held by one `PreliminaryPermit`.
     preliminary_operations: usize,
+    /// The authority-wide START admission limiter. Volatile, never persisted, never reset by
+    /// any ceremony, connection, or refusal event; only a new owner session starts it fresh.
+    start_limiter: StartLimiter,
 }
 
 impl Shared {
@@ -139,6 +150,19 @@ pub(crate) enum RequestIdReservation {
 pub(crate) enum PendingAdmission {
     Admitted,
     /// Only a Responder ceremony without a slot may acquire one; nothing changed.
+    NotEligible,
+}
+
+/// Outcome of one atomic authority START limiter decision for a new Responder candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartLimit {
+    /// Both components permitted and both are charged; the charge is never refunded.
+    Admitted,
+    /// Generic refusal by either component; nothing was charged.
+    Refused,
+    /// The limiter clock was unusable: refused with the limiter state unchanged.
+    UnsafeClock,
+    /// Only a Responder ceremony without a pending slot may present a candidate; no change.
     NotEligible,
 }
 
@@ -190,6 +214,17 @@ impl fmt::Debug for Authorization {
 impl TrustedAuthority {
     /// Registers one canonical scope. The trusted registry must issue one stable scope per capability.
     pub fn register(scope: &[u8]) -> Result<Self, Error> {
+        Self::register_with(scope, system_clock())
+    }
+
+    /// `register` with one injected authority START-limiter clock (tests only; registration
+    /// succeeds only where an ownership lease exists).
+    #[cfg(all(test, windows))]
+    pub(crate) fn register_with_limiter_clock(scope: &[u8], clock: Clock) -> Result<Self, Error> {
+        Self::register_with(scope, clock)
+    }
+
+    fn register_with(scope: &[u8], limiter_clock: Clock) -> Result<Self, Error> {
         if scope.is_empty() || scope.len() > u32::MAX as usize {
             return Err(Error::InvalidScope);
         }
@@ -217,8 +252,10 @@ impl TrustedAuthority {
                 initiator_request_ids: HashSet::new(),
                 pending_responders: 0,
                 preliminary_operations: 0,
+                start_limiter: StartLimiter::new(),
             }),
             ownership: Mutex::new(Some(lease)),
+            limiter_clock,
         })))
     }
 
@@ -351,6 +388,42 @@ impl CeremonyExecutor {
             .map_err(|_| Error::OwnershipUncertain)?;
         shared.release_pending_responder(&mut ceremony.pending_responder);
         Ok(())
+    }
+
+    /// One atomic authority-wide START limiter decision for a new Responder candidate that
+    /// `ceremony` is about to process (P3 §11.1.1). Under the shared lock it reads the
+    /// authority's limiter clock, applies elapsed-time bookkeeping, and admits only if both the
+    /// burst and rolling components permit, charging both; otherwise it charges neither. An
+    /// admission is final: no later outcome refunds it. It never waits or queues and touches
+    /// neither the guard, the opportunity budget, the pending slots, nor the permits.
+    pub(crate) fn admit_start(&self, ceremony: &Ceremony) -> Result<StartLimit, Error> {
+        if ceremony.terminal {
+            return Err(Error::Terminated);
+        }
+        if !Arc::ptr_eq(&self.0, &ceremony.authority.0) {
+            return Err(Error::StaleAuthorization);
+        }
+        if ceremony.role != Role::Responder || ceremony.pending_responder.is_some() {
+            return Ok(StartLimit::NotEligible);
+        }
+        let mut shared = self
+            .0
+            .shared
+            .lock()
+            .map_err(|_| Error::OwnershipUncertain)?;
+        // `now` is read inside the decision, so readings are ordered with the state they change.
+        let now = self.0.limiter_clock.now();
+        Ok(match shared.start_limiter.admit(now) {
+            StartAdmission::Admitted => StartLimit::Admitted,
+            StartAdmission::Refused => StartLimit::Refused,
+            StartAdmission::UnsafeClock => StartLimit::UnsafeClock,
+        })
+    }
+
+    /// Read-only view of this authority's START limiter (tests only).
+    #[cfg(all(test, windows))]
+    pub(crate) fn start_limiter_snapshot(&self) -> start_limiter::StartLimiterSnapshot {
+        self.0.shared.lock().unwrap().start_limiter.snapshot()
     }
 
     /// Immediately takes one of this authority's expensive-operation permits, or refuses with

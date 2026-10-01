@@ -9,14 +9,15 @@
 //! The honest Initiator generates its 16-byte request ID with the OS CSPRNG and atomically
 //! reserves it in the authority's active local Initiator namespace before START can exist;
 //! fixed request IDs are accepted only by `#[cfg(test)]` constructors.
-//! P3 11.1.1 core pre-exposure controls: at most 4 pending (accepted, unexposed) Responders and
-//! 2 concurrent expensive preliminary operations per authority, and a fixed 60-second pending
-//! resource lifetime from admission. The START admission limiter, connection/session routing,
-//! transport controls, and timer scheduling are not implemented.
+//! P3 11.1.1 core pre-exposure controls: the authority-wide START admission limiter (burst 4,
+//! 1 token / 5 s; at most 12 per rolling 60 s), at most 4 pending (accepted, unexposed)
+//! Responders and 2 concurrent expensive preliminary operations per authority, and a fixed
+//! 60-second pending resource lifetime from admission. Connection/session routing, transport
+//! controls, and timer scheduling are not implemented.
 #![allow(dead_code)] // The protocol remains internal until later P4 work defines its complete API.
 use crate::{
     Authorization, Ceremony, CeremonyExecutor, Error as OwnerError, PendingAdmission,
-    RequestIdReservation, Role, TrustedAuthority,
+    RequestIdReservation, Role, StartLimit, TrustedAuthority,
     crypto::{self, Completion, EphemeralSas, Established},
     deadline::{
         CeremonyDeadlines, Clock, Deadline, Inactivity, Verdict, pending_expired, system_clock,
@@ -595,15 +596,21 @@ impl RemoteCeremony {
         Self::responder_with_clock(clock, executor, admission, start_bytes, local, expected)
     }
 
-    /// `responder` with an injected monotonic clock used for this run's whole lifetime.
+    /// `responder` with an injected monotonic clock used for this run's whole lifetime. The
+    /// START limiter never uses it: it reads only the authority's own limiter clock.
     ///
-    /// P3 10 order, minus the START limiter (not implemented): canonical decode (the codec
-    /// also checks bootstrap grammar) -> one preliminary-work permit -> semantic bootstrap,
-    /// context, and expected-peer validation -> read the clock, then immediately acquire a
-    /// pending Responder slot recording that instant -> fresh ephemeral state, commitment, and
-    /// ACCEPT -> release the permit. Permit or slot refusal is `Owner(ResourceLimited)` with no
-    /// ACCEPT. Neither spends an opportunity nor touches the exposed-ceremony guard. Any
-    /// failure after admission drops `admission`, whose cleanup releases the slot.
+    /// P3 10 order: structural START candidate parse (frame, header, type, field count,
+    /// profile, request ID; the bootstrap stays opaque) -> one atomic authority START limiter
+    /// admission -> one preliminary-work permit -> START semantic validation (nested bootstrap
+    /// frame, maxima, grammar, context, expected peer) -> read the clock, then immediately
+    /// acquire a pending Responder slot recording that instant -> fresh ephemeral state,
+    /// commitment, and ACCEPT -> release the permit. A codec rejection before the candidate
+    /// boundary charges nothing. Limiter, permit, or slot refusal is `Owner(ResourceLimited)`
+    /// with no ACCEPT; an unusable limiter clock is `ClockUnavailable`. Once the limiter has
+    /// admitted, every later failure keeps its charge. Nothing spends an opportunity or touches
+    /// the exposed-ceremony guard. Any failure after slot admission drops `admission`, whose
+    /// cleanup releases the slot. A START routed to an existing run is never a new candidate:
+    /// it goes to `receive_start_duplicate`, which does not reach the limiter.
     pub(crate) fn responder_with_clock(
         clock: Clock,
         executor: CeremonyExecutor,
@@ -612,18 +619,23 @@ impl RemoteCeremony {
         local: Bootstrap,
         expected: Option<Bootstrap>,
     ) -> Result<(Self, Vec<u8>), CeremonyError> {
-        let start = protocol::decode(start_bytes)?;
-        let (request_id, peer) = match &start.message {
-            Message::Start {
-                request_id,
-                bootstrap,
-            } => (request_id.clone(), bootstrap),
-            _ => return Err(CeremonyError::InvalidState),
-        };
-        if admission.role() != Role::Responder {
-            return Err(CeremonyError::InvalidState);
+        let candidate = protocol::start_candidate(start_bytes)?;
+        match executor.admit_start(&admission)? {
+            StartLimit::Admitted => {}
+            StartLimit::Refused => return Err(CeremonyError::Owner(OwnerError::ResourceLimited)),
+            StartLimit::UnsafeClock => return Err(CeremonyError::ClockUnavailable),
+            StartLimit::NotEligible => return Err(CeremonyError::InvalidState),
         }
         let permit = executor.preliminary_permit()?;
+        let start = candidate.decode()?;
+        let Message::Start {
+            request_id,
+            bootstrap: peer,
+        } = &start.message
+        else {
+            return Err(CeremonyError::InvalidState);
+        };
+        let request_id = request_id.clone();
         validate_bootstraps(&local, peer, expected.as_ref())?;
         // Read first, then admit: the fixed pending lifetime may start marginally early under
         // contention but never late. P3 11.3 starts the absolute deadline at the same instant,
@@ -1840,11 +1852,16 @@ mod tests {
             ABSOLUTE_DEADLINE, INACTIVITY_DEADLINE, ManualClock, PENDING_PRE_EXPOSURE_DEADLINE,
         },
         protocol,
+        start_limiter::{ROLLING_WINDOW, StartLimiterSnapshot},
     };
     use serde_json::Value;
     use std::{
         collections::HashSet,
-        sync::{Arc, Barrier, mpsc},
+        sync::{
+            Arc, Barrier,
+            atomic::{AtomicUsize, Ordering as AtomicOrdering},
+            mpsc,
+        },
     };
 
     fn hex(value: &str) -> Vec<u8> {
@@ -2441,12 +2458,22 @@ mod tests {
         ei: CeremonyExecutor,
         r: TrustedAuthority,
         er: CeremonyExecutor,
+        /// Each authority's one injected START-limiter clock; never a ceremony clock.
+        li: Arc<ManualClock>,
+        lr: Arc<ManualClock>,
     }
     impl Authorities {
         fn new(scope: &str) -> Self {
-            let (i, ei) = executor(format!("{scope}-i").as_bytes());
-            let (r, er) = executor(format!("{scope}-r").as_bytes());
-            Self { i, ei, r, er }
+            let (i, ei, li) = limited_executor(format!("{scope}-i").as_bytes());
+            let (r, er, lr) = limited_executor(format!("{scope}-r").as_bytes());
+            Self {
+                i,
+                ei,
+                r,
+                er,
+                li,
+                lr,
+            }
         }
         fn release(self) {
             drop(self.ei);
@@ -2464,6 +2491,23 @@ mod tests {
         fn identity(&self) -> [u8; 32] {
             *self.i.presentation().unwrap().ceremony_identity()
         }
+    }
+
+    /// An authority whose START limiter reads one test-controlled clock.
+    fn limited_executor(scope: &[u8]) -> (TrustedAuthority, CeremonyExecutor, Arc<ManualClock>) {
+        let clock = ManualClock::new();
+        let authority =
+            TrustedAuthority::register_with_limiter_clock(scope, clock.clone()).unwrap();
+        let executor = authority.executor();
+        (authority, executor, clock)
+    }
+
+    /// Lets one full rolling window of limiter time pass on both authorities, so their START
+    /// limiters are full and empty again. Tests of other controls use this before each new
+    /// Responder so only the control under test can refuse; limiter tests never do.
+    fn refill_start_limiters(a: &Authorities) {
+        a.li.advance(ROLLING_WINDOW);
+        a.lr.advance(ROLLING_WINDOW);
     }
 
     fn vector_request_id() -> Vec<u8> {
@@ -2501,7 +2545,13 @@ mod tests {
     }
 
     /// Runs one legal key exchange from a created, not yet started Initiator.
-    fn establish_from(a: &Authorities, mut i: RemoteCeremony, clock_r: Clock) -> Pair {
+    fn establish_from(a: &Authorities, i: RemoteCeremony, clock_r: Clock) -> Pair {
+        refill_start_limiters(a);
+        exchange_keys(a, i, clock_r)
+    }
+
+    /// `establish_from` without refilling the START limiters.
+    fn exchange_keys(a: &Authorities, mut i: RemoteCeremony, clock_r: Clock) -> Pair {
         assert_no_live_sas(&i);
         let start = i.start().unwrap();
         let (mut r, accept) = RemoteCeremony::responder_with_clock(
@@ -5405,6 +5455,7 @@ mod tests {
 
     /// A Responder that accepted the vector START at the clock's current value.
     fn timed_responder(a: &Authorities, clock: &Arc<ManualClock>) -> RemoteCeremony {
+        refill_start_limiters(a);
         RemoteCeremony::responder_with_clock(
             clock.clone(),
             a.er.clone(),
@@ -6937,7 +6988,8 @@ mod tests {
 
     // P3 11.1.1 core pre-exposure resource controls: at most 4 pending Responders and 2
     // expensive preliminary operations per authority, and the fixed 60-second pending resource
-    // lifetime from admission. The START limiter and transport controls are not implemented.
+    // lifetime from admission. Transport controls are not implemented. These tests refill the
+    // separate START limiter before each Responder; its own tests follow below.
 
     /// Accepted but unexposed Responder runs currently counted by the authority.
     fn pending(executor: &CeremonyExecutor) -> usize {
@@ -6949,8 +7001,10 @@ mod tests {
         executor.0.shared.lock().unwrap().preliminary_operations
     }
 
-    /// A Responder on `a.er` for the vector START, admitted at `clock`'s current value.
+    /// A Responder on `a.er` for the vector START, admitted at `clock`'s current value, with
+    /// a refilled START limiter.
     fn admit(a: &Authorities, clock: Clock) -> Result<(RemoteCeremony, Vec<u8>), CeremonyError> {
+        refill_start_limiters(a);
         RemoteCeremony::responder_with_clock(
             clock,
             a.er.clone(),
@@ -7650,5 +7704,793 @@ mod tests {
             Ok(_) => panic!("shared state unexpectedly recovered"),
         }
         a.release();
+    }
+
+    // P3 11.1.1 authority-wide START admission limiter (R-OWNER-025, -027, -034 to -039). Each
+    // test drives the authority's one injected limiter clock (`lr`) by hand; ceremony clocks are
+    // separate. Source address, socket, connection, and listener rotation are transport-dependent
+    // and not exercised: no transport exists.
+
+    /// The Responder authority's START limiter.
+    fn limiter(a: &Authorities) -> StartLimiterSnapshot {
+        a.er.start_limiter_snapshot()
+    }
+
+    /// Asserts the limiter's whole tokens and live rolling records.
+    #[track_caller]
+    fn assert_limiter(a: &Authorities, tokens: u8, rolling: usize) {
+        let state = limiter(a);
+        assert_eq!(
+            (state.tokens, state.rolling),
+            (tokens, rolling),
+            "{state:?}"
+        );
+    }
+
+    /// No pending state, permit, guard, or opportunity effect.
+    #[track_caller]
+    fn assert_no_resources(a: &Authorities) {
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+    }
+
+    /// A new Responder candidate on `a.er` with whatever limiter state exists.
+    fn present(
+        a: &Authorities,
+        start: &[u8],
+        local: Bootstrap,
+        expected: Option<Bootstrap>,
+    ) -> Result<(RemoteCeremony, Vec<u8>), CeremonyError> {
+        RemoteCeremony::responder_with_clock(
+            system_clock(),
+            a.er.clone(),
+            a.er.begin(Role::Responder).unwrap(),
+            start,
+            local,
+            expected,
+        )
+    }
+
+    fn responder_bootstrap() -> Bootstrap {
+        bootstrap(&decoded("ACCEPT"), false)
+    }
+
+    /// A valid new START candidate for the vector Responder bootstrap; checks its ACCEPT.
+    fn present_valid(a: &Authorities, start: &[u8]) -> Result<RemoteCeremony, CeremonyError> {
+        present(a, start, responder_bootstrap(), None).map(|(run, accept)| {
+            assert!(matches!(
+                protocol::decode(&accept).unwrap().message,
+                Message::Accept { .. }
+            ));
+            run
+        })
+    }
+
+    /// A vector-START Responder whose ceremony clock is `clock`, with the current limiter.
+    fn present_with_clock(
+        a: &Authorities,
+        clock: Arc<ManualClock>,
+    ) -> Result<RemoteCeremony, CeremonyError> {
+        RemoteCeremony::responder_with_clock(
+            clock,
+            a.er.clone(),
+            a.er.begin(Role::Responder).unwrap(),
+            &vector("START"),
+            responder_bootstrap(),
+            None,
+        )
+        .map(|(run, _)| run)
+    }
+
+    /// A canonical wire START whose third field is `field`, verbatim and unvalidated.
+    fn raw_start(request_id: &[u8], field: &[u8]) -> Vec<u8> {
+        let mut out = b"SASPAIR\x00\x01\x01".to_vec();
+        for value in [protocol::PROFILE_ID, request_id, field] {
+            out.extend_from_slice(&(value.len() as u32).to_be_bytes());
+            out.extend_from_slice(value);
+        }
+        out
+    }
+
+    /// A valid START from the vector Initiator bootstrap with another `application_identity`.
+    fn start_as(request_id: &[u8], identity: &[u8]) -> Vec<u8> {
+        let b = bootstrap(&decoded("START"), true);
+        Message::Start {
+            request_id: request_id.to_vec(),
+            bootstrap: Bootstrap::new(
+                identity.to_vec(),
+                b.key_algorithm().to_vec(),
+                b.public_key().to_vec(),
+                b.shared_context().to_vec(),
+            )
+            .unwrap(),
+        }
+        .encode()
+        .unwrap()
+    }
+
+    /// One limiter decision through the authority primitive, for a fresh Responder ceremony.
+    fn decide(executor: &CeremonyExecutor) -> StartLimit {
+        executor
+            .admit_start(&executor.begin(Role::Responder).unwrap())
+            .unwrap()
+    }
+
+    // R-OWNER-034 and R-OWNER-027 through real Responder admission.
+    #[test]
+    fn burst_admits_four_same_instant_starts_then_refills_one_per_five_seconds() {
+        let a = Authorities::new("start-limiter-burst");
+        assert_eq!(
+            limiter(&a),
+            StartLimiterSnapshot {
+                tokens: 4,
+                remainder: Duration::ZERO,
+                last: Duration::ZERO,
+                rolling: 0,
+            },
+            "registration charges nothing"
+        );
+        // Ceremony clocks far apart in value never influence the limiter.
+        for value in [0, 1_000, 7, 86_400] {
+            let clock = ManualClock::new();
+            clock.set(secs(value));
+            drop(present_with_clock(&a, clock).unwrap());
+        }
+        assert_limiter(&a, 0, 4);
+        assert_no_resources(&a);
+
+        // The fifth at the same limiter instant is refused generically: no state of any kind.
+        let before = limiter(&a);
+        assert_eq!(
+            present_valid(&a, &vector("START")).err(),
+            Some(RESOURCE_LIMITED)
+        );
+        assert_eq!(limiter(&a), before);
+        assert_no_resources(&a);
+
+        // R-OWNER-027: a flood of refusals spends, refunds, and resets nothing.
+        for _ in 0..1_000 {
+            assert_eq!(
+                present_valid(&a, &vector("START")).err(),
+                Some(RESOURCE_LIMITED)
+            );
+        }
+        assert_eq!(limiter(&a), before);
+        assert_no_resources(&a);
+
+        a.lr.set(secs(5) - NS);
+        assert_eq!(
+            present_valid(&a, &vector("START")).err(),
+            Some(RESOURCE_LIMITED)
+        );
+        assert_limiter(&a, 0, 4);
+        a.lr.set(secs(5));
+        drop(present_valid(&a, &vector("START")).unwrap());
+        assert_limiter(&a, 0, 5);
+        assert_eq!(
+            present_valid(&a, &vector("START")).err(),
+            Some(RESOURCE_LIMITED)
+        );
+
+        // Ten seconds without an admission after that: exactly two.
+        a.lr.set(secs(15));
+        for _ in 0..2 {
+            drop(present_valid(&a, &vector("START")).unwrap());
+        }
+        assert_eq!(
+            present_valid(&a, &vector("START")).err(),
+            Some(RESOURCE_LIMITED)
+        );
+        assert_limiter(&a, 0, 7);
+
+        // Ten minutes idle: exactly four, never more.
+        a.lr.set(secs(615));
+        for _ in 0..4 {
+            drop(present_valid(&a, &vector("START")).unwrap());
+        }
+        assert_eq!(
+            present_valid(&a, &vector("START")).err(),
+            Some(RESOURCE_LIMITED)
+        );
+        assert_limiter(&a, 0, 4);
+        assert_no_resources(&a);
+        a.release();
+    }
+
+    // R-OWNER-035 through the authority primitive and its one shared clock.
+    #[test]
+    fn rolling_cap_schedule_through_the_authority() {
+        let a = Authorities::new("start-limiter-rolling");
+        for _ in 0..4 {
+            assert_eq!(decide(&a.er), StartLimit::Admitted);
+        }
+        for second in (5..=40).step_by(5) {
+            a.lr.set(secs(second));
+            assert_eq!(decide(&a.er), StartLimit::Admitted, "t={second}");
+        }
+        assert_limiter(&a, 0, 12);
+        a.lr.set(secs(45));
+        assert_eq!(decide(&a.er), StartLimit::Refused);
+        assert_limiter(&a, 1, 12);
+        a.lr.set(secs(60) - Duration::from_millis(1));
+        assert_eq!(decide(&a.er), StartLimit::Refused);
+        assert_limiter(&a, 3, 12);
+        a.lr.set(secs(60));
+        assert_eq!(decide(&a.er), StartLimit::Admitted);
+        assert_limiter(&a, 3, 9);
+        for _ in 0..3 {
+            assert_eq!(decide(&a.er), StartLimit::Admitted);
+        }
+        assert_eq!(decide(&a.er), StartLimit::Refused);
+        assert_limiter(&a, 0, 12);
+        assert_no_resources(&a);
+        a.release();
+    }
+
+    // R-OWNER-036 (a): semantic failures are charged first and never refunded.
+    #[test]
+    fn semantically_invalid_starts_are_charged_and_never_refunded() {
+        let rid = vector_request_id();
+        let peer = bootstrap(&decoded("START"), true);
+        let nested = |key_algorithm: &[u8], shared_context: &[u8]| {
+            let mut frame = b"SASPAIR\x00\x01\x20".to_vec();
+            for value in [
+                peer.application_identity(),
+                key_algorithm,
+                peer.public_key(),
+                shared_context,
+            ] {
+                frame.extend_from_slice(&(value.len() as u32).to_be_bytes());
+                frame.extend_from_slice(value);
+            }
+            frame
+        };
+        // A nested bootstrap above 16,384 bytes in an outer frame within 65,536.
+        let oversized = nested(b"ed25519", &[0; 3 * protocol::MAX_BOOTSTRAP_FRAME / 2]);
+        assert!(oversized.len() > protocol::MAX_BOOTSTRAP_FRAME);
+        let other_context = Bootstrap::new(
+            responder_bootstrap().application_identity().to_vec(),
+            responder_bootstrap().key_algorithm().to_vec(),
+            responder_bootstrap().public_key().to_vec(),
+            b"another context".to_vec(),
+        )
+        .unwrap();
+        let other_peer = Bootstrap::new(
+            b"someone else".to_vec(),
+            peer.key_algorithm().to_vec(),
+            peer.public_key().to_vec(),
+            peer.shared_context().to_vec(),
+        )
+        .unwrap();
+        let codec = |error| CeremonyError::Codec(error);
+        let cases = vec![
+            (
+                "malformed nested bootstrap",
+                raw_start(&rid, &[0xFF; 3]),
+                responder_bootstrap(),
+                None,
+                codec(protocol::CodecError::Truncated),
+            ),
+            (
+                "nested bootstrap above 16,384 bytes",
+                raw_start(&rid, &oversized),
+                responder_bootstrap(),
+                None,
+                codec(protocol::CodecError::Oversized),
+            ),
+            (
+                "key_algorithm grammar",
+                raw_start(&rid, &nested(b"Ed25519", peer.shared_context())),
+                responder_bootstrap(),
+                None,
+                codec(protocol::CodecError::InvalidField("key_algorithm")),
+            ),
+            (
+                "shared-context mismatch",
+                vector("START"),
+                other_context,
+                None,
+                CeremonyError::SharedContextMismatch,
+            ),
+            (
+                "expected-peer mismatch",
+                vector("START"),
+                responder_bootstrap(),
+                Some(other_peer),
+                CeremonyError::ExpectedPeerMismatch,
+            ),
+        ];
+        for (index, (name, start, local, expected, error)) in cases.into_iter().enumerate() {
+            assert!(start.len() <= protocol::MAX_FRAME, "{name}");
+            let a = Authorities::new(&format!("start-limiter-semantic-{index}"));
+            a.lr.set(secs(30));
+            assert_limiter(&a, 4, 0);
+            let macs = crypto::mac_operations();
+            assert_eq!(
+                present(&a, &start, local, expected).err(),
+                Some(error),
+                "{name}"
+            );
+            assert_limiter(&a, 3, 1);
+            assert_no_resources(&a);
+            assert_eq!(crypto::mac_operations(), macs, "{name}");
+            // A valid START at the same instant observes the charge and proceeds normally.
+            let run = present_valid(&a, &vector("START")).unwrap();
+            assert_limiter(&a, 2, 2);
+            assert_eq!((pending(&a.er), operations(&a.er)), (1, 0));
+            assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+            drop(run);
+            a.release();
+        }
+    }
+
+    // R-OWNER-036 (b): not a START candidate, so nothing is charged.
+    #[test]
+    fn structurally_invalid_start_shaped_input_is_never_charged() {
+        let valid = vector("START");
+        let rid = vector_request_id();
+        let field = bootstrap(&decoded("START"), true)
+            .canonical_bytes()
+            .to_vec();
+        let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
+        let mut bytes = valid.clone();
+        bytes[0] = b'X';
+        cases.push(("magic", bytes));
+        let mut bytes = valid.clone();
+        bytes[8] = 2;
+        cases.push(("header version", bytes));
+        let mut bytes = valid.clone();
+        bytes[9] = 0x7f;
+        cases.push(("unknown outer type", bytes));
+        cases.push(("another wire type", vector("ACCEPT")));
+        let mut bytes = valid.clone();
+        bytes[14] ^= 1;
+        cases.push(("profile", bytes));
+        cases.push(("request ID 0", raw_start(&[], &field)));
+        cases.push(("request ID 65", raw_start(&[7; 65], &field)));
+        cases.push(("truncated", valid[..valid.len() - 1].to_vec()));
+        cases.push(("trailing byte", [valid.as_slice(), &[0]].concat()));
+        cases.push(("four fields", [valid.as_slice(), &[0, 0, 0, 0]].concat()));
+        let filler = protocol::MAX_FRAME - raw_start(&rid, &[]).len() + 1;
+        let oversized = raw_start(&rid, &vec![0; filler]);
+        assert_eq!(oversized.len(), protocol::MAX_FRAME + 1);
+        cases.push(("frame above 65,536 bytes", oversized));
+
+        let a = Authorities::new("start-limiter-structural");
+        a.lr.set(secs(30));
+        let fresh = limiter(&a);
+        for (name, bytes) in &cases {
+            assert!(
+                matches!(present_valid(&a, bytes), Err(CeremonyError::Codec(_))),
+                "{name}"
+            );
+            assert_eq!(limiter(&a), fresh, "{name}");
+            assert_no_resources(&a);
+        }
+        // Still codec rejections, never limiter refusals, once the limiter is exhausted.
+        for _ in 0..4 {
+            drop(present_valid(&a, &valid).unwrap());
+        }
+        let exhausted = limiter(&a);
+        assert_eq!(exhausted.tokens, 0);
+        for (name, bytes) in &cases {
+            assert!(
+                matches!(present_valid(&a, bytes), Err(CeremonyError::Codec(_))),
+                "{name}"
+            );
+            assert_eq!(limiter(&a), exhausted, "{name}");
+        }
+        assert_no_resources(&a);
+        a.release();
+    }
+
+    // R-OWNER-025 / R-OWNER-036 (c): a permit refusal after admission keeps the charge.
+    #[test]
+    fn permit_refusal_after_limiter_admission_keeps_the_charge() {
+        let a = Authorities::new("start-limiter-permit");
+        let busy = [
+            a.er.preliminary_permit().unwrap(),
+            a.er.preliminary_permit().unwrap(),
+        ];
+        assert_eq!(
+            present_valid(&a, &vector("START")).err(),
+            Some(RESOURCE_LIMITED)
+        );
+        assert_limiter(&a, 3, 1);
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 2));
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        drop(busy);
+        assert_no_resources(&a);
+        let run = present_valid(&a, &vector("START")).unwrap();
+        assert_limiter(&a, 2, 2);
+        drop(run);
+        a.release();
+    }
+
+    // R-OWNER-036 (c): a pending-capacity refusal after admission keeps the charge.
+    #[test]
+    fn pending_cap_refusal_after_limiter_admission_keeps_the_charge() {
+        let a = Authorities::new("start-limiter-pending");
+        let mut runs: Vec<_> = (0..4)
+            .map(|_| present_valid(&a, &vector("START")).unwrap())
+            .collect();
+        assert_limiter(&a, 0, 4);
+        a.lr.set(secs(5));
+        // Admitted and charged by the limiter, validated, then refused for capacity.
+        assert_eq!(
+            present_valid(&a, &vector("START")).err(),
+            Some(RESOURCE_LIMITED)
+        );
+        assert_limiter(&a, 0, 5);
+        assert_eq!((pending(&a.er), operations(&a.er)), (4, 0));
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        // A freed slot does not restore the spent token: now the limiter refuses.
+        drop(runs.pop());
+        assert_eq!(
+            present_valid(&a, &vector("START")).err(),
+            Some(RESOURCE_LIMITED)
+        );
+        assert_limiter(&a, 0, 5);
+        assert_eq!(pending(&a.er), 3);
+        drop(runs);
+        assert_no_resources(&a);
+        a.release();
+    }
+
+    // P3 10 order: candidate -> limiter -> permit -> semantics -> pending -> ephemeral/ACCEPT.
+    #[test]
+    fn responder_admission_order_is_exact() {
+        let a = Authorities::new("start-limiter-order");
+        let malformed = raw_start(&vector_request_id(), &[0xFF; 3]);
+        let codec = |result: Result<RemoteCeremony, CeremonyError>| {
+            matches!(result, Err(CeremonyError::Codec(_)))
+        };
+
+        // Limiter before permit: with no permit available the limiter is still charged.
+        let busy = [
+            a.er.preliminary_permit().unwrap(),
+            a.er.preliminary_permit().unwrap(),
+        ];
+        assert_eq!(
+            present_valid(&a, &vector("START")).err(),
+            Some(RESOURCE_LIMITED)
+        );
+        assert_limiter(&a, 3, 1);
+        // Permit before semantics: a malformed bootstrap is refused for the permit, unparsed.
+        assert_eq!(present_valid(&a, &malformed).err(), Some(RESOURCE_LIMITED));
+        assert_limiter(&a, 2, 2);
+        drop(busy);
+
+        // Semantics before pending capacity: with every slot held the bootstrap still fails.
+        a.lr.set(secs(60));
+        let runs: Vec<_> = (0..4)
+            .map(|_| present_valid(&a, &vector("START")).unwrap())
+            .collect();
+        assert_eq!(pending(&a.er), 4);
+        a.lr.set(secs(70));
+        assert!(codec(present_valid(&a, &malformed)));
+        assert_limiter(&a, 1, 5);
+        // Pending capacity before ephemeral, commitment, and ACCEPT: refused, no ACCEPT.
+        assert_eq!(
+            present_valid(&a, &vector("START")).err(),
+            Some(RESOURCE_LIMITED)
+        );
+        assert_limiter(&a, 0, 6);
+        assert_eq!((pending(&a.er), operations(&a.er)), (4, 0));
+        drop(runs);
+
+        // Candidate structure before the limiter, and the limiter before semantics.
+        let exhausted = limiter(&a);
+        assert!(codec(present_valid(&a, &vector("START")[1..])));
+        assert_eq!(present_valid(&a, &malformed).err(), Some(RESOURCE_LIMITED));
+        assert_eq!(limiter(&a), exhausted);
+        assert_no_resources(&a);
+        a.release();
+    }
+
+    /// `CONTENDERS` threads present one candidate each to `a.er` at the same limiter instant.
+    fn contend(a: &Arc<Authorities>) -> Vec<StartLimit> {
+        const CONTENDERS: usize = 8;
+        let attempt = Arc::new(Barrier::new(CONTENDERS));
+        (0..CONTENDERS)
+            .map(|_| {
+                let (a, attempt) = (a.clone(), attempt.clone());
+                std::thread::spawn(move || {
+                    let ceremony = a.er.begin(Role::Responder).unwrap();
+                    attempt.wait();
+                    a.er.admit_start(&ceremony).unwrap()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect()
+    }
+
+    fn admitted(outcomes: &[StartLimit]) -> usize {
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| matches!(outcome, StartLimit::Admitted | StartLimit::Refused))
+        );
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == StartLimit::Admitted)
+            .count()
+    }
+
+    // R-OWNER-037 (a): eight simultaneous candidates on one authority at one instant.
+    #[test]
+    fn simultaneous_candidates_admit_exactly_four() {
+        let a = Arc::new(Authorities::new("start-limiter-burst-race"));
+        for round in 0..50u64 {
+            // A full rolling window later: full bucket, every earlier record expired.
+            a.lr.set(secs(60 * round));
+            assert_eq!(admitted(&contend(&a)), 4);
+            assert_limiter(&a, 0, 4);
+        }
+        assert_no_resources(&a);
+        Arc::into_inner(a).unwrap().release();
+    }
+
+    // R-OWNER-037 (b): contention near the rolling maximum never leaves more than 12 records.
+    #[test]
+    fn simultaneous_candidates_never_exceed_the_rolling_maximum() {
+        for round in 0..10 {
+            let a = Arc::new(Authorities::new(&format!(
+                "start-limiter-rolling-race-{round}"
+            )));
+            // 10 live records, then a full bucket at 50 s: only 2 more fit in the window.
+            for _ in 0..4 {
+                assert_eq!(decide(&a.er), StartLimit::Admitted);
+            }
+            for second in (5..=30).step_by(5) {
+                a.lr.set(secs(second));
+                assert_eq!(decide(&a.er), StartLimit::Admitted);
+            }
+            a.lr.set(secs(50));
+            assert_eq!(admitted(&contend(&a)), 2);
+            assert_limiter(&a, 2, 12);
+            Arc::into_inner(a).unwrap().release();
+        }
+    }
+
+    // R-OWNER-037 (c), (d): one limiter per authority, shared by every label.
+    #[test]
+    fn authorities_are_independent_and_labels_share_one_limiter() {
+        let (a, b) = (
+            Authorities::new("start-limiter-scope-a"),
+            Authorities::new("start-limiter-scope-b"),
+        );
+        // Both at the same numeric instant, five candidates each.
+        let expected = [
+            StartLimit::Admitted,
+            StartLimit::Admitted,
+            StartLimit::Admitted,
+            StartLimit::Admitted,
+            StartLimit::Refused,
+        ];
+        for authority in [&a, &b] {
+            let outcomes: Vec<_> = (0..5).map(|_| decide(&authority.er)).collect();
+            assert_eq!(outcomes, expected);
+        }
+        assert_eq!(limiter(&a), limiter(&b));
+
+        // Rotating request IDs and application identities buys no extra capacity.
+        b.lr.set(secs(60));
+        for label in 0..4u8 {
+            let start = start_as(&[label + 1; 16], &[b'p', label]);
+            drop(present_valid(&b, &start).unwrap());
+        }
+        for (request_id, identity) in [(&[0xEE; 64][..], &b"rotated"[..]), (&[0x01], b"x")] {
+            assert_eq!(
+                present_valid(&b, &start_as(request_id, identity)).err(),
+                Some(RESOURCE_LIMITED)
+            );
+        }
+        assert_limiter(&b, 0, 4);
+        assert_no_resources(&b);
+        assert_limiter(&a, 0, 4);
+        a.release();
+        b.release();
+    }
+
+    // P3 4 / 10: an exact duplicate START for an existing run is not a new candidate.
+    #[test]
+    fn existing_run_duplicate_start_never_reaches_the_limiter() {
+        let a = Authorities::new("start-limiter-duplicate");
+        let start = vector("START");
+        let mut run = present_valid(&a, &start).unwrap();
+        assert_limiter(&a, 3, 1);
+        for _ in 0..10 {
+            run.receive_start_duplicate(&start).unwrap();
+        }
+        assert_limiter(&a, 3, 1);
+        // Even with the limiter exhausted the duplicate is still handled by its run.
+        for _ in 0..3 {
+            drop(present_valid(&a, &start).unwrap());
+        }
+        assert_eq!(decide(&a.er), StartLimit::Refused);
+        let exhausted = limiter(&a);
+        run.receive_start_duplicate(&start).unwrap();
+        assert_eq!(limiter(&a), exhausted);
+        assert_eq!(pending(&a.er), 1, "no second pending run");
+        drop(run);
+        a.release();
+    }
+
+    // R-OWNER-038 (a): ceremony events never reset the limiter; only time changes it.
+    #[test]
+    fn ceremony_events_never_reset_the_limiter() {
+        let a = Authorities::new("start-limiter-lifetime");
+        let mut run = present_valid(&a, &vector("START")).unwrap();
+        assert_limiter(&a, 3, 1);
+        run.terminate().unwrap();
+        drop(run);
+        assert_limiter(&a, 3, 1);
+        assert!(present_valid(&a, &raw_start(&vector_request_id(), &[0xFF; 3])).is_err());
+        assert_limiter(&a, 2, 2);
+
+        // A complete successful ceremony, then status queries.
+        let i = RemoteCeremony::initiator_with_fixed_start_for_test(
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            &vector("START"),
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap();
+        let mut pair = exchange_keys(&a, i, system_clock());
+        assert_limiter(&a, 1, 3);
+        let id = pair.identity();
+        authenticate(&mut pair, &id);
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        let i_ack = initiator_ack(&mut pair.i, &r_ack);
+        confirm_sent(&mut pair.i, &i_ack);
+        assert_eq!(
+            pair.r.receive_completion(&i_ack),
+            Ok(CompletionReceipt::Succeeded)
+        );
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
+        drop(pair);
+        assert_limiter(&a, 1, 3);
+
+        // Idle time only refills toward 4 and ages the t=0 records out at exactly 60 s.
+        a.lr.set(secs(59));
+        assert_eq!(decide(&a.er), StartLimit::Admitted);
+        assert_limiter(&a, 3, 4);
+        a.lr.set(secs(60));
+        assert_eq!(decide(&a.er), StartLimit::Admitted);
+        assert_limiter(&a, 2, 2);
+        a.release();
+    }
+
+    // R-OWNER-038 (b), (c): only a safely established new owner starts fresh.
+    #[test]
+    fn a_safely_replaced_owner_starts_with_a_fresh_limiter() {
+        let scope = b"start-limiter-owner";
+        let clock = ManualClock::new();
+        let owner = TrustedAuthority::register_with_limiter_clock(scope, clock.clone()).unwrap();
+        let executor = owner.executor();
+        for _ in 0..4 {
+            assert_eq!(decide(&executor), StartLimit::Admitted);
+        }
+        assert_eq!(decide(&executor), StartLimit::Refused);
+        clock.set(secs(3));
+        // While the owner exists no second owner, and so no second limiter, can be created.
+        assert_eq!(
+            TrustedAuthority::register_with_limiter_clock(scope, clock.clone()).unwrap_err(),
+            OwnerError::AlreadyRegistered
+        );
+        assert_eq!(decide(&executor), StartLimit::Refused);
+        let state = executor.start_limiter_snapshot();
+        assert_eq!((state.tokens, state.rolling), (0, 4));
+        drop(executor);
+        owner.release().unwrap();
+
+        let replacement = TrustedAuthority::register_with_limiter_clock(scope, clock).unwrap();
+        let executor = replacement.executor();
+        assert_eq!(
+            executor.start_limiter_snapshot(),
+            StartLimiterSnapshot {
+                tokens: 4,
+                remainder: Duration::ZERO,
+                last: Duration::ZERO,
+                rolling: 0,
+            }
+        );
+        for _ in 0..4 {
+            assert_eq!(decide(&executor), StartLimit::Admitted);
+        }
+        assert_eq!(decide(&executor), StartLimit::Refused);
+        drop(executor);
+        replacement.release().unwrap();
+    }
+
+    // R-OWNER-039: an unusable limiter clock admits nothing and changes nothing.
+    #[test]
+    fn unsafe_limiter_clock_fails_closed_without_mutation() {
+        let a = Authorities::new("start-limiter-clock");
+        a.lr.set(secs(10));
+        drop(present_valid(&a, &vector("START")).unwrap());
+        let before = limiter(&a);
+        assert_eq!(
+            (before.tokens, before.rolling, before.last),
+            (3, 1, secs(10))
+        );
+
+        a.lr.fail();
+        assert_eq!(
+            present_valid(&a, &vector("START")).err(),
+            Some(CeremonyError::ClockUnavailable)
+        );
+        assert_eq!(limiter(&a), before);
+        assert_no_resources(&a);
+
+        // Backwards relative to the last evaluation: no refill, expiry, charge, or record.
+        for value in [secs(10) - NS, secs(5), Duration::ZERO] {
+            a.lr.set(value);
+            assert_eq!(
+                present_valid(&a, &vector("START")).err(),
+                Some(CeremonyError::ClockUnavailable)
+            );
+            assert_eq!(decide(&a.er), StartLimit::UnsafeClock);
+            assert_eq!(limiter(&a), before);
+        }
+        assert_no_resources(&a);
+
+        // A safe reading continues from the unchanged state: no reset, no healing.
+        a.lr.set(secs(10));
+        drop(present_valid(&a, &vector("START")).unwrap());
+        assert_limiter(&a, 2, 2);
+        a.lr.set(secs(70));
+        assert_eq!(decide(&a.er), StartLimit::Admitted);
+        assert_limiter(&a, 3, 1);
+        a.release();
+    }
+
+    /// Records whether each reading happens while the authority's shared state is locked.
+    struct ProbeClock {
+        state: std::sync::OnceLock<std::sync::Weak<crate::State>>,
+        inside: AtomicUsize,
+        outside: AtomicUsize,
+    }
+
+    impl crate::deadline::MonotonicClock for ProbeClock {
+        fn now(&self) -> Option<Duration> {
+            let state = self.state.get()?.upgrade()?;
+            let counter = match state.shared.try_lock() {
+                Err(std::sync::TryLockError::WouldBlock) => &self.inside,
+                _ => &self.outside,
+            };
+            counter.fetch_add(1, AtomicOrdering::SeqCst);
+            Some(Duration::ZERO)
+        }
+    }
+
+    // R-OWNER-039: `now` is read inside the atomic decision, never as an earlier stale reading.
+    #[test]
+    fn the_limiter_clock_is_read_inside_the_shared_critical_section() {
+        let probe = Arc::new(ProbeClock {
+            state: std::sync::OnceLock::new(),
+            inside: AtomicUsize::new(0),
+            outside: AtomicUsize::new(0),
+        });
+        let authority =
+            TrustedAuthority::register_with_limiter_clock(b"start-limiter-probe", probe.clone())
+                .unwrap();
+        probe.state.set(Arc::downgrade(&authority.0)).unwrap();
+        let executor = authority.executor();
+        for _ in 0..5 {
+            decide(&executor);
+        }
+        let reads = (
+            probe.inside.load(AtomicOrdering::SeqCst),
+            probe.outside.load(AtomicOrdering::SeqCst),
+        );
+        assert_eq!(reads, (5, 0));
+        drop(executor);
+        authority.release().unwrap();
     }
 }
