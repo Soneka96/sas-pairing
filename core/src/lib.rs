@@ -15,6 +15,8 @@ pub mod protocol;
 mod request_id;
 mod router;
 mod start_limiter;
+#[cfg(test)]
+mod test_hook;
 
 use deadline::{Clock, system_clock};
 use start_limiter::{StartAdmission, StartLimiter};

@@ -12,8 +12,28 @@
 //! the security identity; the routing key is never authentication, trust, or authority, and
 //! is never part of any transcript, MAC, wire frame, or `PairingResult`.
 //!
+//! Session lifecycle: OPEN -> CLOSING -> CLOSED. Every operation on a session enters it with a
+//! `Lease` while it is OPEN, in a table critical section. The OPEN -> CLOSING transition
+//! (`begin_close`) happens in a table critical section too, so it is one linearization point:
+//! an operation either entered before it or is refused with `UnknownSession`. Teardown then
+//! waits, holding nothing but the session's lifecycle mutex (which the wait releases), until
+//! every lease is gone. An operation that entered earlier finishes its current step, except
+//! that route creation (Responder admission, routed Initiator) never installs into a CLOSING
+//! session: it discards its new run, so its permit, pending slot, or request-ID reservation is
+//! released before its lease is. Only then are the session's routes detached and its runs
+//! terminated; CLOSED is reached only if that cleanup is certain.
+//!
+//! Lock order: run mutex -> table mutex -> lifecycle mutex. The lifecycle mutex is a leaf, so a
+//! lease may be dropped anywhere. Authority shared state is taken by ceremony work under a run
+//! mutex (or with none held) and never while a router lock is acquired after it. Teardown waits
+//! only on the lifecycle condition variable and only with no run, table, or shared lock held.
+//! An operation must not re-enter the router (for example, close its own session from inside a
+//! `with_run` closure): its own lease would then never drain.
+//!
 //! No socket, listener, byte transport, frame buffering, reconnect, or resume exists here.
 #![allow(dead_code)] // Used only by tests until a transport adapter exists.
+#[cfg(test)]
+use crate::test_hook::{self, Point};
 use crate::{
     CeremonyExecutor, Error as OwnerError, Role,
     ceremony::{
@@ -25,9 +45,9 @@ use crate::{
     request_id::{OsRequestIds, RequestIdGenerator},
 };
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{HashMap, hash_map::Entry},
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc, Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -68,32 +88,85 @@ enum Route {
     Active(Run),
 }
 
+/// One session's lifecycle. OPEN: in the table, not closing. CLOSING: in the table, closing;
+/// nothing new may enter, and teardown waits for `in_flight` to reach zero. CLOSED: removed
+/// from the table; the handle is never reissued, so it stays invalid forever.
+#[derive(Default)]
+struct Lifecycle {
+    activity: Mutex<Activity>,
+    settled: Condvar,
+}
+
+#[derive(Default)]
+struct Activity {
+    closing: bool,
+    /// Operations that entered while OPEN and have not yet released their lease.
+    in_flight: usize,
+}
+
+/// One operation's membership in an OPEN session. Locals an operation creates after taking
+/// its lease (a new run with its permit, pending slot, or request-ID reservation) are dropped
+/// before it, so a waiting teardown resumes only after they were released.
+struct Lease(Arc<Lifecycle>);
+
+impl Lease {
+    /// Whether the session began closing since this operation entered. Called by route
+    /// creation inside the table critical section that would install its route.
+    fn closing(&self) -> Result<bool, RouteError> {
+        Ok(activity(&self.0)?.closing)
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        // Counted even if poisoned, so a waiting teardown wakes and reports the poison as
+        // `OwnershipUncertain` instead of hanging.
+        let mut activity = self
+            .0
+            .activity
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        activity.in_flight -= 1;
+        if activity.closing && activity.in_flight == 0 {
+            self.0.settled.notify_all();
+        }
+    }
+}
+
 struct Table {
     next_session: u64,
     next_claim: u64,
-    sessions: HashSet<u64>,
+    /// OPEN and CLOSING sessions; a CLOSED session is absent.
+    sessions: HashMap<u64, Arc<Lifecycle>>,
     routes: HashMap<RoutingKey, Route>,
 }
 
 /// Session-bound routing for one pairing authority. Its resource controls (START limiter,
 /// pending and preliminary caps, guard, opportunity budget) stay in the authority's shared
-/// state, so sessions, and even several routers of one authority, share them. Dropping the
-/// router drops every routed run, whose own cleanup releases its slot, reservation, or guard.
+/// state, so sessions, and even several routers of one authority, share them. Every method
+/// borrows the router, so it cannot be dropped while any operation (or lease) is live; dropping
+/// it drops every routed run, whose own cleanup releases its slot, reservation, or guard.
 pub(crate) struct Router {
     id: u64,
     executor: CeremonyExecutor,
     table: Mutex<Table>,
 }
 
-/// Narrow local routing outcomes. `UnknownSession` and `UnknownRoute` mean only that the
-/// input names no live local session or no routed run; they say nothing about the peer, its
-/// authentication, an SAS, compromise, or the opportunity budget, and change nothing.
+/// Narrow local routing outcomes. None of them says anything about the peer, its
+/// authentication, an SAS, compromise, or the opportunity budget.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RouteError {
-    /// The handle names no live session of this router: never issued here, or closed.
+    /// The handle names no OPEN session of this router: never issued here, closing, or closed.
+    /// Nothing was changed.
     UnknownSession,
-    /// No run is routed under this exact `(session, request_id)`; nothing was changed.
+    /// A local action (`with_run`) or a START given to `deliver` (which never admits) names no
+    /// run under this exact `(session, request_id)`; nothing was changed.
     UnknownRoute,
+    /// P3 §11.2/§11.4 session-fatal routing failure: a structurally routable non-START frame
+    /// named no route on its live session. It reached no run, and when this is returned the
+    /// session was already torn down exactly as by `close_session`. A local session failure,
+    /// not authentication evidence, compromise, SAS mismatch, or opportunity exhaustion.
+    SessionProtocolFailure,
     /// The codec rejected the input before routing, admission refused it, or the routed run
     /// returned this outcome (and applied its own terminal rules).
     Ceremony(CeremonyError),
@@ -153,9 +226,16 @@ struct NewResponder {
 }
 
 enum StartRoute {
-    New(u64),
+    New(Lease, u64),
     Duplicate,
-    Existing(Run),
+    Existing(Lease, Run),
+}
+
+/// Where an inbound non-START frame goes.
+enum Dispatch {
+    Run(Lease, Run),
+    /// No route under its key: the session is already CLOSING and must be torn down.
+    Unrouted(Arc<Lifecycle>),
 }
 
 impl Router {
@@ -169,7 +249,7 @@ impl Router {
             table: Mutex::new(Table {
                 next_session: 1,
                 next_claim: 1,
-                sessions: HashSet::new(),
+                sessions: HashMap::new(),
                 routes: HashMap::new(),
             }),
         })
@@ -182,49 +262,34 @@ impl Router {
         let session = table.next_session;
         // Never reissued: exhaustion fails closed rather than wrapping onto an old handle.
         table.next_session = session.checked_add(1).ok_or_else(uncertain)?;
-        table.sessions.insert(session);
+        table.sessions.insert(session, Arc::default());
         Ok(SessionHandle {
             router: self.id,
             session,
         })
     }
 
-    /// Ends a local session without waiting for or notifying the peer. Atomically the handle
-    /// becomes unknown and every route under it, including START admissions in progress, is
-    /// removed; the keys can never be reused because the handle is never reissued. Each
-    /// removed run is then terminated through its existing cleanup: SAS, approval, and any
-    /// pending final ACK are dropped before the guard is released; pending slots and request-ID
-    /// reservations are released; consumed opportunities stay consumed; no result is created
-    /// and no CANCEL is emitted. Nothing resumes on another session. The authority's START
-    /// limiter, budget, and other controls are untouched.
+    /// Ends a local session without waiting for or notifying the peer. Atomically the session
+    /// becomes CLOSING, so no new operation can enter it; this call then waits until every
+    /// operation that entered earlier has returned. In-progress route creation (a START being
+    /// admitted, a routed Initiator being built) never installs into a CLOSING session and
+    /// returns no ACCEPT or START: its run, with its permit, pending slot, or request-ID
+    /// reservation, is dropped first. An already-entered operation on an installed run finishes
+    /// its current step under the run's lock and keeps its outcome. Every route under the
+    /// session is then removed and each run terminated through its existing cleanup: SAS,
+    /// approval, and any pending final ACK are dropped before the guard is released; pending
+    /// slots and request-ID reservations are released; consumed opportunities stay consumed;
+    /// no result is created and no CANCEL is emitted. Nothing resumes on another session, and
+    /// the keys can never be reused because the handle is never reissued. START limiter
+    /// charges are not refunded and no authority control is reset.
+    ///
+    /// `Ok(())` means all of that is complete: nothing of this session remains or can still
+    /// produce output. A CLOSING or CLOSED handle is `UnknownSession`. If cleanup cannot be
+    /// established (poisoned state, uncertain guard release), the error is returned and the
+    /// session stays CLOSING forever, never reopened.
     pub(crate) fn close_session(&self, session: SessionHandle) -> Result<(), RouteError> {
-        let runs: Vec<Run> = {
-            let mut guard = self.table()?;
-            let table = &mut *guard;
-            if !self.live(table, session) {
-                return Err(RouteError::UnknownSession);
-            }
-            table.sessions.remove(&session.session);
-            let mut runs = Vec::new();
-            table.routes.retain(|key, route| {
-                if key.session != session {
-                    return true;
-                }
-                if let Route::Active(run) = route {
-                    runs.push(run.clone());
-                }
-                false
-            });
-            runs
-        };
-        let mut outcome = Ok(());
-        for run in runs {
-            let ended = lock(&run).and_then(|mut run| Ok(run.terminate()?));
-            if outcome.is_ok() {
-                outcome = ended;
-            }
-        }
-        outcome
+        let lifecycle = self.begin_close(&*self.table()?, session)?;
+        self.finish_close(session, &lifecycle)
     }
 
     /// Inbound START on `session`. An exact duplicate or conflict for an existing key goes to
@@ -232,7 +297,8 @@ impl Router {
     /// and is never a new candidate. Only a key that is absent is claimed atomically and then
     /// admitted, outside the table lock, through the unchanged Responder order: START limiter
     /// -> preliminary permit -> semantic validation -> pending slot -> ephemeral and commitment
-    /// -> ACCEPT. The run is installed only after that succeeds; any failure removes the claim.
+    /// -> ACCEPT. The run is installed only after that succeeds and only if the session is
+    /// still OPEN; any failure removes the claim.
     pub(crate) fn receive_start(
         &self,
         session: SessionHandle,
@@ -263,8 +329,16 @@ impl Router {
     /// Delivers one inbound frame to the run routed under `session` and the frame's own request
     /// ID, mapping its wire type to that run's existing entrypoint, which validates type, role,
     /// sequencing, duplicates, and authentication. Never a lookup by request ID alone, and
-    /// never a fallback to another run: anything else is `UnknownRoute` with no effect. A START
-    /// here reaches only an existing run; only `receive_start` admits a new one.
+    /// never a fallback to another run. A START here reaches only an existing run (only
+    /// `receive_start` admits); with no route it is `UnknownRoute` with no effect.
+    ///
+    /// A structurally routable non-START frame (it passed `route_fields`: complete canonical
+    /// frame, defined type, exact profile ID, 1..=64-byte request ID) with no route under its
+    /// key on this live session is P3's session-fatal routing failure: the frame reaches no
+    /// run, the session is torn down exactly as by `close_session` (every run on it, however
+    /// many, becomes terminal; other sessions are untouched), and `SessionProtocolFailure` is
+    /// returned once that is complete. A non-START frame for a key whose START is still being
+    /// admitted is out of order for that key only: the admission is discarded.
     pub(crate) fn deliver(
         &self,
         session: SessionHandle,
@@ -282,7 +356,13 @@ impl Router {
             session,
             request_id: request_id.to_vec(),
         };
-        let run = self.active(&key)?;
+        let (_lease, run) = match self.dispatch(&key)? {
+            Dispatch::Run(lease, run) => (lease, run),
+            Dispatch::Unrouted(lifecycle) => {
+                self.finish_close(session, &lifecycle)?;
+                return Err(RouteError::SessionProtocolFailure);
+            }
+        };
         self.on_run(&key, &run, |run| {
             Ok(match kind {
                 2 => run.receive_accept(bytes).map(|()| Inbound::Accept)?,
@@ -302,7 +382,8 @@ impl Router {
     /// A local action (authorization, SAS decision, own MAC or finish emission, send
     /// confirmation, deadline poll, ...) on the run routed under exactly `(session,
     /// request_id)`. Inbound frames must use `deliver`/`receive_start`, which take the request
-    /// ID from the frame itself.
+    /// ID from the frame itself. A local action naming no run is `UnknownRoute`, not a session
+    /// failure: it is not peer input. `op` must not call back into the router.
     pub(crate) fn with_run<T>(
         &self,
         session: SessionHandle,
@@ -313,7 +394,7 @@ impl Router {
             session,
             request_id: request_id.to_vec(),
         };
-        let run = self.active(&key)?;
+        let (_lease, run) = self.active(&key)?;
         self.on_run(&key, &run, op)
     }
 
@@ -321,8 +402,9 @@ impl Router {
     /// ID exactly as `RemoteCeremony::initiator` does, then the run is registered under
     /// `(session, request_id)` before its START bytes are returned. If that key is already
     /// routed on this session (a peer-chosen START ID), the run is discarded, its reservation
-    /// released, and a fresh ID generated, so colliding local state never reaches the wire.
-    /// Returns `(request_id, START bytes)`.
+    /// released, and a fresh ID generated, so colliding local state never reaches the wire. If
+    /// the session began closing meanwhile, the run is discarded (releasing its reservation)
+    /// and `UnknownSession` is returned instead of START. Returns `(request_id, START bytes)`.
     pub(crate) fn start_initiator(
         &self,
         session: SessionHandle,
@@ -341,10 +423,10 @@ impl Router {
         local: Bootstrap,
         expected: Option<Bootstrap>,
     ) -> Result<(Vec<u8>, Vec<u8>), RouteError> {
+        let lease = self.enter(&*self.table()?, session)?;
         loop {
-            if !self.live(&*self.table()?, session) {
-                return Err(RouteError::UnknownSession);
-            }
+            // Declared after `lease`, so every early return drops the run (and its
+            // reservation) before the lease.
             let admission = self
                 .executor
                 .begin(Role::Initiator)
@@ -359,11 +441,13 @@ impl Router {
             )?;
             let start = run.start()?;
             let request_id = protocol::route_fields(&start)?.1.to_vec();
+            #[cfg(test)]
+            test_hook::fire(Point::InitiatorStarted);
             let mut run = Some(run);
             let mut guard = self.table()?;
             let table = &mut *guard;
-            let live = self.live(table, session);
-            if live {
+            let closing = lease.closing()?;
+            if !closing {
                 let key = RoutingKey {
                     session,
                     request_id: request_id.clone(),
@@ -377,8 +461,11 @@ impl Router {
             match run {
                 None => return Ok((request_id, start)),
                 // Dropping the uninstalled run releases its request-ID reservation.
-                Some(run) if live => drop(run),
-                Some(_) => return Err(RouteError::UnknownSession),
+                Some(run) if !closing => drop(run),
+                Some(run) => {
+                    drop(run);
+                    return Err(RouteError::UnknownSession);
+                }
             }
         }
     }
@@ -397,10 +484,10 @@ impl Router {
             session,
             request_id: request_id.to_vec(),
         };
-        let claim = match self.classify_start(&key, bytes, new.is_some())? {
-            StartRoute::New(claim) => claim,
+        let (lease, claim) = match self.classify_start(&key, bytes, new.is_some())? {
+            StartRoute::New(lease, claim) => (lease, claim),
             StartRoute::Duplicate => return Ok(StartRouting::Duplicate),
-            StartRoute::Existing(run) => {
+            StartRoute::Existing(_lease, run) => {
                 // Duplicate or conflict for that run only; never a new candidate.
                 self.on_run(&key, &run, |run| run.receive_start_duplicate(bytes))?;
                 return Ok(StartRouting::Duplicate);
@@ -411,7 +498,8 @@ impl Router {
             local,
             expected,
         } = new.expect("only a new responder claims");
-        // Bounded admission and its cryptography run without the table lock.
+        // Bounded admission and its cryptography run without the table lock. Declared after
+        // `lease`, so a returned or discarded run is dropped before the lease.
         let admitted = self
             .executor
             .begin(Role::Responder)
@@ -427,32 +515,34 @@ impl Router {
                 )
             });
         let mut table = self.table()?;
+        let closing = lease.closing()?;
         let (ours, conflicted) = match table.routes.get(&key) {
             Some(Route::Admitting {
                 claim: owner,
                 conflicted,
                 ..
             }) if *owner == claim => (true, *conflicted),
-            // The session was closed meanwhile; its claims are gone.
             _ => (false, false),
         };
         match admitted {
-            Ok((run, accept)) if ours && !conflicted => {
+            Ok((run, accept)) if ours && !conflicted && !closing => {
                 table
                     .routes
                     .insert(key, Route::Active(Arc::new(Mutex::new(run))));
                 Ok(StartRouting::Accepted(accept))
             }
             Ok((run, _accept)) => {
-                // Conflicted or session closed: the run is made terminal (and its slot
+                // Conflicted or session closing: the run is made terminal (and its slot
                 // released) before the key can be claimed again; the ACCEPT is never returned.
                 drop(table);
                 drop(run);
                 if ours {
                     self.release_claim(&key, claim)?;
-                    Err(CeremonyError::InvalidState.into())
-                } else {
+                }
+                if closing {
                     Err(RouteError::UnknownSession)
+                } else {
+                    Err(CeremonyError::InvalidState.into())
                 }
             }
             Err(error) => {
@@ -464,9 +554,9 @@ impl Router {
         }
     }
 
-    /// One critical section: session check, then exactly one of claim-new (absent key, only
-    /// when `claim_new`), exact in-progress duplicate, conflict (marks an in-progress claim
-    /// conflicted so its admission is discarded), or the installed run.
+    /// One critical section: enter the OPEN session, then exactly one of claim-new (absent key,
+    /// only when `claim_new`), exact in-progress duplicate, conflict (marks an in-progress
+    /// claim conflicted so its admission is discarded), or the installed run.
     fn classify_start(
         &self,
         key: &RoutingKey,
@@ -477,9 +567,7 @@ impl Router {
         let structural = protocol::start_candidate(bytes).map(|_| ());
         let mut guard = self.table()?;
         let table = &mut *guard;
-        if !self.live(table, key.session) {
-            return Err(RouteError::UnknownSession);
-        }
+        let lease = self.enter(table, key.session)?;
         match table.routes.entry(key.clone()) {
             Entry::Vacant(_) if !claim_new => Err(RouteError::UnknownRoute),
             Entry::Vacant(slot) => {
@@ -491,7 +579,7 @@ impl Router {
                     start: bytes.to_vec(),
                     conflicted: false,
                 });
-                Ok(StartRoute::New(claim))
+                Ok(StartRoute::New(lease, claim))
             }
             Entry::Occupied(mut slot) => match slot.get_mut() {
                 Route::Admitting {
@@ -504,7 +592,7 @@ impl Router {
                         Err(CeremonyError::InvalidState.into())
                     }
                 }
-                Route::Active(run) => Ok(StartRoute::Existing(run.clone())),
+                Route::Active(run) => Ok(StartRoute::Existing(lease, run.clone())),
             },
         }
     }
@@ -518,15 +606,36 @@ impl Router {
         Ok(())
     }
 
-    /// The installed run under exactly `key`. An in-progress START admission is not routable.
-    fn active(&self, key: &RoutingKey) -> Result<Run, RouteError> {
+    /// The installed run under exactly `key`, entered for a local action. An in-progress START
+    /// admission is not routable.
+    fn active(&self, key: &RoutingKey) -> Result<(Lease, Run), RouteError> {
         let table = self.table()?;
-        if !self.live(&table, key.session) {
-            return Err(RouteError::UnknownSession);
-        }
+        let lease = self.enter(&table, key.session)?;
         match table.routes.get(key) {
-            Some(Route::Active(run)) => Ok(run.clone()),
+            Some(Route::Active(run)) => Ok((lease, run.clone())),
             _ => Err(RouteError::UnknownRoute),
+        }
+    }
+
+    /// For an inbound non-START frame, in one critical section: enter the OPEN session and take
+    /// the installed run under exactly `key`. A START still being admitted under `key` is
+    /// marked conflicted, so that admission is discarded (out of order for that key only). No
+    /// route at all makes the session CLOSING in this same critical section, so no other run
+    /// is guessed at and nothing new can enter before the teardown.
+    fn dispatch(&self, key: &RoutingKey) -> Result<Dispatch, RouteError> {
+        let mut guard = self.table()?;
+        let table = &mut *guard;
+        let lease = self.enter(table, key.session)?;
+        match table.routes.get_mut(key) {
+            Some(Route::Active(run)) => Ok(Dispatch::Run(lease, run.clone())),
+            Some(Route::Admitting { conflicted, .. }) => {
+                *conflicted = true;
+                Err(CeremonyError::InvalidState.into())
+            }
+            None => {
+                drop(lease);
+                Ok(Dispatch::Unrouted(self.begin_close(table, key.session)?))
+            }
         }
     }
 
@@ -557,13 +666,107 @@ impl Router {
         })
     }
 
-    fn live(&self, table: &Table, session: SessionHandle) -> bool {
-        session.router == self.id && table.sessions.contains(&session.session)
+    /// Enters an OPEN session for one operation, inside the caller's table critical section so
+    /// it is ordered against `begin_close`.
+    fn enter(&self, table: &Table, session: SessionHandle) -> Result<Lease, RouteError> {
+        let lifecycle = self.lifecycle(table, session)?;
+        let mut activity = activity(lifecycle)?;
+        if activity.closing {
+            return Err(RouteError::UnknownSession);
+        }
+        activity.in_flight = activity.in_flight.checked_add(1).ok_or_else(uncertain)?;
+        drop(activity);
+        Ok(Lease(lifecycle.clone()))
+    }
+
+    /// OPEN -> CLOSING, inside the caller's table critical section: the close linearization
+    /// point. Only one caller wins; a CLOSING or CLOSED session is `UnknownSession`.
+    fn begin_close(
+        &self,
+        table: &Table,
+        session: SessionHandle,
+    ) -> Result<Arc<Lifecycle>, RouteError> {
+        let lifecycle = self.lifecycle(table, session)?;
+        let mut activity = activity(lifecycle)?;
+        if activity.closing {
+            return Err(RouteError::UnknownSession);
+        }
+        activity.closing = true;
+        drop(activity);
+        Ok(lifecycle.clone())
+    }
+
+    /// The one session teardown, shared by `close_session` and the session-fatal routing
+    /// failure, run by the caller that won `begin_close` while it holds no router lock or lease.
+    /// It waits for every earlier operation to return, then detaches every route of the session
+    /// and terminates each run outside the table lock, and only then makes the session CLOSED.
+    fn finish_close(
+        &self,
+        session: SessionHandle,
+        lifecycle: &Lifecycle,
+    ) -> Result<(), RouteError> {
+        {
+            let mut activity = activity(lifecycle)?;
+            while activity.in_flight > 0 {
+                #[cfg(test)]
+                test_hook::fire(Point::CloseWaiting {
+                    in_flight: activity.in_flight,
+                });
+                activity = lifecycle.settled.wait(activity).map_err(|_| uncertain())?;
+            }
+        }
+        // Nothing of this session runs and nothing can enter, so no claim can remain and no
+        // route can appear: every creator either installed before closing or discarded its run.
+        let runs: Vec<Run> = {
+            let mut table = self.table()?;
+            let mut runs = Vec::new();
+            table.routes.retain(|key, route| {
+                if key.session != session {
+                    return true;
+                }
+                if let Route::Active(run) = route {
+                    runs.push(run.clone());
+                }
+                false
+            });
+            runs
+        };
+        let mut outcome = Ok(());
+        for run in runs {
+            let ended = lock(&run).and_then(|mut run| Ok(run.terminate()?));
+            if outcome.is_ok() {
+                outcome = ended;
+            }
+        }
+        // Uncertain cleanup leaves the session CLOSING forever: never reopened, never CLOSED.
+        outcome?;
+        self.table()?.sessions.remove(&session.session);
+        Ok(())
+    }
+
+    fn lifecycle<'t>(
+        &self,
+        table: &'t Table,
+        session: SessionHandle,
+    ) -> Result<&'t Arc<Lifecycle>, RouteError> {
+        if session.router != self.id {
+            return Err(RouteError::UnknownSession);
+        }
+        table
+            .sessions
+            .get(&session.session)
+            .ok_or(RouteError::UnknownSession)
     }
 
     fn table(&self) -> Result<MutexGuard<'_, Table>, RouteError> {
         self.table.lock().map_err(|_| uncertain())
     }
+}
+
+/// A poisoned lifecycle lock fails closed: the session admits nothing and cannot be reported
+/// closed.
+fn activity(lifecycle: &Lifecycle) -> Result<MutexGuard<'_, Activity>, RouteError> {
+    lifecycle.activity.lock().map_err(|_| uncertain())
 }
 
 /// A poisoned run lock fails closed; the run stays routed and its resources stay held.
@@ -584,7 +787,15 @@ mod tests {
         start_limiter::{REFILL_PERIOD, ROLLING_WINDOW, StartLimiterSnapshot},
     };
     use serde_json::Value;
-    use std::{collections::VecDeque, sync::Barrier, thread, time::Duration};
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Barrier,
+            mpsc::{self, Receiver, Sender},
+        },
+        thread::{self, Scope, ScopedJoinHandle},
+        time::Duration,
+    };
 
     fn hex(value: &str) -> Vec<u8> {
         value
@@ -777,6 +988,15 @@ mod tests {
         fn routes(&self) -> usize {
             self.router.table.lock().unwrap().routes.len()
         }
+        /// `(routes, pending Responders, preliminary permits, Initiator ID reservations)`.
+        fn resources(&self) -> (usize, usize, usize, usize) {
+            (
+                self.routes(),
+                self.pending(),
+                self.permits(),
+                self.reserved(),
+            )
+        }
         /// One full rolling window of limiter time: credit 4 and no live records again.
         fn refill(&self) {
             self.limiter.advance(ROLLING_WINDOW);
@@ -918,13 +1138,14 @@ mod tests {
         ));
         clock.advance(INACTIVITY_DEADLINE - Duration::from_nanos(1));
         assert_eq!(r.receive_at(&clock, a, &start), Ok(StartRouting::Duplicate));
+        // Misrouted onto B, where it names no route: fatal to B only, never input to A's run.
         assert_eq!(
             r.router.deliver(b, &initiator_key(&x)).unwrap_err(),
-            RouteError::UnknownRoute
+            RouteError::SessionProtocolFailure
         );
         assert_eq!(
-            r.router.deliver(a, &initiator_key(&[8; 16])).unwrap_err(),
-            RouteError::UnknownRoute
+            r.router.deliver(b, &initiator_key(&x)).unwrap_err(),
+            RouteError::UnknownSession
         );
         assert_eq!(
             r.local(a, &x, |run| run.poll_deadlines()).output,
@@ -1078,7 +1299,7 @@ mod tests {
     #[test]
     fn later_messages_reach_only_the_run_under_their_own_session_and_request_id() {
         let (i, si, r, a, id, start) = initiated("router-injection");
-        let b = r.session();
+        let (b, c) = (r.session(), r.session());
         let accept = r.accept(a, &start);
         assert_eq!(
             i.router.deliver(si, &accept).unwrap().output,
@@ -1087,17 +1308,10 @@ mod tests {
         i.local(si, &id, |run| run.authorize(&i.authority));
         let ikey = i.local(si, &id, |run| run.expose_key()).output;
         let limiter = r.limiter();
-        // Session B has no run for this ID: rejected before reaching any run.
+        // Session C has no run for this ID: it reaches no run and is fatal to C only.
         assert_eq!(
-            r.router.deliver(b, &ikey).unwrap_err(),
-            RouteError::UnknownRoute
-        );
-        // Session A has no run for another ID: no fallback to A's only run.
-        assert_eq!(
-            r.router
-                .deliver(a, &with_request_id(&ikey, &[0x77; 16]))
-                .unwrap_err(),
-            RouteError::UnknownRoute
+            r.router.deliver(c, &ikey).unwrap_err(),
+            RouteError::SessionProtocolFailure
         );
         // No DH, permit, guard, opportunity, or state change happened in A's run.
         assert_eq!(r.state(a, &id), "ResponderAcceptSentAwaitInitiatorKey");
@@ -1349,14 +1563,18 @@ mod tests {
         assert!(delivered.result.is_none());
         assert_eq!(r.routes(), 0);
         assert_eq!(r.status(), Status::Ready { remaining: 9 });
-        // Nothing is revived; a replayed START is only a completely new ceremony.
+        // Nothing is revived: the replayed CANCEL names a stale ID on a live session, which is
+        // that session's routing failure, not a second cancellation or a refund.
         assert_eq!(
             r.router.deliver(sr, &cancel).unwrap_err(),
-            RouteError::UnknownRoute
+            RouteError::SessionProtocolFailure
         );
-        assert_ne!(r.accept(sr, &start), accept);
-        assert_eq!(r.state(sr, &id), "ResponderAcceptSentAwaitInitiatorKey");
-        assert_eq!(r.local(sr, &id, |run| Ok(run.presentation())).output, None);
+        assert_eq!(r.status(), Status::Ready { remaining: 9 });
+        // A replayed START is only a completely new ceremony.
+        let c = r.session();
+        assert_ne!(r.accept(c, &start), accept);
+        assert_eq!(r.state(c, &id), "ResponderAcceptSentAwaitInitiatorKey");
+        assert_eq!(r.local(c, &id, |run| Ok(run.presentation())).output, None);
         i.release();
         r.release();
     }
@@ -1445,11 +1663,13 @@ mod tests {
         assert_eq!(responder.ceremony_identity(), &identity);
         assert_eq!(initiator.request_id(), id.as_slice());
         assert_eq!(responder.peer_role(), Role::Initiator);
-        // Later traffic reaches nothing and cannot alter or duplicate either result.
+        // Later traffic reaches nothing and cannot alter or duplicate either result: a stale
+        // frame on the live session is that session's routing failure, never a second result.
         assert_eq!(
             r.router.deliver(sr, &final_ack).unwrap_err(),
-            RouteError::UnknownRoute
+            RouteError::SessionProtocolFailure
         );
+        assert_eq!(responder.ceremony_identity(), &identity);
         assert_eq!(
             i.router
                 .with_run(si, &id, |run| {
@@ -1580,5 +1800,419 @@ mod tests {
         drop(executor);
         authority.release().unwrap();
         i.release();
+    }
+
+    const CLOSED: RouteError = RouteError::UnknownSession;
+
+    /// A closing or closed session admits nothing: no START, frame, local action, Initiator, or
+    /// second close reaches the limiter, a run, or any resource.
+    fn assert_rejects_everything(node: &Node, session: SessionHandle) {
+        let x = [0x5E; 16];
+        assert_eq!(node.receive(session, &start_frame(&x)), Err(CLOSED));
+        assert_eq!(
+            node.router
+                .deliver(session, &initiator_key(&x))
+                .unwrap_err(),
+            CLOSED
+        );
+        assert_eq!(
+            node.router.with_run(session, &x, |_| Ok(())).unwrap_err(),
+            CLOSED
+        );
+        assert_eq!(
+            node.router
+                .start_initiator(session, initiator_bootstrap(), None),
+            Err(CLOSED)
+        );
+        assert_eq!(node.router.close_session(session), Err(CLOSED));
+    }
+
+    /// For this thread only: on reaching `at`, announce it on `arrived`, then wait for `resume`.
+    fn pause_at(at: Point, arrived: Sender<()>, resume: Receiver<()>) {
+        test_hook::install(move |point| {
+            if point == at {
+                arrived.send(()).unwrap();
+                resume.recv().unwrap();
+            }
+        });
+    }
+
+    type Closed = (Result<(), RouteError>, (usize, usize, usize, usize));
+
+    /// Closes `session` on a new thread. Its teardown reports the in-flight count each time it
+    /// is about to wait; the thread returns the outcome and the resources at return.
+    fn close_on<'scope>(
+        scope: &'scope Scope<'scope, '_>,
+        node: &'scope Node,
+        session: SessionHandle,
+    ) -> (ScopedJoinHandle<'scope, Closed>, Receiver<usize>) {
+        let (waiting, waits) = mpsc::channel();
+        let handle = scope.spawn(move || {
+            test_hook::install(move |point| {
+                if let Point::CloseWaiting { in_flight } = point {
+                    waiting.send(in_flight).unwrap();
+                }
+            });
+            let closed = node.router.close_session(session);
+            (closed, node.resources())
+        });
+        (handle, waits)
+    }
+
+    fn bootstrap_mac(request_id: &[u8]) -> Vec<u8> {
+        Message::BootstrapMac {
+            request_id: request_id.to_vec(),
+            sender: protocol::Role::Initiator,
+            mac: [0; 32],
+        }
+        .encode()
+        .unwrap()
+    }
+
+    #[test]
+    fn an_unknown_non_start_route_closes_a_one_run_session_without_guessing_that_run() {
+        let (i, si, r, a, id, start) = initiated("router-unknown-one");
+        let accept = r.accept(a, &start);
+        assert_eq!(
+            i.router.deliver(si, &accept).unwrap().output,
+            Inbound::Accept
+        );
+        i.local(si, &id, |run| run.authorize(&i.authority));
+        let ikey = i.local(si, &id, |run| run.expose_key()).output;
+        let limiter = r.limiter();
+        assert_eq!(r.resources(), (1, 1, 0, 0));
+        // X's own INITIATOR_KEY under an ID with no route on A. Had it fallen back to A's only
+        // run, that run would have answered (`InitiatorKey` or its own failure).
+        let misrouted = with_request_id(&ikey, &[0x77; 16]);
+        assert_eq!(
+            r.router.deliver(a, &misrouted).unwrap_err(),
+            RouteError::SessionProtocolFailure
+        );
+        // Already torn down when reported: X terminal, its route and slot gone, no result.
+        assert_eq!(r.resources(), (0, 0, 0, 0));
+        assert_eq!(r.status(), Status::Ready { remaining: 10 });
+        assert_eq!(r.limiter(), limiter);
+        assert_rejects_everything(&r, a);
+        assert_eq!(r.router.deliver(a, &ikey).unwrap_err(), CLOSED);
+        // The handle is never live again; a new session is fresh and owes nothing to A.
+        let b = r.session();
+        assert_ne!(a, b);
+        r.accept(b, &start);
+        assert_eq!(r.limiter().rolling, limiter.rolling + 1);
+        assert_eq!(r.state(b, &id), "ResponderAcceptSentAwaitInitiatorKey");
+        i.release();
+        r.release();
+    }
+
+    #[test]
+    fn an_unknown_non_start_route_fails_every_run_on_its_session_and_only_that_session() {
+        let r = Node::new("router-unknown-many");
+        let clock = ManualClock::new();
+        let (a, b) = (r.session(), r.session());
+        let (x, y, z, q) = ([1; 16], [2; 16], [3; 16], [9; 16]);
+        for (session, id) in [(a, x), (a, y), (a, z), (b, x)] {
+            assert!(matches!(
+                r.receive_at(&clock, session, &start_frame(&id)),
+                Ok(StartRouting::Accepted(_))
+            ));
+        }
+        assert_eq!(r.resources(), (4, 4, 0, 0));
+        let limiter = r.limiter();
+        clock.advance(Duration::from_secs(30));
+        assert_eq!(
+            r.router.deliver(a, &bootstrap_mac(&q)).unwrap_err(),
+            RouteError::SessionProtocolFailure
+        );
+        // Q reached nobody; X, Y, and Z on A all ended; B's equal-ID X is untouched.
+        assert_eq!(r.resources(), (1, 1, 0, 0));
+        assert_eq!(r.status(), Status::Ready { remaining: 10 });
+        assert_eq!(r.limiter(), limiter, "no limiter refund or reset");
+        assert_rejects_everything(&r, a);
+        assert_eq!(r.state(b, &x), "ResponderAcceptSentAwaitInitiatorKey");
+        // B's deadlines were neither refreshed nor disturbed.
+        clock.advance(INACTIVITY_DEADLINE - Duration::from_secs(30) - Duration::from_nanos(1));
+        assert_eq!(
+            r.local(b, &x, |run| run.poll_deadlines()).output,
+            DeadlineOutcome::Active
+        );
+        clock.advance(Duration::from_nanos(1));
+        assert!(matches!(
+            r.local(b, &x, |run| run.poll_deadlines()).output,
+            DeadlineOutcome::TimedOut(ref t) if t.expired() == Deadline::Inactivity
+        ));
+        // B is still open and routable.
+        r.refill();
+        r.accept(b, &start_frame(&y));
+        assert_eq!(r.resources(), (1, 1, 0, 0));
+        r.release();
+    }
+
+    #[test]
+    fn an_unknown_route_after_exposure_keeps_the_opportunity_and_sends_nothing() {
+        let (i, si, r, sr, id, start) = initiated("router-unknown-exposed");
+        let accept = r.accept(sr, &start);
+        exchange(&i, si, &r, sr, &id, &accept);
+        r.accept(sr, &start_frame(&[0x44; 16]));
+        assert_eq!(r.status(), Status::Busy);
+        assert_eq!(r.resources(), (2, 1, 0, 0));
+        let cancel = Message::Cancel {
+            request_id: vec![0x99; 16],
+            sender: protocol::Role::Initiator,
+            reason: CancelReason::UserCancellation,
+            mac: [0; 32],
+        }
+        .encode()
+        .unwrap();
+        // No authenticated statement names the exposed run, so nothing is sent for it.
+        assert_eq!(
+            r.router.deliver(sr, &cancel).unwrap_err(),
+            RouteError::SessionProtocolFailure
+        );
+        // SAS, approval, and session state dropped, then the guard released; the opportunity
+        // stays spent and no result exists.
+        assert_eq!(r.status(), Status::Ready { remaining: 9 });
+        assert_eq!(r.resources(), (0, 0, 0, 0));
+        assert_rejects_everything(&r, sr);
+        // The peer was not notified.
+        assert_eq!(i.state(si, &id), "AwaitLocalApproval");
+        i.release();
+        r.release();
+    }
+
+    #[test]
+    fn a_non_start_frame_for_a_start_still_being_admitted_fails_only_that_admission() {
+        let r = Node::new("router-unknown-admitting");
+        let a = r.session();
+        let (x, y) = ([1; 16], [2; 16]);
+        r.accept(a, &start_frame(&y));
+        let (arrived, arrival) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        thread::scope(|scope| {
+            let admit = scope.spawn(|| {
+                pause_at(Point::ResponderAdmitted, arrived, resumed);
+                r.receive(a, &start_frame(&x))
+            });
+            arrival.recv().unwrap();
+            // The key is claimed, so this frame is out of order for X, not an unknown route.
+            assert_eq!(r.router.deliver(a, &initiator_key(&x)).unwrap_err(), BAD);
+            resume.send(()).unwrap();
+            assert_eq!(admit.join().unwrap(), Err(BAD));
+        });
+        // X's admission was discarded with its slot; A and Y stayed live.
+        assert_eq!(r.resources(), (1, 1, 0, 0));
+        assert_eq!(r.state(a, &y), "ResponderAcceptSentAwaitInitiatorKey");
+        r.release();
+    }
+
+    #[test]
+    fn closing_during_responder_admission_waits_for_its_resources_and_suppresses_accept() {
+        let r = Node::new("router-close-admission");
+        let (a, b) = (r.session(), r.session());
+        r.accept(b, &start_frame(&[2; 16]));
+        let (arrived, arrival) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        thread::scope(|scope| {
+            let admit = scope.spawn(|| {
+                pause_at(Point::ResponderAdmitted, arrived, resumed);
+                r.receive(a, &start_frame(&[1; 16]))
+            });
+            arrival.recv().unwrap();
+            // Paused after limiter admission with a permit and a pending slot held.
+            let charged = r.limiter();
+            assert_eq!((charged.tokens, charged.rolling), (2, 2));
+            assert_eq!(r.resources(), (2, 2, 1, 0));
+            let (close, waits) = close_on(scope, &r, a);
+            // Close is now waiting on the one in-flight admission; A admits nothing new.
+            assert_eq!(waits.recv().unwrap(), 1);
+            assert_rejects_everything(&r, a);
+            assert!(!close.is_finished());
+            assert_eq!(r.resources(), (2, 2, 1, 0));
+            resume.send(()).unwrap();
+            // The admission observed the closing session: no ACCEPT, no route.
+            assert_eq!(admit.join().unwrap(), Err(CLOSED));
+            // When close returned, A's permit and slot were already released; B's remain.
+            assert_eq!(close.join().unwrap(), (Ok(()), (1, 1, 0, 0)));
+            // START admission is never refunded and nothing else was charged.
+            assert_eq!(r.limiter(), charged);
+        });
+        assert_eq!(r.state(b, &[2; 16]), "ResponderAcceptSentAwaitInitiatorKey");
+        assert_eq!(r.status(), Status::Ready { remaining: 10 });
+        r.release();
+    }
+
+    #[test]
+    fn closing_with_only_admitting_claims_waits_for_every_admission() {
+        let r = Node::new("router-close-claims");
+        let a = r.session();
+        let (arrived, arrival) = mpsc::channel();
+        thread::scope(|scope| {
+            let mut resumes = Vec::new();
+            let admissions: Vec<_> = [[1; 16], [2; 16]]
+                .into_iter()
+                .map(|id| {
+                    let (resume, resumed) = mpsc::channel();
+                    resumes.push(resume);
+                    let arrived = arrived.clone();
+                    let r = &r;
+                    scope.spawn(move || {
+                        pause_at(Point::ResponderAdmitted, arrived, resumed);
+                        r.receive(a, &start_frame(&id))
+                    })
+                })
+                .collect();
+            arrival.recv().unwrap();
+            arrival.recv().unwrap();
+            // Both permits and two slots held; no route is Active yet, both keys are claimed.
+            assert_eq!(r.resources(), (2, 2, 2, 0));
+            assert!(
+                r.router
+                    .table
+                    .lock()
+                    .unwrap()
+                    .routes
+                    .values()
+                    .all(|route| matches!(route, Route::Admitting { .. }))
+            );
+            let (close, waits) = close_on(scope, &r, a);
+            assert_eq!(waits.recv().unwrap(), 2);
+            assert_rejects_everything(&r, a);
+            assert!(!close.is_finished());
+            let mut admissions = admissions.into_iter();
+            resumes[0].send(()).unwrap();
+            assert_eq!(admissions.next().unwrap().join().unwrap(), Err(CLOSED));
+            // One admission has unwound and released its permit and slot; close still waits.
+            assert_eq!(r.resources(), (1, 1, 1, 0));
+            assert!(!close.is_finished());
+            resumes[1].send(()).unwrap();
+            assert_eq!(admissions.next().unwrap().join().unwrap(), Err(CLOSED));
+            assert_eq!(close.join().unwrap(), (Ok(()), (0, 0, 0, 0)));
+        });
+        // Both limiter charges stay; no SAS opportunity was involved.
+        let limiter = r.limiter();
+        assert_eq!((limiter.tokens, limiter.rolling), (2, 2));
+        assert_eq!(r.status(), Status::Ready { remaining: 10 });
+        r.release();
+    }
+
+    #[test]
+    fn closing_during_initiator_creation_releases_the_reservation_and_suppresses_start() {
+        let node = Node::new("router-close-initiator");
+        let (a, b) = (node.session(), node.session());
+        node.initiate(b);
+        let (arrived, arrival) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        thread::scope(|scope| {
+            let create = scope.spawn(|| {
+                pause_at(Point::InitiatorStarted, arrived, resumed);
+                node.router.start_initiator(a, initiator_bootstrap(), None)
+            });
+            arrival.recv().unwrap();
+            // START is built and its generated ID reserved, but nothing is routed yet.
+            assert_eq!(node.resources(), (1, 0, 0, 2));
+            let (close, waits) = close_on(scope, &node, a);
+            assert_eq!(waits.recv().unwrap(), 1);
+            assert_rejects_everything(&node, a);
+            assert!(!close.is_finished());
+            assert_eq!(node.reserved(), 2);
+            resume.send(()).unwrap();
+            // No usable START for the closed session.
+            assert_eq!(create.join().unwrap(), Err(CLOSED));
+            // The reservation was released before close returned; B's Initiator remains.
+            assert_eq!(close.join().unwrap(), (Ok(()), (1, 0, 0, 1)));
+        });
+        assert_eq!(node.status(), Status::Ready { remaining: 10 });
+        node.release();
+    }
+
+    #[test]
+    fn closing_during_an_entered_run_operation_waits_and_then_terminates_the_run() {
+        let (i, si, r, sr, id, start) = initiated("router-close-dispatch");
+        let accept = r.accept(sr, &start);
+        assert_eq!(
+            i.router.deliver(si, &accept).unwrap().output,
+            Inbound::Accept
+        );
+        i.local(si, &id, |run| run.authorize(&i.authority));
+        let ikey = i.local(si, &id, |run| run.expose_key()).output;
+        let (arrived, arrival) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel::<()>();
+        thread::scope(|scope| {
+            let op = scope.spawn(|| {
+                r.router.with_run(sr, &id, move |run| {
+                    arrived.send(()).unwrap();
+                    resumed.recv().unwrap();
+                    // Close never touched the run while this operation held it.
+                    assert_eq!(
+                        run.state_label_for_test(),
+                        "ResponderAcceptSentAwaitInitiatorKey"
+                    );
+                    run.receive_initiator_key(&ikey)
+                })
+            });
+            arrival.recv().unwrap();
+            let (close, waits) = close_on(scope, &r, sr);
+            assert_eq!(waits.recv().unwrap(), 1);
+            assert_rejects_everything(&r, sr);
+            assert!(!close.is_finished());
+            resume.send(()).unwrap();
+            // Entered before the close point, so it completes and keeps its outcome.
+            let done = op.join().unwrap().unwrap();
+            assert!(done.result.is_none());
+            // Then close terminated the run: route, slot, and permit all gone.
+            assert_eq!(close.join().unwrap(), (Ok(()), (0, 0, 0, 0)));
+        });
+        assert_eq!(r.status(), Status::Ready { remaining: 10 });
+        i.release();
+        r.release();
+    }
+
+    #[test]
+    fn uncertain_session_teardown_fails_closed_and_never_reopens() {
+        let r = Node::new("router-close-uncertain");
+        let (a, b, c) = (r.session(), r.session(), r.session());
+        let x = [1; 16];
+        for session in [a, b, c] {
+            r.accept(session, &start_frame(&x));
+        }
+        // A poisoned lifecycle admits nothing and cannot be reported closed.
+        let lifecycle = r.router.table.lock().unwrap().sessions[&a.session].clone();
+        let _ = thread::spawn(move || {
+            let _activity = lifecycle.activity.lock().unwrap();
+            panic!("simulate uncertain session state");
+        })
+        .join();
+        assert_eq!(r.router.close_session(a), Err(uncertain()));
+        assert_eq!(r.receive(a, &start_frame(&[2; 16])), Err(uncertain()));
+        assert_eq!(
+            r.router.with_run(a, &x, |_| Ok(())).unwrap_err(),
+            uncertain()
+        );
+        // Uncertain run cleanup leaves the session CLOSING for good: never reported closed.
+        let run = match r.router.table.lock().unwrap().routes.get(&RoutingKey {
+            session: b,
+            request_id: x.to_vec(),
+        }) {
+            Some(Route::Active(run)) => run.clone(),
+            _ => unreachable!(),
+        };
+        let _ = thread::spawn(move || {
+            let _run = run.lock().unwrap();
+            panic!("simulate uncertain run state");
+        })
+        .join();
+        assert_eq!(r.router.close_session(b), Err(uncertain()));
+        assert_rejects_everything(&r, b);
+        assert!(
+            r.router
+                .table
+                .lock()
+                .unwrap()
+                .sessions
+                .contains_key(&b.session)
+        );
+        // Other sessions are unaffected.
+        assert_eq!(r.state(c, &x), "ResponderAcceptSentAwaitInitiatorKey");
+        r.router.close_session(c).unwrap();
+        r.release();
     }
 }

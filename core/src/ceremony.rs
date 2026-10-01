@@ -645,6 +645,8 @@ impl RemoteCeremony {
             PendingAdmission::Admitted => {}
             PendingAdmission::NotEligible => return Err(CeremonyError::InvalidState),
         }
+        #[cfg(test)]
+        crate::test_hook::fire(crate::test_hook::Point::ResponderAdmitted);
         let ephemeral = EphemeralSas::new();
         let rpub = ephemeral.public_key();
         let commitment = crypto::commitment(&start, &rpub)?;
