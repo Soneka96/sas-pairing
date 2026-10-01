@@ -3,15 +3,20 @@
 //! handshake that yields a local, ceremony-scoped `PairingResult`. After SAS establishment,
 //! local reject/cancel emits a best-effort authenticated CANCEL and a verified peer CANCEL
 //! terminates the run without a result.
+//! The P3 11.3 five-minute absolute and 60-second inactivity deadlines are enforced before
+//! every state-advancing operation and by `poll_deadlines`; no scheduler exists, so a future
+//! host/adapter must drive the poll.
 //! Fixed request IDs are accepted only by this internal/test-scoped constructor;
 //! production request-ID generation and active routing reservation remain pending.
-//! Deadlines/timers and transport/resource admission are not implemented.
+//! Transport, timer scheduling, and resource admission are not implemented.
 #![allow(dead_code)] // The protocol remains internal until later P4 work defines its complete API.
 use crate::{
     Authorization, Ceremony, CeremonyExecutor, Error as OwnerError, Role, TrustedAuthority,
     crypto::{self, Completion, EphemeralSas, Established},
+    deadline::{CeremonyDeadlines, Clock, Deadline, Inactivity, Verdict, system_clock},
     protocol::{self, Bootstrap, CancelReason, DecodedMessage, Message},
 };
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CeremonyError {
@@ -43,6 +48,12 @@ pub(crate) enum CeremonyError {
     NoPendingFinalAck,
     /// A send confirmation named bytes other than this run's pending INITIATOR_FINISH_ACK.
     FinalAckMismatch,
+    /// A deadline had expired when this operation was attempted; the input was not applied
+    /// and the run is ALREADY terminal (see `Timeout`).
+    TimedOut(Timeout),
+    /// The monotonic clock gave no value, went backwards, or elapsed time was not computable.
+    /// The run failed closed (terminal, no result) without claiming an authenticated timeout.
+    ClockUnavailable,
 }
 impl From<OwnerError> for CeremonyError {
     fn from(e: OwnerError) -> Self {
@@ -130,6 +141,47 @@ enum State {
 enum PeerMac {
     Pending,
     Verified,
+}
+
+impl State {
+    /// The single inactivity-timer mapping (P3 11.3). Inactivity is suspended only while the
+    /// complete SAS is presented and awaits a deliberate human decision, even after the peer's
+    /// approval MAC verified; every other live state waits for machine/protocol progress. `None`
+    /// means no deadline applies. Deliberately exhaustive: a new state must choose its mode.
+    fn inactivity(&self) -> Option<Inactivity> {
+        match self {
+            State::AwaitLocalApproval { .. } => Some(Inactivity::Suspended),
+            State::InitiatorCreated { .. }
+            | State::InitiatorAwaitAccept { .. }
+            | State::InitiatorAwaitAuthorization { .. }
+            | State::InitiatorAwaitResponderKey { .. }
+            | State::ResponderAcceptSentAwaitInitiatorKey { .. }
+            | State::ResponderAwaitAuthorization { .. }
+            | State::LocallyApprovedAwaitingAuthentication { .. }
+            | State::LocalMacSentAwaitingPeerMac { .. }
+            | State::ApprovalsAuthenticatedAwaitingCompletion { .. }
+            | State::AwaitResponderFinish { .. }
+            | State::AwaitInitiatorFinishAck { .. }
+            | State::AwaitInitiatorFinishAckSend { .. } => Some(Inactivity::Running),
+            State::Succeeded(_) | State::Terminal => None,
+        }
+    }
+
+    /// Changes exactly when the run makes protocol progress: a new state, a recorded exposure
+    /// authorization, or a verified peer approval MAC. Exact duplicates, idempotent repeats,
+    /// and refused or stale input leave it unchanged.
+    fn progress_point(&self) -> (std::mem::Discriminant<State>, bool) {
+        let recorded = match self {
+            State::InitiatorAwaitAuthorization { authorization, .. }
+            | State::ResponderAwaitAuthorization { authorization, .. } => authorization.is_some(),
+            State::AwaitLocalApproval { peer, .. }
+            | State::LocallyApprovedAwaitingAuthentication { peer, .. } => {
+                *peer == PeerMac::Verified
+            }
+            _ => false,
+        };
+        (std::mem::discriminant(self), recorded)
+    }
 }
 
 /// Established-ceremony material, owned only by its state variant so every terminal
@@ -276,6 +328,39 @@ impl PeerCancellation {
     }
 }
 
+/// `poll_deadlines` outcome. Polling never refreshes either deadline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeadlineOutcome {
+    /// Live and not expired; nothing changed.
+    Active,
+    /// A deadline expired; the run is ALREADY terminal.
+    TimedOut(Timeout),
+    /// Already terminal or succeeded: no deadline applies and nothing changed.
+    Finished,
+}
+
+/// A local P3 11.3 timeout. The run is ALREADY terminal: no result, the SAS, session,
+/// approval, and any pending final ACK dropped, the guard released, and any consumed
+/// opportunity kept. Nothing about the network is reported or awaited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Timeout {
+    expired: Deadline,
+    cancel: Option<Vec<u8>>,
+}
+
+impl Timeout {
+    /// Diagnostic only; both deadlines use the one wire reason `0x03` timeout.
+    pub(crate) fn expired(&self) -> Deadline {
+        self.expired
+    }
+    /// Authenticated CANCEL reason `0x03` for best-effort sending, present only when a shared
+    /// SAS existed and construction succeeded. Before SAS establishment no authenticated
+    /// CANCEL exists. Returning it is not sending it.
+    pub(crate) fn cancel(&self) -> Option<&[u8]> {
+        self.cancel.as_deref()
+    }
+}
+
 /// P3 9 local verified completion for exactly one ceremony. It is NOT bilateral success: it
 /// does not mean the peer received the final message, returned its own result, or durably
 /// stored trust, and no distributed commit or common knowledge exists. The Initiator's final
@@ -343,11 +428,27 @@ pub(crate) struct RemoteCeremony {
     admission: Ceremony,
     state: State,
     seen: Vec<(u8, Vec<u8>)>,
+    clock: Clock,
+    deadlines: CeremonyDeadlines,
 }
 
 impl RemoteCeremony {
     /// Internal/test-scoped fixed request ID constructor, not a production initiation API.
+    /// Deadlines use a production `Instant`-backed monotonic clock.
     pub(crate) fn initiator(
+        executor: CeremonyExecutor,
+        admission: Ceremony,
+        start_bytes: &[u8],
+        local: Bootstrap,
+        expected: Option<Bootstrap>,
+    ) -> Result<Self, CeremonyError> {
+        let clock = system_clock();
+        Self::initiator_with_clock(clock, executor, admission, start_bytes, local, expected)
+    }
+
+    /// `initiator` with an injected monotonic clock used for this run's whole lifetime.
+    pub(crate) fn initiator_with_clock(
+        clock: Clock,
         executor: CeremonyExecutor,
         admission: Ceremony,
         start_bytes: &[u8],
@@ -369,6 +470,8 @@ impl RemoteCeremony {
         if local.canonical_bytes() != peer.canonical_bytes() {
             return Err(CeremonyError::InvalidState);
         }
+        // P3 11.3: the Initiator's absolute deadline starts when its local state is created.
+        let now = clock.now().ok_or(CeremonyError::ClockUnavailable)?;
         Ok(Self {
             executor,
             admission,
@@ -378,11 +481,27 @@ impl RemoteCeremony {
                 expected,
             },
             seen: Vec::new(),
+            clock,
+            deadlines: CeremonyDeadlines::start(now),
         })
     }
 
     /// Accept START after pre-exposure checks; ACCEPT carries commitment but never R_pub.
+    /// Deadlines use a production `Instant`-backed monotonic clock.
     pub(crate) fn responder(
+        executor: CeremonyExecutor,
+        admission: Ceremony,
+        start_bytes: &[u8],
+        local: Bootstrap,
+        expected: Option<Bootstrap>,
+    ) -> Result<(Self, Vec<u8>), CeremonyError> {
+        let clock = system_clock();
+        Self::responder_with_clock(clock, executor, admission, start_bytes, local, expected)
+    }
+
+    /// `responder` with an injected monotonic clock used for this run's whole lifetime.
+    pub(crate) fn responder_with_clock(
+        clock: Clock,
         executor: CeremonyExecutor,
         admission: Ceremony,
         start_bytes: &[u8],
@@ -401,6 +520,10 @@ impl RemoteCeremony {
             return Err(CeremonyError::InvalidState);
         }
         validate_bootstraps(&local, peer, expected.as_ref())?;
+        // P3 11.3 starts the Responder's absolute deadline when a bounded START passes local
+        // admission into active state. No resource-admission layer exists yet, so this is the
+        // earliest point where this constructor has accepted the START and creates that state.
+        let now = clock.now().ok_or(CeremonyError::ClockUnavailable)?;
         let ephemeral = EphemeralSas::new();
         let rpub = ephemeral.public_key();
         let commitment = crypto::commitment(&start, &rpub)?;
@@ -421,11 +544,80 @@ impl RemoteCeremony {
                 rpub,
             },
             seen: vec![(1, start.canonical_bytes().to_vec())],
+            clock,
+            deadlines: CeremonyDeadlines::start(now),
         };
         Ok((run, accept_bytes))
     }
 
+    /// Crate-private hook for the future host/adapter, which must call it to drive expiry: no
+    /// scheduler, thread, or timer exists. It reads the injected clock and, if a deadline has
+    /// expired, times the run out (see `time_out`). A clock that gives no value or goes
+    /// backwards fails the run closed with `ClockUnavailable` and no CANCEL. Uncertain guard
+    /// release is `Owner(OwnershipUncertain)` with any built CANCEL withheld.
+    pub(crate) fn poll_deadlines(&mut self) -> Result<DeadlineOutcome, CeremonyError> {
+        match self.enforce_deadlines() {
+            Ok(Some(_)) => Ok(DeadlineOutcome::Active),
+            Ok(None) => Ok(DeadlineOutcome::Finished),
+            Err(CeremonyError::TimedOut(timeout)) => Ok(DeadlineOutcome::TimedOut(timeout)),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Runs one entrypoint that can advance the ceremony. Deadlines are enforced first, so an
+    /// expired run times out instead of accepting the input. Afterwards the inactivity window
+    /// restarts at the checked instant only if the run made protocol progress (its
+    /// `progress_point` changed) and is still live; duplicates, idempotent repeats, and
+    /// refused input change nothing and buy no time. The absolute deadline is never touched.
+    fn step<T>(
+        &mut self,
+        op: impl FnOnce(&mut Self) -> Result<T, CeremonyError>,
+    ) -> Result<T, CeremonyError> {
+        let Some(now) = self.enforce_deadlines()? else {
+            return op(self);
+        };
+        let before = self.state.progress_point();
+        let result = op(self);
+        if self.state.inactivity().is_some() && self.state.progress_point() != before {
+            self.deadlines.record_progress(now);
+        }
+        result
+    }
+
+    /// `Ok(Some(now))` while live and unexpired; `Ok(None)` once terminal or succeeded, where
+    /// deadlines no longer apply and the clock is not read. Otherwise the run is already
+    /// terminal: `TimedOut`, or `ClockUnavailable` for an unusable clock.
+    fn enforce_deadlines(&mut self) -> Result<Option<Duration>, CeremonyError> {
+        let Some(inactivity) = self.state.inactivity() else {
+            return Ok(None);
+        };
+        let now = self.clock.now();
+        match self.deadlines.check(now, inactivity) {
+            Verdict::Live => Ok(now),
+            Verdict::Expired(deadline) => Err(CeremonyError::TimedOut(self.time_out(deadline)?)),
+            Verdict::UnsafeClock => {
+                // An unusable clock is not evidence of a timeout: fail closed, claim nothing.
+                self.terminate()?;
+                Err(CeremonyError::ClockUnavailable)
+            }
+        }
+    }
+
+    /// Core-owned P3 11.3 local timeout; no caller-supplied identity is involved. With a live
+    /// `SasSession` it follows local cancellation exactly: build the authenticated CANCEL
+    /// reason `0x03` while `EstablishedSas` exists, drop the session, release the guard, and
+    /// only then return the bytes. Before shared SAS establishment it is local terminal
+    /// failure with no wire output.
+    fn time_out(&mut self, expired: Deadline) -> Result<Timeout, CeremonyError> {
+        let cancel = self.end_with_cancel(CancelReason::Timeout)?;
+        Ok(Timeout { expired, cancel })
+    }
+
     pub(crate) fn start(&mut self) -> Result<Vec<u8>, CeremonyError> {
+        self.step(Self::start_inner)
+    }
+
+    fn start_inner(&mut self) -> Result<Vec<u8>, CeremonyError> {
         if !matches!(self.state, State::InitiatorCreated { .. }) {
             return self.reject_order();
         }
@@ -447,6 +639,10 @@ impl RemoteCeremony {
     }
 
     pub(crate) fn receive_start_duplicate(&mut self, bytes: &[u8]) -> Result<(), CeremonyError> {
+        self.step(|run| run.receive_start_duplicate_inner(bytes))
+    }
+
+    fn receive_start_duplicate_inner(&mut self, bytes: &[u8]) -> Result<(), CeremonyError> {
         let msg = self.decode(bytes)?;
         if !matches!(msg.message, Message::Start { .. }) {
             return self.reject_order();
@@ -516,19 +712,37 @@ impl RemoteCeremony {
 
     /// Available only while this exact SAS awaits a local decision (I2), including after a
     /// peer approval MAC is verified. It never exists before `ceremony_identity` is fixed and
-    /// is withdrawn by local approval or any terminal path.
+    /// is withdrawn by local approval or any terminal path. It is also withheld, read-only and
+    /// without refreshing anything, once a deadline has expired or the clock is unusable, even
+    /// before the next poll or operation makes the run terminal.
     pub(crate) fn presentation(&self) -> Option<SasPresentation> {
         match &self.state {
-            State::AwaitLocalApproval { session, .. } => Some(SasPresentation {
-                ceremony_identity: session.ceremony_identity,
-                decimal: session.decimal.clone(),
-            }),
+            State::AwaitLocalApproval { session, .. } if self.deadlines_live() => {
+                Some(SasPresentation {
+                    ceremony_identity: session.ceremony_identity,
+                    decimal: session.decimal.clone(),
+                })
+            }
             _ => None,
         }
     }
 
+    /// Read-only: a live state whose deadlines have not expired under a usable clock.
+    fn deadlines_live(&self) -> bool {
+        self.state.inactivity().is_some_and(|inactivity| {
+            self.deadlines.evaluate(self.clock.now(), inactivity) == Verdict::Live
+        })
+    }
+
     /// Local MATCH for exactly this transcript-derived identity. A request ID is never accepted.
     pub(crate) fn approve_sas(
+        &mut self,
+        ceremony_identity: &[u8; 32],
+    ) -> Result<SasApproval, CeremonyError> {
+        self.step(|run| run.approve_sas_inner(ceremony_identity))
+    }
+
+    fn approve_sas_inner(
         &mut self,
         ceremony_identity: &[u8; 32],
     ) -> Result<SasApproval, CeremonyError> {
@@ -548,6 +762,10 @@ impl RemoteCeremony {
     /// Produces own canonical BOOTSTRAP_MAC exactly once, only after local MATCH. Before local
     /// approval, or with no live SAS, it fails without output or effect; it never approves.
     pub(crate) fn emit_bootstrap_mac(&mut self) -> Result<BootstrapMacEmission, CeremonyError> {
+        self.step(Self::emit_bootstrap_mac_inner)
+    }
+
+    fn emit_bootstrap_mac_inner(&mut self) -> Result<BootstrapMacEmission, CeremonyError> {
         match &self.state {
             State::LocallyApprovedAwaitingAuthentication { .. } => {}
             State::LocalMacSentAwaitingPeerMac { .. }
@@ -584,6 +802,10 @@ impl RemoteCeremony {
         &mut self,
         bytes: &[u8],
     ) -> Result<PeerApproval, CeremonyError> {
+        self.step(|run| run.receive_bootstrap_mac_inner(bytes))
+    }
+
+    fn receive_bootstrap_mac_inner(&mut self, bytes: &[u8]) -> Result<PeerApproval, CeremonyError> {
         let msg = self.decode(bytes)?;
         if !matches!(msg.message, Message::BootstrapMac { .. }) {
             return self.reject_order();
@@ -656,6 +878,10 @@ impl RemoteCeremony {
     /// refusal is non-terminal and has no effect. Consumes no opportunity, needs no new
     /// exposure authorization, and keeps the one guard already held.
     pub(crate) fn emit_initiator_finish(&mut self) -> Result<FinishEmission, CeremonyError> {
+        self.step(Self::emit_initiator_finish_inner)
+    }
+
+    fn emit_initiator_finish_inner(&mut self) -> Result<FinishEmission, CeremonyError> {
         if matches!(self.state, State::Succeeded(_)) {
             return Err(CeremonyError::Completed);
         }
@@ -693,6 +919,13 @@ impl RemoteCeremony {
     /// never queued. After local success every later input is rejected as `Completed`
     /// without touching the result.
     pub(crate) fn receive_completion(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<CompletionReceipt, CeremonyError> {
+        self.step(|run| run.receive_completion_inner(bytes))
+    }
+
+    fn receive_completion_inner(
         &mut self,
         bytes: &[u8],
     ) -> Result<CompletionReceipt, CeremonyError> {
@@ -773,8 +1006,16 @@ impl RemoteCeremony {
     /// received, verified, or succeeded, and not a delivery or storage receipt; there is no
     /// fourth message. The core performs no network I/O here. Bytes other than the pending
     /// frame, or a call with no pending frame, are rejected without any effect and never
-    /// create a result; after success the call is `Completed`.
+    /// create a result; after success the call is `Completed`. Deadlines are checked first: a
+    /// confirmation arriving after expiry times the run out and never creates a result.
     pub(crate) fn confirm_initiator_finish_ack_sent(
+        &mut self,
+        sent: &[u8],
+    ) -> Result<(), CeremonyError> {
+        self.step(|run| run.confirm_initiator_finish_ack_sent_inner(sent))
+    }
+
+    fn confirm_initiator_finish_ack_sent_inner(
         &mut self,
         sent: &[u8],
     ) -> Result<(), CeremonyError> {
@@ -819,7 +1060,7 @@ impl RemoteCeremony {
         &mut self,
         ceremony_identity: &[u8; 32],
     ) -> Result<LocalCancellation, CeremonyError> {
-        self.cancel_locally(ceremony_identity, CancelReason::UserRejection)
+        self.step(|run| run.cancel_locally(ceremony_identity, CancelReason::UserRejection))
     }
 
     /// Local CANCEL: terminal failure with CANCEL reason `0x02` user cancellation. See
@@ -828,11 +1069,11 @@ impl RemoteCeremony {
         &mut self,
         ceremony_identity: &[u8; 32],
     ) -> Result<LocalCancellation, CeremonyError> {
-        self.cancel_locally(ceremony_identity, CancelReason::UserCancellation)
+        self.step(|run| run.cancel_locally(ceremony_identity, CancelReason::UserCancellation))
     }
 
     /// P3 11.3 local cancellation of the live established ceremony `ceremony_identity`, for any
-    /// defined reason (private so later timeout/policy handling can reuse it; no timer exists).
+    /// defined reason (core-owned timeout shares `end_with_cancel` without an identity).
     /// Order: exact-identity check; build the authenticated CANCEL while `EstablishedSas` still
     /// exists; irrevocably drop the session (SAS, approval, any pending final ACK); release the
     /// guard; only then hand back the bytes. Past the identity check the run is terminal on
@@ -850,12 +1091,25 @@ impl RemoteCeremony {
         ceremony_identity: &[u8; 32],
         reason: CancelReason,
     ) -> Result<LocalCancellation, CeremonyError> {
-        let notification = own_cancel(self.live_session(ceremony_identity)?, reason);
-        self.terminate()?;
-        Ok(match notification {
-            Ok(bytes) => LocalCancellation::Emitted(bytes),
-            Err(_) => LocalCancellation::NotEmitted,
+        self.live_session(ceremony_identity)?;
+        Ok(match self.end_with_cancel(reason)? {
+            Some(bytes) => LocalCancellation::Emitted(bytes),
+            None => LocalCancellation::NotEmitted,
         })
+    }
+
+    /// Shared local-termination order for cancellation and timeout: build the authenticated
+    /// CANCEL for `reason` while a live `SasSession` (and its `EstablishedSas`) still exists,
+    /// then terminate (drop the session, SAS, approval, and any pending final ACK, then release
+    /// the guard), and only then hand back the bytes. `None` when no shared SAS exists or
+    /// construction failed; the run is terminal either way. Uncertain guard release returns
+    /// `Owner(OwnershipUncertain)` and withholds the built frame.
+    fn end_with_cancel(&mut self, reason: CancelReason) -> Result<Option<Vec<u8>>, CeremonyError> {
+        let notification = self
+            .session()
+            .and_then(|session| own_cancel(session, reason).ok());
+        self.terminate()?;
+        Ok(notification)
     }
 
     /// Receives the peer's CANCEL (P3 11.3). With a live established SAS it requires canonical
@@ -872,6 +1126,10 @@ impl RemoteCeremony {
         &mut self,
         bytes: &[u8],
     ) -> Result<PeerCancellation, CeremonyError> {
+        self.step(|run| run.receive_cancel_inner(bytes))
+    }
+
+    fn receive_cancel_inner(&mut self, bytes: &[u8]) -> Result<PeerCancellation, CeremonyError> {
         if matches!(self.state, State::Succeeded(_)) {
             return Err(CeremonyError::Completed);
         }
@@ -935,6 +1193,10 @@ impl RemoteCeremony {
     }
 
     pub(crate) fn receive_accept(&mut self, bytes: &[u8]) -> Result<(), CeremonyError> {
+        self.step(|run| run.receive_accept_inner(bytes))
+    }
+
+    fn receive_accept_inner(&mut self, bytes: &[u8]) -> Result<(), CeremonyError> {
         let msg = self.decode(bytes)?;
         if self.duplicate(2, bytes)? {
             return Ok(());
@@ -978,6 +1240,10 @@ impl RemoteCeremony {
     }
 
     pub(crate) fn receive_initiator_key(&mut self, bytes: &[u8]) -> Result<(), CeremonyError> {
+        self.step(|run| run.receive_initiator_key_inner(bytes))
+    }
+
+    fn receive_initiator_key_inner(&mut self, bytes: &[u8]) -> Result<(), CeremonyError> {
         let msg = self.decode(bytes)?;
         if self.duplicate(3, bytes)? {
             return Ok(());
@@ -1018,6 +1284,10 @@ impl RemoteCeremony {
     }
 
     pub(crate) fn receive_responder_key(&mut self, bytes: &[u8]) -> Result<(), CeremonyError> {
+        self.step(|run| run.receive_responder_key_inner(bytes))
+    }
+
+    fn receive_responder_key_inner(&mut self, bytes: &[u8]) -> Result<(), CeremonyError> {
         let msg = self.decode(bytes)?;
         if self.duplicate(4, bytes)? {
             return Ok(());
@@ -1067,6 +1337,10 @@ impl RemoteCeremony {
 
     /// Called only after the role-specific preconditions are satisfied.
     pub(crate) fn authorize(&mut self, authority: &TrustedAuthority) -> Result<(), CeremonyError> {
+        self.step(|run| run.authorize_inner(authority))
+    }
+
+    fn authorize_inner(&mut self, authority: &TrustedAuthority) -> Result<(), CeremonyError> {
         if !matches!(
             self.state,
             State::InitiatorAwaitAuthorization {
@@ -1095,6 +1369,10 @@ impl RemoteCeremony {
 
     /// Atomically reserves immediately before returning this role's public contribution.
     pub(crate) fn expose_key(&mut self) -> Result<Vec<u8>, CeremonyError> {
+        self.step(Self::expose_key_inner)
+    }
+
+    fn expose_key_inner(&mut self) -> Result<Vec<u8>, CeremonyError> {
         let state = std::mem::replace(&mut self.state, State::Terminal);
         match state {
             State::InitiatorAwaitAuthorization {
@@ -1399,8 +1677,13 @@ fn validate_bootstraps(
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
-    use crate::{Status, protocol};
+    use crate::{
+        Status,
+        deadline::{ABSOLUTE_DEADLINE, INACTIVITY_DEADLINE, ManualClock},
+        protocol,
+    };
     use serde_json::Value;
+    use std::sync::Arc;
 
     fn hex(value: &str) -> Vec<u8> {
         value
@@ -2034,8 +2317,14 @@ mod tests {
     /// Runs one legal key exchange with the fixed-request-ID vector START and fresh keys.
     /// No SAS presentation may exist, and no local decision may apply, before both keys.
     fn establish(a: &Authorities) -> Pair {
+        establish_with(a, system_clock(), system_clock())
+    }
+
+    /// `establish` with injected per-endpoint clocks.
+    fn establish_with(a: &Authorities, clock_i: Clock, clock_r: Clock) -> Pair {
         let start = vector("START");
-        let mut i = RemoteCeremony::initiator(
+        let mut i = RemoteCeremony::initiator_with_clock(
+            clock_i,
             a.ei.clone(),
             a.ei.begin(Role::Initiator).unwrap(),
             &start,
@@ -2045,7 +2334,8 @@ mod tests {
         .unwrap();
         assert_no_live_sas(&i);
         i.start().unwrap();
-        let (mut r, accept) = RemoteCeremony::responder(
+        let (mut r, accept) = RemoteCeremony::responder_with_clock(
+            clock_r,
             a.er.clone(),
             a.er.begin(Role::Responder).unwrap(),
             &start,
@@ -4218,7 +4508,7 @@ mod tests {
     fn live_timeout_cancel_r_to_i_is_authenticated_without_any_timer() {
         let a = Authorities::new("cancel-live-r-to-i");
         let (mut pair, id) = approvals_authenticated(&a);
-        // The private reason-generic path a later timeout trigger would use; no clock exists.
+        // The private reason-generic path; deadline expiry reaches the same construction.
         let cancel = emitted_cancel(pair.r.cancel_locally(&id, CancelReason::Timeout));
         let (rid, sender, reason, _) = cancel_parts(&cancel);
         assert_eq!(
@@ -4902,6 +5192,1021 @@ mod tests {
         assert_stale(&mut pair.i, &id);
         assert!(pair.i.receive_cancel(&cancel).is_err());
         assert_guard_held_uncertainly(&a.ei);
+        drop(pair);
+        a.release();
+    }
+
+    // P3 11.3 ceremony deadlines. Every clock is hand-advanced; no test sleeps.
+
+    const NS: Duration = Duration::from_nanos(1);
+
+    fn secs(value: u64) -> Duration {
+        Duration::from_secs(value)
+    }
+
+    /// `establish` with one hand-advanced clock per endpoint, both starting at zero.
+    fn establish_timed(a: &Authorities) -> (Pair, Arc<ManualClock>, Arc<ManualClock>) {
+        let (ci, cr) = (ManualClock::new(), ManualClock::new());
+        (establish_with(a, ci.clone(), cr.clone()), ci, cr)
+    }
+
+    /// Both approvals authenticated at clock zero on each side.
+    fn approvals_timed(a: &Authorities) -> (Pair, [u8; 32], Arc<ManualClock>, Arc<ManualClock>) {
+        let (mut pair, ci, cr) = establish_timed(a);
+        let id = pair.identity();
+        authenticate(&mut pair, &id);
+        (pair, id, ci, cr)
+    }
+
+    /// A started Initiator awaiting ACCEPT, created at the clock's current value.
+    fn timed_initiator(a: &Authorities, clock: &Arc<ManualClock>) -> RemoteCeremony {
+        let mut run = RemoteCeremony::initiator_with_clock(
+            clock.clone(),
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            &vector("START"),
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap();
+        run.start().unwrap();
+        run
+    }
+
+    /// A Responder that accepted the vector START at the clock's current value.
+    fn timed_responder(a: &Authorities, clock: &Arc<ManualClock>) -> RemoteCeremony {
+        RemoteCeremony::responder_with_clock(
+            clock.clone(),
+            a.er.clone(),
+            a.er.begin(Role::Responder).unwrap(),
+            &vector("START"),
+            bootstrap(&decoded("ACCEPT"), false),
+            None,
+        )
+        .unwrap()
+        .0
+    }
+
+    fn active(run: &mut RemoteCeremony) {
+        assert_eq!(run.poll_deadlines(), Ok(DeadlineOutcome::Active));
+    }
+
+    /// The poll found `expired`; the run is already terminal. Returns any CANCEL bytes.
+    fn timed_out(
+        outcome: Result<DeadlineOutcome, CeremonyError>,
+        expired: Deadline,
+    ) -> Option<Vec<u8>> {
+        match outcome {
+            Ok(DeadlineOutcome::TimedOut(timeout)) => {
+                assert_eq!(timeout.expired(), expired);
+                timeout.cancel().map(<[u8]>::to_vec)
+            }
+            other => panic!("expected a {expired:?} timeout, got {other:?}"),
+        }
+    }
+
+    /// An operation met an expired deadline: its input was not applied and the run is
+    /// already terminal. Returns any CANCEL bytes.
+    fn refused_by_timeout<T: std::fmt::Debug>(
+        result: Result<T, CeremonyError>,
+        expired: Deadline,
+    ) -> Option<Vec<u8>> {
+        match result {
+            Err(CeremonyError::TimedOut(timeout)) => {
+                assert_eq!(timeout.expired(), expired);
+                timeout.cancel().map(<[u8]>::to_vec)
+            }
+            other => panic!("expected a {expired:?} timeout, got {other:?}"),
+        }
+    }
+
+    /// The exact frozen authenticated CANCEL with reason `0x03` timeout from `sender`.
+    fn assert_timeout_cancel(cancel: &[u8], sender: protocol::Role) {
+        assert_eq!(cancel[9], 0x09);
+        let (request_id, from, reason, _) = cancel_parts(cancel);
+        assert_eq!(
+            (request_id, from, reason),
+            (vector_request_id(), sender, CancelReason::Timeout)
+        );
+    }
+
+    /// The peer verifies the CANCEL as authenticated timeout cancellation and fails too.
+    fn deliver_timeout(
+        peer: &mut RemoteCeremony,
+        executor: &CeremonyExecutor,
+        cancel: &[u8],
+        id: &[u8; 32],
+    ) {
+        assert_eq!(
+            peer.receive_cancel(cancel).map(|c| c.reason()),
+            Ok(CancelReason::Timeout)
+        );
+        assert_failed(peer, executor, id);
+    }
+
+    /// Pre-SAS timeout: terminal, no result or SAS, guard released, `remaining` kept.
+    fn assert_failed_pre_sas(run: &RemoteCeremony, executor: &CeremonyExecutor, remaining: u8) {
+        assert!(matches!(run.state, State::Terminal) && run.result().is_none());
+        assert!(run.session().is_none() && run.presentation().is_none());
+        assert!(run.admission.terminal);
+        assert_eq!(executor.status().unwrap(), Status::Ready { remaining });
+    }
+
+    fn state_name(state: &State) -> String {
+        let name = match state {
+            State::InitiatorCreated { .. } => "InitiatorCreated",
+            State::InitiatorAwaitAccept { .. } => "InitiatorAwaitAccept",
+            State::InitiatorAwaitAuthorization { .. } => "InitiatorAwaitAuthorization",
+            State::InitiatorAwaitResponderKey { .. } => "InitiatorAwaitResponderKey",
+            State::ResponderAcceptSentAwaitInitiatorKey { .. } => {
+                "ResponderAcceptSentAwaitInitiatorKey"
+            }
+            State::ResponderAwaitAuthorization { .. } => "ResponderAwaitAuthorization",
+            State::AwaitLocalApproval { .. } => "AwaitLocalApproval",
+            State::LocallyApprovedAwaitingAuthentication { .. } => {
+                "LocallyApprovedAwaitingAuthentication"
+            }
+            State::LocalMacSentAwaitingPeerMac { .. } => "LocalMacSentAwaitingPeerMac",
+            State::ApprovalsAuthenticatedAwaitingCompletion { .. } => {
+                "ApprovalsAuthenticatedAwaitingCompletion"
+            }
+            State::AwaitResponderFinish { .. } => "AwaitResponderFinish",
+            State::AwaitInitiatorFinishAck { .. } => "AwaitInitiatorFinishAck",
+            State::AwaitInitiatorFinishAckSend { .. } => "AwaitInitiatorFinishAckSend",
+            State::Succeeded(_) => "Succeeded",
+            State::Terminal => "Terminal",
+        };
+        let detail = match state {
+            State::InitiatorAwaitAuthorization {
+                authorization: Some(_),
+                ..
+            }
+            | State::ResponderAwaitAuthorization {
+                authorization: Some(_),
+                ..
+            } => "+authorized",
+            State::AwaitLocalApproval {
+                peer: PeerMac::Verified,
+                ..
+            }
+            | State::LocallyApprovedAwaitingAuthentication {
+                peer: PeerMac::Verified,
+                ..
+            } => "+peer-mac",
+            _ => "",
+        };
+        format!("{name}{detail}")
+    }
+
+    #[test]
+    fn every_state_has_its_intended_inactivity_mode() {
+        use Inactivity::{Running, Suspended};
+        let a = Authorities::new("deadline-state-table");
+        let mut table = Vec::new();
+        let mut note = |run: &RemoteCeremony| {
+            table.push((state_name(&run.state), run.state.inactivity()));
+        };
+        let start = vector("START");
+        let mut i = RemoteCeremony::initiator(
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            &start,
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap();
+        note(&i);
+        i.start().unwrap();
+        note(&i);
+        let (mut r, accept) = RemoteCeremony::responder(
+            a.er.clone(),
+            a.er.begin(Role::Responder).unwrap(),
+            &start,
+            bootstrap(&decoded("ACCEPT"), false),
+            None,
+        )
+        .unwrap();
+        note(&r);
+        i.receive_accept(&accept).unwrap();
+        note(&i);
+        i.authorize(&a.i).unwrap();
+        note(&i);
+        let ikey = i.expose_key().unwrap();
+        note(&i);
+        r.receive_initiator_key(&ikey).unwrap();
+        note(&r);
+        r.authorize(&a.r).unwrap();
+        note(&r);
+        let rkey = r.expose_key().unwrap();
+        note(&r);
+        i.receive_responder_key(&rkey).unwrap();
+        let id = *i.presentation().unwrap().ceremony_identity();
+        r.approve_sas(&id).unwrap();
+        note(&r);
+        let r_mac = emitted(&mut r);
+        note(&r);
+        i.receive_bootstrap_mac(&r_mac).unwrap();
+        note(&i);
+        i.approve_sas(&id).unwrap();
+        note(&i);
+        let i_mac = emitted(&mut i);
+        note(&i);
+        r.receive_bootstrap_mac(&i_mac).unwrap();
+        let i_finish = finish(&mut i);
+        note(&i);
+        let r_ack = responder_ack(&mut r, &i_finish);
+        note(&r);
+        let i_ack = initiator_ack(&mut i, &r_ack);
+        note(&i);
+        confirm_sent(&mut i, &i_ack);
+        note(&i);
+        r.receive_completion(&i_ack).unwrap();
+        let mut failed = establish(&a);
+        failed.i.terminate().unwrap();
+        note(&failed.i);
+        assert_eq!(
+            table,
+            [
+                ("InitiatorCreated", Some(Running)),
+                ("InitiatorAwaitAccept", Some(Running)),
+                ("ResponderAcceptSentAwaitInitiatorKey", Some(Running)),
+                ("InitiatorAwaitAuthorization", Some(Running)),
+                ("InitiatorAwaitAuthorization+authorized", Some(Running)),
+                ("InitiatorAwaitResponderKey", Some(Running)),
+                ("ResponderAwaitAuthorization", Some(Running)),
+                ("ResponderAwaitAuthorization+authorized", Some(Running)),
+                // Complete SAS displayed, awaiting a deliberate human decision.
+                ("AwaitLocalApproval", Some(Suspended)),
+                ("LocallyApprovedAwaitingAuthentication", Some(Running)),
+                ("LocalMacSentAwaitingPeerMac", Some(Running)),
+                // The peer's approval MAC does not end the human wait.
+                ("AwaitLocalApproval+peer-mac", Some(Suspended)),
+                (
+                    "LocallyApprovedAwaitingAuthentication+peer-mac",
+                    Some(Running)
+                ),
+                ("ApprovalsAuthenticatedAwaitingCompletion", Some(Running)),
+                ("AwaitResponderFinish", Some(Running)),
+                ("AwaitInitiatorFinishAck", Some(Running)),
+                ("AwaitInitiatorFinishAckSend", Some(Running)),
+                ("Succeeded", None),
+                ("Terminal", None),
+            ]
+            .map(|(name, mode)| (name.to_string(), mode))
+        );
+        drop((i, r, failed));
+        a.release();
+    }
+
+    #[test]
+    fn absolute_deadline_starts_at_creation_and_no_transition_refreshes_it() {
+        let a = Authorities::new("deadline-absolute-start");
+        let (ci, cr) = (ManualClock::new(), ManualClock::new());
+        // Clock values before each run's start point never count against it.
+        ci.set(secs(1_000));
+        cr.set(secs(5_000));
+        let start = vector("START");
+        let mut i = RemoteCeremony::initiator_with_clock(
+            ci.clone(),
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            &start,
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap(); // I absolute: 1_000 + 300.
+        ci.advance(secs(50));
+        i.start().unwrap();
+        cr.advance(secs(20));
+        let (mut r, accept) = RemoteCeremony::responder_with_clock(
+            cr.clone(),
+            a.er.clone(),
+            a.er.begin(Role::Responder).unwrap(),
+            &start,
+            bootstrap(&decoded("ACCEPT"), false),
+            None,
+        )
+        .unwrap(); // R absolute: START accepted at 5_020, + 300.
+        ci.advance(secs(50));
+        i.receive_accept(&accept).unwrap();
+        i.receive_accept(&accept).unwrap();
+        ci.advance(secs(50));
+        i.authorize(&a.i).unwrap();
+        ci.advance(secs(50));
+        let ikey = i.expose_key().unwrap();
+        cr.advance(secs(50));
+        r.receive_initiator_key(&ikey).unwrap();
+        cr.advance(secs(50));
+        r.authorize(&a.r).unwrap();
+        cr.advance(secs(50));
+        let rkey = r.expose_key().unwrap();
+        ci.advance(secs(50));
+        i.receive_responder_key(&rkey).unwrap();
+        let id = pair_identity(&i);
+        ci.advance(secs(40));
+        let i_mac = approve_and_emit(&mut i, &id);
+        cr.advance(secs(130));
+        let r_mac = approve_and_emit(&mut r, &id);
+        ci.advance(secs(5));
+        i.receive_bootstrap_mac(&r_mac).unwrap();
+        cr.advance(secs(10));
+        r.receive_bootstrap_mac(&i_mac).unwrap();
+
+        // I made progress five seconds ago, so only the absolute deadline can expire.
+        ci.advance(secs(5) - NS);
+        active(&mut i);
+        assert!(i.is_ready_for_completion());
+        ci.advance(NS);
+        let cancel = timed_out(i.poll_deadlines(), Deadline::Absolute).unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Initiator);
+        assert_failed(&mut i, &a.ei, &id);
+
+        // R's deadline counts from START acceptance at 5_020, not from its clock's earlier
+        // values (which would already have expired at 5_300) and not from any later step.
+        cr.advance(secs(10) - NS);
+        active(&mut r);
+        cr.advance(NS);
+        let cancel = timed_out(r.poll_deadlines(), Deadline::Absolute).unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Responder);
+        assert_failed(&mut r, &a.er, &id);
+        drop((i, r));
+        a.release();
+    }
+
+    fn pair_identity(run: &RemoteCeremony) -> [u8; 32] {
+        *run.presentation().unwrap().ceremony_identity()
+    }
+
+    #[test]
+    fn absolute_timeout_during_human_comparison_emits_an_authenticated_timeout_cancel() {
+        let a = Authorities::new("deadline-absolute-sas");
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        ci.advance(ABSOLUTE_DEADLINE - NS);
+        active(&mut pair.i);
+        assert!(pair.i.is_awaiting_approval() && pair.i.presentation().is_some());
+        ci.advance(NS);
+        // Withdrawn read-only even before the poll makes the run terminal.
+        assert_eq!(pair.i.presentation(), None);
+        let ops = crypto::mac_operations();
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Absolute).unwrap();
+        assert_eq!(crypto::mac_operations(), ops + 1, "one calculate_mac");
+        assert_timeout_cancel(&cancel, protocol::Role::Initiator);
+        // Terminal before any delivery: no result, SAS, session, or callbacks; guard
+        // released; the consumed opportunity kept.
+        assert_failed(&mut pair.i, &a.ei, &id);
+        assert!(pair.i.admission.authorization.is_none());
+        assert_eq!(pair.i.poll_deadlines(), Ok(DeadlineOutcome::Finished));
+        // The peer authenticates it as timeout cancellation.
+        assert!(pair.r.is_awaiting_approval());
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn inactivity_is_suspended_during_human_comparison_and_restarts_at_approval() {
+        let a = Authorities::new("deadline-human-wait");
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        for wait in [INACTIVITY_DEADLINE, secs(120)] {
+            ci.advance(wait);
+            active(&mut pair.i);
+            assert!(pair.i.presentation().is_some());
+        }
+        // Three minutes of human wait cost nothing: approval opens a full fresh window.
+        assert_eq!(pair.i.approve_sas(&id), Ok(SasApproval::Recorded));
+        ci.advance(INACTIVITY_DEADLINE - NS);
+        active(&mut pair.i);
+        ci.advance(NS);
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Inactivity).unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Initiator);
+        assert_failed(&mut pair.i, &a.ei, &id);
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn absolute_deadline_wins_over_a_fresh_inactivity_window() {
+        let a = Authorities::new("deadline-absolute-first");
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        ci.advance(secs(290));
+        assert_eq!(pair.i.approve_sas(&id), Ok(SasApproval::Recorded));
+        // The nominal window would end at 350; the absolute deadline ends the run at 300.
+        ci.advance(secs(10) - NS);
+        active(&mut pair.i);
+        ci.advance(NS);
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Absolute).unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Initiator);
+        assert_failed(&mut pair.i, &a.ei, &id);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn peer_mac_before_local_approval_keeps_inactivity_suspended() {
+        let a = Authorities::new("deadline-peer-mac-first");
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        let r_mac = approve_and_emit(&mut pair.r, &id);
+        ci.advance(secs(10));
+        assert_eq!(
+            pair.i.receive_bootstrap_mac(&r_mac),
+            Ok(PeerApproval::Authenticated)
+        );
+        assert!(pair.i.is_awaiting_approval() && pair.i.is_peer_approval_authenticated());
+        // 180 seconds after the peer MAC, the SAS is still displayed and the run live.
+        for wait in [INACTIVITY_DEADLINE, secs(120)] {
+            ci.advance(wait);
+            active(&mut pair.i);
+            assert!(pair.i.presentation().is_some());
+        }
+        // Approval at 190 restarts the window there, not at the peer MAC time (10).
+        assert_eq!(pair.i.approve_sas(&id), Ok(SasApproval::Recorded));
+        ci.advance(INACTIVITY_DEADLINE - NS);
+        active(&mut pair.i);
+        ci.advance(NS);
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Inactivity).unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Initiator);
+        assert_failed(&mut pair.i, &a.ei, &id);
+        // R awaits I's approval MAC; it authenticates I's timeout instead.
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
+        drop(pair);
+
+        a.release();
+
+        // The same human wait still ends at the absolute deadline.
+        let a = Authorities::new("deadline-peer-mac-first-absolute");
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        let r_mac = approve_and_emit(&mut pair.r, &id);
+        ci.advance(secs(10));
+        pair.i.receive_bootstrap_mac(&r_mac).unwrap();
+        ci.advance(ABSOLUTE_DEADLINE - secs(10) - NS);
+        active(&mut pair.i);
+        ci.advance(NS);
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Absolute).unwrap();
+        assert_failed(&mut pair.i, &a.ei, &id);
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn valid_progress_refreshes_inactivity_but_polling_does_not() {
+        let a = Authorities::new("deadline-progress");
+        let ci = ManualClock::new();
+        let mut i = timed_initiator(&a, &ci);
+        ci.advance(secs(59));
+        active(&mut i);
+        i.receive_accept(&vector("ACCEPT")).unwrap();
+        assert!(matches!(i.state, State::InitiatorAwaitAuthorization { .. }));
+        ci.advance(secs(59));
+        active(&mut i);
+        ci.advance(secs(1));
+        // Pre-SAS: local terminal failure, no authenticated CANCEL, nothing spent.
+        assert_eq!(timed_out(i.poll_deadlines(), Deadline::Inactivity), None);
+        assert_failed_pre_sas(&i, &a.ei, 10);
+        drop(i);
+        a.release();
+    }
+
+    #[test]
+    fn exact_duplicates_do_not_refresh_inactivity() {
+        let a = Authorities::new("deadline-duplicate");
+        let ci = ManualClock::new();
+        let mut i = timed_initiator(&a, &ci);
+        i.receive_accept(&vector("ACCEPT")).unwrap();
+        let seen = i.seen.len();
+        ci.advance(secs(59));
+        assert_eq!(i.receive_accept(&vector("ACCEPT")), Ok(()));
+        assert_eq!(i.seen.len(), seen);
+        ci.advance(secs(1));
+        assert_eq!(timed_out(i.poll_deadlines(), Deadline::Inactivity), None);
+        assert_failed_pre_sas(&i, &a.ei, 10);
+        drop(i);
+
+        // Post-SAS: an exact duplicate peer BOOTSTRAP_MAC is ignored without MAC work.
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        let r_mac = approve_and_emit(&mut pair.r, &id);
+        approve_and_emit(&mut pair.i, &id);
+        pair.i.receive_bootstrap_mac(&r_mac).unwrap();
+        let (ops, seen) = (crypto::mac_operations(), pair.i.seen.len());
+        ci.advance(secs(59));
+        assert_eq!(
+            pair.i.receive_bootstrap_mac(&r_mac),
+            Ok(PeerApproval::AlreadyAuthenticated)
+        );
+        assert_eq!((crypto::mac_operations(), pair.i.seen.len()), (ops, seen));
+        ci.advance(secs(1));
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Inactivity).unwrap();
+        assert_failed(&mut pair.i, &a.ei, &id);
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn stale_callbacks_neither_refresh_nor_terminate() {
+        let a = Authorities::new("deadline-stale-callback");
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        pair.i.approve_sas(&id).unwrap();
+        let mut stale = id;
+        stale[0] ^= 1;
+        ci.advance(secs(59));
+        let mismatch = CeremonyError::CeremonyIdentityMismatch;
+        assert_eq!(pair.i.approve_sas(&stale), Err(mismatch.clone()));
+        assert_eq!(pair.i.reject_sas(&stale), Err(mismatch.clone()));
+        assert_eq!(pair.i.cancel_sas(&stale), Err(mismatch));
+        // Rejected without effect: still live and locally approved, guard held.
+        active(&mut pair.i);
+        assert!(pair.i.is_locally_approved());
+        assert_eq!(a.ei.status().unwrap(), Status::Busy);
+        ci.advance(secs(1));
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Inactivity).unwrap();
+        assert_failed(&mut pair.i, &a.ei, &id);
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn idempotent_local_repeats_do_not_refresh_inactivity() {
+        let a = Authorities::new("deadline-idempotent");
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        approve_and_emit(&mut pair.i, &id);
+        ci.advance(secs(59));
+        let ops = crypto::mac_operations();
+        assert_eq!(pair.i.approve_sas(&id), Ok(SasApproval::AlreadyRecorded));
+        assert_eq!(
+            pair.i.emit_bootstrap_mac(),
+            Ok(BootstrapMacEmission::AlreadyEmitted)
+        );
+        assert_eq!(
+            pair.i.emit_initiator_finish(),
+            Err(CeremonyError::ApprovalsNotAuthenticated)
+        );
+        assert_eq!(crypto::mac_operations(), ops);
+        ci.advance(secs(1));
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Inactivity).unwrap();
+        assert_failed(&mut pair.i, &a.ei, &id);
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
+        drop(pair);
+
+        a.release();
+
+        // A repeated INITIATOR_FINISH request is `AlreadyEmitted` and buys no time either.
+        let a = Authorities::new("deadline-idempotent-finish");
+        let (mut pair, id, ci, _cr) = approvals_timed(&a);
+        finish(&mut pair.i);
+        ci.advance(secs(59));
+        assert_eq!(
+            pair.i.emit_initiator_finish(),
+            Ok(FinishEmission::AlreadyEmitted)
+        );
+        ci.advance(secs(1));
+        timed_out(pair.i.poll_deadlines(), Deadline::Inactivity).unwrap();
+        assert_failed(&mut pair.i, &a.ei, &id);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn an_expired_ceremony_cannot_be_rescued_by_valid_input() {
+        let a = Authorities::new("deadline-no-rescue");
+        let ci = ManualClock::new();
+        let mut i = timed_initiator(&a, &ci);
+        ci.advance(INACTIVITY_DEADLINE);
+        // The valid ACCEPT arrives too late: expiry is checked before it is applied.
+        assert_eq!(
+            refused_by_timeout(i.receive_accept(&vector("ACCEPT")), Deadline::Inactivity),
+            None
+        );
+        assert!(i.seen.is_empty());
+        assert_failed_pre_sas(&i, &a.ei, 10);
+        assert!(i.receive_accept(&vector("ACCEPT")).is_err());
+        assert!(matches!(i.state, State::Terminal));
+        drop(i);
+
+        a.release();
+
+        // APPROVE after the absolute deadline cannot rescue the displayed SAS.
+        let a = Authorities::new("deadline-no-rescue-approve");
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        ci.advance(ABSOLUTE_DEADLINE);
+        let cancel = refused_by_timeout(pair.i.approve_sas(&id), Deadline::Absolute).unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Initiator);
+        assert_failed(&mut pair.i, &a.ei, &id);
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
+        drop(pair);
+
+        a.release();
+
+        // A late REJECT ends in the timeout, not the user-rejection reason.
+        let a = Authorities::new("deadline-no-rescue-reject");
+        let (mut pair, _ci, cr) = establish_timed(&a);
+        let id = pair.identity();
+        cr.advance(ABSOLUTE_DEADLINE);
+        let cancel = refused_by_timeout(pair.r.reject_sas(&id), Deadline::Absolute).unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Responder);
+        assert_failed(&mut pair.r, &a.er, &id);
+        deliver_timeout(&mut pair.i, &a.ei, &cancel, &id);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn pre_sas_timeouts_are_local_only_and_keep_exact_accounting() {
+        let a = Authorities::new("deadline-pre-sas");
+        let clock = ManualClock::new();
+
+        // I authorized but not exposed: nothing spent, the authorization is dropped.
+        let mut i = timed_initiator(&a, &clock);
+        i.receive_accept(&vector("ACCEPT")).unwrap();
+        i.authorize(&a.i).unwrap();
+        clock.advance(INACTIVITY_DEADLINE);
+        assert_eq!(timed_out(i.poll_deadlines(), Deadline::Inactivity), None);
+        assert_failed_pre_sas(&i, &a.ei, 10);
+        assert!(i.expose_key().is_err());
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+        drop(i);
+
+        // I exposed INITIATOR_KEY but no shared SAS exists: no CANCEL, opportunity kept.
+        let mut i = timed_initiator(&a, &clock);
+        i.receive_accept(&vector("ACCEPT")).unwrap();
+        i.authorize(&a.i).unwrap();
+        i.expose_key().unwrap();
+        assert_eq!(a.ei.status().unwrap(), Status::Busy);
+        clock.advance(INACTIVITY_DEADLINE);
+        assert_eq!(timed_out(i.poll_deadlines(), Deadline::Inactivity), None);
+        assert_failed_pre_sas(&i, &a.ei, 9);
+        assert!(i.receive_responder_key(&vector("RESPONDER_KEY")).is_err());
+        assert_failed_pre_sas(&i, &a.ei, 9);
+        drop(i);
+
+        // R before any exposure, awaiting INITIATOR_KEY: nothing spent.
+        let mut r = timed_responder(&a, &clock);
+        clock.advance(INACTIVITY_DEADLINE);
+        assert_eq!(timed_out(r.poll_deadlines(), Deadline::Inactivity), None);
+        assert_failed_pre_sas(&r, &a.er, 10);
+        drop(r);
+
+        // R after DH and authorization, before revealing R_pub: nothing spent.
+        let mut r = timed_responder(&a, &clock);
+        r.receive_initiator_key(&vector("INITIATOR_KEY")).unwrap();
+        r.authorize(&a.r).unwrap();
+        clock.advance(INACTIVITY_DEADLINE);
+        assert_eq!(timed_out(r.poll_deadlines(), Deadline::Inactivity), None);
+        assert_failed_pre_sas(&r, &a.er, 10);
+        assert!(r.expose_key().is_err());
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        drop(r);
+
+        a.release();
+
+        // R after exposure (shared SAS exists): authenticated CANCEL, no refund.
+        let a = Authorities::new("deadline-post-exposure-r");
+        let (mut pair, _ci, cr) = establish_timed(&a);
+        let id = pair.identity();
+        pair.r.approve_sas(&id).unwrap();
+        cr.advance(INACTIVITY_DEADLINE);
+        let cancel = timed_out(pair.r.poll_deadlines(), Deadline::Inactivity).unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Responder);
+        assert_failed(&mut pair.r, &a.er, &id);
+        assert!(pair.r.admission.authorization.is_none());
+        deliver_timeout(&mut pair.i, &a.ei, &cancel, &id);
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn timeout_while_awaiting_the_peer_bootstrap_mac_is_authenticated() {
+        let a = Authorities::new("deadline-await-peer-mac");
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        approve_and_emit(&mut pair.i, &id);
+        assert!(matches!(
+            pair.i.state,
+            State::LocalMacSentAwaitingPeerMac { .. }
+        ));
+        ci.advance(INACTIVITY_DEADLINE - NS);
+        active(&mut pair.i);
+        ci.advance(NS);
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Inactivity).unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Initiator);
+        assert_failed(&mut pair.i, &a.ei, &id);
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn timeout_while_awaiting_completion_is_authenticated() {
+        let a = Authorities::new("deadline-await-finish");
+        // I awaits RESPONDER_FINISH_ACK.
+        let (mut pair, id, ci, _cr) = approvals_timed(&a);
+        finish(&mut pair.i);
+        ci.advance(INACTIVITY_DEADLINE);
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Inactivity).unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Initiator);
+        assert_failed(&mut pair.i, &a.ei, &id);
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
+        drop(pair);
+
+        a.release();
+
+        // R awaits INITIATOR_FINISH_ACK.
+        let a = Authorities::new("deadline-await-final-ack");
+        let (mut pair, id, _ci, cr) = approvals_timed(&a);
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        cr.advance(INACTIVITY_DEADLINE - NS);
+        active(&mut pair.r);
+        cr.advance(NS);
+        let cancel = timed_out(pair.r.poll_deadlines(), Deadline::Inactivity).unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Responder);
+        assert_failed(&mut pair.r, &a.er, &id);
+        // I never sees the ACK it was waiting for, only the authenticated timeout.
+        deliver_timeout(&mut pair.i, &a.ei, &cancel, &id);
+        assert!(pair.i.receive_completion(&r_ack).is_err());
+        assert_eq!((pair.i.result(), pair.r.result()), (None, None));
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn pending_final_ack_times_out_without_a_result() {
+        let a = Authorities::new("deadline-pending-final-ack");
+        let (mut pair, id, ci, _cr) = approvals_timed(&a);
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        let i_ack = initiator_ack(&mut pair.i, &r_ack);
+        assert_final_ack_pending(&pair.i, &a.ei, &i_ack);
+        ci.advance(secs(59));
+        // A mismatched confirmation and an exact duplicate ACK neither succeed nor buy time.
+        let ops = crypto::mac_operations();
+        assert_eq!(
+            pair.i.confirm_initiator_finish_ack_sent(&r_ack),
+            Err(CeremonyError::FinalAckMismatch)
+        );
+        assert_eq!(
+            pair.i.receive_completion(&r_ack),
+            Ok(CompletionReceipt::AlreadyAccepted)
+        );
+        assert_eq!(crypto::mac_operations(), ops);
+        assert_final_ack_pending(&pair.i, &a.ei, &i_ack);
+        ci.advance(secs(1));
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Inactivity).unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Initiator);
+        assert_failed(&mut pair.i, &a.ei, &id);
+        // The pending final ACK is gone; the stale confirmation cannot win.
+        assert_eq!(
+            pair.i.confirm_initiator_finish_ack_sent(&i_ack),
+            Err(CeremonyError::NoPendingFinalAck)
+        );
+        assert_eq!(pair.i.result(), None);
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
+        assert!(pair.r.receive_completion(&i_ack).is_err());
+        assert_eq!((pair.i.result(), pair.r.result()), (None, None));
+        assert_eq!((remaining(&a.ei), remaining(&a.er)), (9, 9));
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn final_ack_confirmation_after_absolute_expiry_is_refused() {
+        let a = Authorities::new("deadline-confirm-after-expiry");
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        ci.advance(secs(250));
+        authenticate(&mut pair, &id);
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        let i_ack = initiator_ack(&mut pair.i, &r_ack);
+        // Inactivity would allow until 310; the absolute deadline ends the run at 300.
+        ci.advance(secs(50));
+        let cancel = refused_by_timeout(
+            pair.i.confirm_initiator_finish_ack_sent(&i_ack),
+            Deadline::Absolute,
+        )
+        .unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Initiator);
+        assert_eq!(pair.i.result(), None);
+        assert_failed(&mut pair.i, &a.ei, &id);
+        assert_eq!(
+            pair.i.confirm_initiator_finish_ack_sent(&i_ack),
+            Err(CeremonyError::NoPendingFinalAck)
+        );
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
+        assert_eq!((pair.i.result(), pair.r.result()), (None, None));
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn failed_timeout_cancel_construction_still_times_out_without_output() {
+        let a = Authorities::new("deadline-cancel-construction");
+        let (mut pair, id, ci, _cr) = approvals_timed(&a);
+        ci.advance(INACTIVITY_DEADLINE);
+        crypto::fail_next_cancel_construction();
+        let ops = crypto::mac_operations();
+        assert_eq!(
+            timed_out(pair.i.poll_deadlines(), Deadline::Inactivity),
+            None
+        );
+        assert_eq!(crypto::mac_operations(), ops, "no tag was computed");
+        assert_failed(&mut pair.i, &a.ei, &id);
+        // Without a notification the peer simply remains live on its own.
+        assert!(pair.r.session().is_some());
+        assert_eq!(a.er.status().unwrap(), Status::Busy);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn uncertain_guard_release_on_timeout_withholds_the_cancel_and_fails_closed() {
+        let a = Authorities::new("deadline-uncertain-release");
+        let (mut pair, id, ci, _cr) = approvals_timed(&a);
+        ci.advance(INACTIVITY_DEADLINE);
+        poison(&a.ei);
+        let ops = crypto::mac_operations();
+        assert_eq!(
+            pair.i.poll_deadlines(),
+            Err(CeremonyError::Owner(OwnerError::OwnershipUncertain))
+        );
+        // Built while the session existed, then withheld with the uncertain cleanup.
+        assert_eq!(crypto::mac_operations(), ops + 1);
+        assert!(matches!(pair.i.state, State::Terminal) && pair.i.result().is_none());
+        assert_stale(&mut pair.i, &id);
+        assert_eq!(pair.i.poll_deadlines(), Ok(DeadlineOutcome::Finished));
+        assert_guard_held_uncertainly(&a.ei);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn a_timed_out_run_stays_terminal_whatever_arrives_later() {
+        let a = Authorities::new("deadline-terminal");
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        let r_mac = approve_and_emit(&mut pair.r, &id);
+        let i_mac = approve_and_emit(&mut pair.i, &id);
+        pair.i.receive_bootstrap_mac(&r_mac).unwrap();
+        pair.r.receive_bootstrap_mac(&i_mac).unwrap();
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        ci.advance(INACTIVITY_DEADLINE);
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Inactivity).unwrap();
+        assert_failed(&mut pair.i, &a.ei, &id);
+        let r_cancel = own_cancel(pair.r.session().unwrap(), CancelReason::Timeout).unwrap();
+
+        let ops = crypto::mac_operations();
+        ci.advance(ABSOLUTE_DEADLINE);
+        let run = &mut pair.i;
+        assert!(run.receive_completion(&r_ack).is_err());
+        assert!(run.receive_bootstrap_mac(&r_mac).is_err());
+        assert!(run.receive_cancel(&r_cancel).is_err());
+        assert_eq!(run.emit_bootstrap_mac(), Err(CeremonyError::NoLiveSas));
+        assert_eq!(run.emit_initiator_finish(), Err(CeremonyError::NoLiveSas));
+        assert_eq!(
+            run.confirm_initiator_finish_ack_sent(&r_ack),
+            Err(CeremonyError::NoPendingFinalAck)
+        );
+        for _ in 0..2 {
+            assert_eq!(run.poll_deadlines(), Ok(DeadlineOutcome::Finished));
+        }
+        // No MAC work, output, second CANCEL, second release, or result.
+        assert_eq!(crypto::mac_operations(), ops);
+        assert_failed(run, &a.ei, &id);
+        assert_eq!(remaining(&a.ei), 9);
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn local_success_is_immune_to_later_deadline_polls() {
+        let a = Authorities::new("deadline-after-success");
+        let (mut pair, id, ci, cr) = approvals_timed(&a);
+        let i_finish = finish(&mut pair.i);
+        let r_ack = responder_ack(&mut pair.r, &i_finish);
+        let i_ack = initiator_ack(&mut pair.i, &r_ack);
+        confirm_sent(&mut pair.i, &i_ack);
+        assert_eq!(
+            pair.r.receive_completion(&i_ack),
+            Ok(CompletionReceipt::Succeeded)
+        );
+        let results = (pair.i.result().cloned(), pair.r.result().cloned());
+        let ops = crypto::mac_operations();
+        for clock in [&ci, &cr] {
+            clock.advance(secs(600));
+        }
+        for (run, executor) in [(&mut pair.i, &a.ei), (&mut pair.r, &a.er)] {
+            assert_eq!(run.poll_deadlines(), Ok(DeadlineOutcome::Finished));
+            assert_succeeded(run, executor, &id);
+        }
+        assert_eq!(
+            pair.i.confirm_initiator_finish_ack_sent(&i_ack),
+            Err(CeremonyError::Completed)
+        );
+        // Even an unusable clock cannot touch a finished run.
+        ci.fail();
+        assert_eq!(pair.i.poll_deadlines(), Ok(DeadlineOutcome::Finished));
+        assert_eq!(crypto::mac_operations(), ops);
+        assert_eq!(
+            (pair.i.result().cloned(), pair.r.result().cloned()),
+            results
+        );
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn an_unusable_clock_fails_closed_without_claiming_a_timeout() {
+        let a = Authorities::new("deadline-unsafe-clock");
+        // Backwards time with a live SAS: terminal, but no authenticated timeout claim.
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        ci.advance(secs(30));
+        active(&mut pair.i);
+        ci.set(secs(10));
+        assert_eq!(pair.i.presentation(), None);
+        let ops = crypto::mac_operations();
+        assert_eq!(
+            pair.i.poll_deadlines(),
+            Err(CeremonyError::ClockUnavailable)
+        );
+        assert_eq!(crypto::mac_operations(), ops, "no CANCEL was built");
+        assert_failed(&mut pair.i, &a.ei, &id);
+        assert!(pair.r.is_awaiting_approval());
+        drop(pair);
+
+        // No value at all, before any exposure: terminal and nothing spent.
+        let clock = ManualClock::new();
+        let mut i = timed_initiator(&a, &clock);
+        i.receive_accept(&vector("ACCEPT")).unwrap();
+        clock.fail();
+        assert_eq!(i.authorize(&a.i), Err(CeremonyError::ClockUnavailable));
+        assert_failed_pre_sas(&i, &a.ei, 9);
+        drop(i);
+
+        // A run cannot even be created without a usable clock.
+        assert!(matches!(
+            RemoteCeremony::initiator_with_clock(
+                clock.clone(),
+                a.ei.clone(),
+                a.ei.begin(Role::Initiator).unwrap(),
+                &vector("START"),
+                bootstrap(&decoded("START"), true),
+                None,
+            ),
+            Err(CeremonyError::ClockUnavailable)
+        ));
+        assert!(matches!(
+            RemoteCeremony::responder_with_clock(
+                clock.clone(),
+                a.er.clone(),
+                a.er.begin(Role::Responder).unwrap(),
+                &vector("START"),
+                bootstrap(&decoded("ACCEPT"), false),
+                None,
+            ),
+            Err(CeremonyError::ClockUnavailable)
+        ));
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
+        a.release();
+    }
+
+    #[test]
+    fn large_monotonic_jumps_never_extend_a_ceremony() {
+        let a = Authorities::new("deadline-jumps");
+        let clock = ManualClock::new();
+        let mut i = timed_initiator(&a, &clock);
+        clock.advance(secs(600));
+        assert_eq!(timed_out(i.poll_deadlines(), Deadline::Absolute), None);
+        assert_failed_pre_sas(&i, &a.ei, 10);
+        drop(i);
+
+        let (mut pair, ci, _cr) = establish_timed(&a);
+        let id = pair.identity();
+        ci.advance(secs(240));
+        active(&mut pair.i);
+        assert!(pair.i.presentation().is_some());
+        ci.advance(secs(61));
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Absolute).unwrap();
+        assert_failed(&mut pair.i, &a.ei, &id);
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
         drop(pair);
         a.release();
     }
