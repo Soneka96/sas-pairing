@@ -252,7 +252,7 @@ enum Dispatch {
 impl Router {
     pub(crate) fn new(executor: CeremonyExecutor) -> Result<Self, RouteError> {
         let id = NEXT_ROUTER
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| uncertain())?;
         Ok(Self {
             id,

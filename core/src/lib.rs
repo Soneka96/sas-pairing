@@ -293,7 +293,7 @@ impl TrustedAuthority {
             return Err(Error::StaleAuthorization);
         }
         let seal = NEXT_AUTHORIZATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| Error::OwnershipUncertain)?;
         ceremony.authorization = Some(seal);
         Ok(Authorization {
@@ -320,7 +320,7 @@ impl TrustedAuthority {
 impl CeremonyExecutor {
     pub fn begin(&self, role: Role) -> Result<Ceremony, Error> {
         let id = NEXT_CEREMONY
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| Error::OwnershipUncertain)?;
         Ok(Ceremony {
             authority: self.clone(),
