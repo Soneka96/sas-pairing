@@ -13,6 +13,8 @@ pub(crate) enum Point {
     InitiatorStarted,
     /// Session teardown marked the session closing and is about to wait for in-flight work.
     CloseWaiting { in_flight: usize },
+    /// Transport teardown established its Router session CLOSED and still holds its live count.
+    TransportSessionClosed,
 }
 
 type Hook = Box<dyn FnMut(Point)>;

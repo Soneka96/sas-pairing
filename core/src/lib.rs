@@ -17,6 +17,7 @@ mod router;
 mod start_limiter;
 #[cfg(test)]
 mod test_hook;
+mod transport;
 
 use deadline::{Clock, system_clock};
 use start_limiter::{StartAdmission, StartLimiter};
@@ -120,6 +121,15 @@ struct Shared {
     /// The authority-wide START admission limiter. Volatile, never persisted, never reset by
     /// any ceremony, connection, or refusal event; only a new owner session starts it fresh.
     start_limiter: StartLimiter,
+    /// P3 §11.1.1 transport admission, shared by every router and listener of this authority
+    /// (see `transport`): adapter accept-work tasks not yet turned into live connections, each
+    /// held by one `AcceptPermit`.
+    pending_accepts: usize,
+    /// Live unauthenticated transport connections, each counted from activation until its
+    /// Router session teardown is certain. An uncertain teardown keeps its count for good.
+    live_connections: usize,
+    /// Retained incomplete transport frames, each owned by one connection's assembler.
+    incomplete_frames: usize,
 }
 
 impl Shared {
@@ -256,6 +266,9 @@ impl TrustedAuthority {
                 pending_responders: 0,
                 preliminary_operations: 0,
                 start_limiter: StartLimiter::new(),
+                pending_accepts: 0,
+                live_connections: 0,
+                incomplete_frames: 0,
             }),
             ownership: Mutex::new(Some(lease)),
             limiter_clock,

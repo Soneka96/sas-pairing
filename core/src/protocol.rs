@@ -284,6 +284,9 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedMessage, CodecError> {
         // The one START path: candidate structure first, then bootstrap semantics.
         return StartCandidate::from_wire(bytes, &f)?.decode();
     }
+    if wire_field_count(kind) != Some(f.len()) {
+        return Err(CodecError::InvalidField("field_count"));
+    }
     let fixed = |i: usize| -> Result<[u8; 32], CodecError> {
         (*f.get(i).ok_or(CodecError::Truncated)?)
             .try_into()
@@ -291,25 +294,25 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedMessage, CodecError> {
     };
     let request_id = f[1].to_vec();
     let message = match kind {
-        2 if f.len() == 4 => Message::Accept {
+        2 => Message::Accept {
             request_id,
             commitment: fixed(2)?,
             bootstrap: Bootstrap::decode(f[3])?,
         },
-        3 if f.len() == 3 => Message::InitiatorKey {
+        3 => Message::InitiatorKey {
             request_id,
             public_key: fixed(2)?,
         },
-        4 if f.len() == 3 => Message::ResponderKey {
+        4 => Message::ResponderKey {
             request_id,
             public_key: fixed(2)?,
         },
-        5 if f.len() == 4 => Message::BootstrapMac {
+        5 => Message::BootstrapMac {
             request_id,
             sender: Role::try_from(one(f[2], "role")?)?,
             mac: fixed(3)?,
         },
-        6..=8 if f.len() == 4 => {
+        6..=8 => {
             let transcript = fixed(2)?;
             let mac = fixed(3)?;
             match kind {
@@ -330,13 +333,13 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedMessage, CodecError> {
                 },
             }
         }
-        9 if f.len() == 5 => Message::Cancel {
+        9 => Message::Cancel {
             request_id,
             sender: Role::try_from(one(f[2], "role")?)?,
             reason: CancelReason::try_from(one(f[3], "reason")?)?,
             mac: fixed(4)?,
         },
-        _ => return Err(CodecError::InvalidField("field_count")),
+        _ => return Err(CodecError::UnknownType(kind)),
     };
     Ok(DecodedMessage {
         message,
@@ -361,7 +364,7 @@ pub(crate) struct StartCandidate<'a> {
 impl<'a> StartCandidate<'a> {
     /// The START-specific structure on top of `parse_wire`; shared with `decode`.
     fn from_wire(canonical: &'a [u8], f: &[&'a [u8]]) -> Result<Self, CodecError> {
-        if f.len() != 3 {
+        if wire_field_count(START_TYPE) != Some(f.len()) {
             return Err(CodecError::InvalidField("field_count"));
         }
         Ok(Self {
@@ -405,7 +408,7 @@ pub(crate) fn route_fields(bytes: &[u8]) -> Result<(u8, &[u8]), CodecError> {
 /// §3.1 framing, a defined wire type, and both common fields. Nothing type-specific.
 fn parse_wire(bytes: &[u8]) -> Result<(u8, Vec<&[u8]>), CodecError> {
     let (kind, f) = parse(bytes)?;
-    if !(1..=9).contains(&kind) {
+    if wire_field_count(kind).is_none() {
         return Err(CodecError::UnknownType(kind));
     }
     if f.len() < 2 || f[0] != PROFILE_ID {
@@ -451,6 +454,80 @@ fn encode_frame(kind: u8, fields: &[&[u8]], max: usize) -> Result<Vec<u8>, Codec
     }
     Ok(out)
 }
+
+/// The outer field count of each defined wire message type (§6), including both common fields.
+/// The one table shared by `decode`, the START candidate, and `wire_frame_extent`, so the codec
+/// and the transport frame assembler cannot disagree about where a wire frame ends.
+pub(crate) const fn wire_field_count(kind: u8) -> Option<usize> {
+    match kind {
+        START_TYPE | 3 | 4 => Some(3),
+        2 | 5..=8 => Some(4),
+        9 => Some(5),
+        _ => None,
+    }
+}
+
+/// How much of a wire frame a byte-stream prefix determines; see `wire_frame_extent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Extent {
+    /// Nothing more is known until the prefix holds at least this many bytes (`<= MAX_FRAME`,
+    /// always more than the prefix holds).
+    Need(usize),
+    /// Every field length is known: the complete frame is exactly this many bytes
+    /// (`<= MAX_FRAME`), which the prefix may not hold yet.
+    Frame(usize),
+}
+
+/// Outer extent of the wire frame at the start of `prefix`, a byte-stream prefix of any length
+/// that begins at a frame boundary (P3 §3.1 fragmented input). It checks the §3.1 header (magic,
+/// then version) and a defined wire type as soon as their bytes are present, then walks the type's
+/// exact field count (`wire_field_count`), reading each `u32be` length. Each declaration is
+/// checked when read, before its payload is needed and with checked arithmetic: the frame so far
+/// plus the remaining fields' length prefixes must stay within `MAX_FRAME`, so no byte is ever
+/// expected beyond the maximum. It reads only length prefixes, never payloads, and decodes
+/// nothing: profile ID, request ID, and every field value are left to `decode`, `route_fields`,
+/// and `start_candidate` on the complete frame.
+pub(crate) fn wire_frame_extent(prefix: &[u8]) -> Result<Extent, CodecError> {
+    let Some(kind) = header(prefix)? else {
+        return Ok(Extent::Need(10));
+    };
+    let fields = wire_field_count(kind).ok_or(CodecError::UnknownType(kind))?;
+    // Invariant: `pos` plus 4 bytes for each field still to come is at most MAX_FRAME.
+    let mut pos = 10usize;
+    for later in (0..fields).rev() {
+        let end_len = pos + 4;
+        let Some(len) = prefix.get(pos..end_len) else {
+            return Ok(Extent::Need(end_len));
+        };
+        let len = u32::from_be_bytes(len.try_into().unwrap()) as usize;
+        pos = end_len
+            .checked_add(len)
+            .filter(|end| {
+                end.checked_add(4 * later)
+                    .is_some_and(|min| min <= MAX_FRAME)
+            })
+            .ok_or(CodecError::Oversized)?;
+    }
+    Ok(Extent::Frame(pos))
+}
+
+/// The §3.1 header checks on however many header bytes `prefix` holds: magic, then version.
+/// Returns the type byte once present.
+fn header(prefix: &[u8]) -> Result<Option<u8>, CodecError> {
+    let magic = prefix.len().min(MAGIC.len());
+    if prefix[..magic] != MAGIC[..magic] {
+        return Err(CodecError::BadMagic);
+    }
+    let [_, _, _, _, _, _, _, high, low, rest @ ..] = prefix else {
+        return Ok(None);
+    };
+    let version = u16::from_be_bytes([*high, *low]);
+    if version != VERSION {
+        return Err(CodecError::UnsupportedVersion(version));
+    }
+    Ok(rest.first().copied())
+}
+
 fn parse(bytes: &[u8]) -> Result<(u8, Vec<&[u8]>), CodecError> {
     if bytes.len() < 10 {
         return Err(CodecError::Truncated);
@@ -458,15 +535,8 @@ fn parse(bytes: &[u8]) -> Result<(u8, Vec<&[u8]>), CodecError> {
     if bytes.len() > MAX_FRAME {
         return Err(CodecError::Oversized);
     }
-    if &bytes[..7] != MAGIC {
-        return Err(CodecError::BadMagic);
-    }
-    let version = u16::from_be_bytes([bytes[7], bytes[8]]);
-    if version != VERSION {
-        return Err(CodecError::UnsupportedVersion(version));
-    }
+    let kind = header(bytes)?.ok_or(CodecError::Truncated)?;
     let mut pos = 10usize;
-    let kind = bytes[9];
     let mut fields = Vec::new();
     while pos < bytes.len() {
         let end_len = pos.checked_add(4).ok_or(CodecError::LengthOverflow)?;
@@ -653,6 +723,79 @@ mod tests {
         assert!(decode(&oversized_start).is_err());
         assert!(Bootstrap::new(vec![b'a'], vec![b'a'; 64], vec![0], vec![0; 8192]).is_ok());
         assert!(Bootstrap::new(vec![b'a'], b"a".to_vec(), vec![0], vec![0; 8193]).is_err());
+    }
+
+    #[test]
+    fn stream_extent_and_the_codec_share_one_frame_layout() {
+        let vectors = [START, ACCEPT, IK, RK, BM, IF, RFA, IFA, CANCEL_I, CANCEL_R];
+        for kind in 0..=u8::MAX {
+            let defined = (1..=9).contains(&kind);
+            assert_eq!(wire_field_count(kind).is_some(), defined, "{kind}");
+        }
+        for vector in vectors {
+            let bytes = hex(vector);
+            let (kind, fields) = parse_wire(&bytes).unwrap();
+            assert_eq!(wire_field_count(kind), Some(fields.len()));
+            // Every prefix either needs strictly more bytes or names exactly this frame, and
+            // trailing stream bytes never change the extent.
+            let mut last_need = 0;
+            for end in 0..=bytes.len() {
+                match wire_frame_extent(&bytes[..end]).unwrap() {
+                    Extent::Need(n) => {
+                        assert!(n > end && n <= bytes.len() && n >= last_need);
+                        last_need = n;
+                    }
+                    Extent::Frame(total) => assert_eq!(total, bytes.len()),
+                }
+            }
+            let stream = [bytes.as_slice(), &bytes].concat();
+            assert_eq!(
+                wire_frame_extent(&stream).unwrap(),
+                Extent::Frame(bytes.len())
+            );
+        }
+        assert_eq!(wire_frame_extent(&[]).unwrap(), Extent::Need(10));
+        assert_eq!(wire_frame_extent(b"SASP").unwrap(), Extent::Need(10));
+        assert_eq!(wire_frame_extent(b"X").unwrap_err(), CodecError::BadMagic);
+        assert_eq!(wire_frame_extent(b"SAX").unwrap_err(), CodecError::BadMagic);
+        assert_eq!(
+            wire_frame_extent(b"SASPAIR\0\x02").unwrap_err(),
+            CodecError::UnsupportedVersion(2)
+        );
+        for kind in [0, 0x0a, 0x20, 0x7f] {
+            assert_eq!(
+                wire_frame_extent(&[b"SASPAIR\0\x01".as_slice(), &[kind]].concat()).unwrap_err(),
+                CodecError::UnknownType(kind)
+            );
+        }
+        // A declaration is checked as soon as it is read, before its payload is needed: the
+        // frame so far plus the remaining fields' 4-byte length prefixes must fit. INITIATOR_KEY
+        // has three fields, so its first may declare at most MAX_FRAME - 22 bytes.
+        let first = |len: usize| [&b"SASPAIR\0\x01\x03"[..], &(len as u32).to_be_bytes()].concat();
+        assert_eq!(
+            wire_frame_extent(&first(MAX_FRAME - 22)).unwrap(),
+            Extent::Need(MAX_FRAME - 4)
+        );
+        for len in [MAX_FRAME - 21, MAX_FRAME, u32::MAX as usize] {
+            assert_eq!(
+                wire_frame_extent(&first(len)).unwrap_err(),
+                CodecError::Oversized
+            );
+        }
+        let at_max = [first(MAX_FRAME - 22), vec![0; MAX_FRAME - 22], vec![0; 8]].concat();
+        assert_eq!(at_max.len(), MAX_FRAME);
+        assert_eq!(
+            wire_frame_extent(&at_max[..MAX_FRAME - 4]).unwrap(),
+            Extent::Need(MAX_FRAME)
+        );
+        assert_eq!(
+            wire_frame_extent(&at_max).unwrap(),
+            Extent::Frame(MAX_FRAME)
+        );
+        assert!(parse(&at_max).is_ok());
+        let mut over = at_max.clone();
+        over[MAX_FRAME - 1] = 1;
+        assert_eq!(wire_frame_extent(&over).unwrap_err(), CodecError::Oversized);
     }
 
     /// A wire START carrying `bootstrap` verbatim as its opaque third field.

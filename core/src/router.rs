@@ -102,6 +102,17 @@ struct Activity {
     closing: bool,
     /// Operations that entered while OPEN and have not yet released their lease.
     in_flight: usize,
+    /// How the teardown that won `begin_close` ended; `None` before it ends. Read only by
+    /// `close_session_settled` callers waiting on another caller's teardown.
+    ended: Option<Ended>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ended {
+    /// CLOSED: every run terminated and every resource released.
+    Closed,
+    /// Cleanup could not be established: CLOSING forever.
+    Uncertain,
 }
 
 /// One operation's membership in an OPEN session. Locals an operation creates after taking
@@ -290,6 +301,52 @@ impl Router {
     pub(crate) fn close_session(&self, session: SessionHandle) -> Result<(), RouteError> {
         let lifecycle = self.begin_close(&*self.table()?, session)?;
         self.finish_close(session, &lifecycle)
+    }
+
+    /// `close_session` for the one owner of `session`'s transport connection, which must learn
+    /// whether the session is safely CLOSED however its teardown began, before it releases
+    /// transport capacity. An OPEN session is closed exactly as by `close_session`. A session
+    /// already CLOSING (another caller's teardown, such as `deliver`'s session-fatal routing
+    /// failure) is waited for, holding no router lock, until that teardown ends; its outcome is
+    /// returned. An already CLOSED session is `Ok(())`. Uncertain cleanup, here or in the other
+    /// teardown, is `OwnershipUncertain`. A handle this router never issued is `UnknownSession`.
+    pub(crate) fn close_session_settled(&self, session: SessionHandle) -> Result<(), RouteError> {
+        let (lifecycle, won) = {
+            let table = self.table()?;
+            if session.router != self.id || !(1..table.next_session).contains(&session.session) {
+                return Err(RouteError::UnknownSession);
+            }
+            let Some(lifecycle) = table.sessions.get(&session.session) else {
+                return Ok(());
+            };
+            let mut activity = activity(lifecycle)?;
+            let won = !activity.closing;
+            activity.closing = true;
+            drop(activity);
+            (lifecycle.clone(), won)
+        };
+        if won {
+            return self.finish_close(session, &lifecycle);
+        }
+        let mut activity = activity(&lifecycle)?;
+        loop {
+            match activity.ended {
+                Some(Ended::Closed) => return Ok(()),
+                Some(Ended::Uncertain) => return Err(uncertain()),
+                None => activity = lifecycle.settled.wait(activity).map_err(|_| uncertain())?,
+            }
+        }
+    }
+
+    /// The pairing authority this router belongs to.
+    pub(crate) fn authority(&self) -> &CeremonyExecutor {
+        &self.executor
+    }
+
+    /// OPEN and CLOSING sessions (tests only; read-only).
+    #[cfg(test)]
+    pub(crate) fn sessions_for_test(&self) -> usize {
+        self.table.lock().unwrap().sessions.len()
     }
 
     /// Inbound START on `session`. An exact duplicate or conflict for an existing key goes to
@@ -700,11 +757,27 @@ impl Router {
     /// failure, run by the caller that won `begin_close` while it holds no router lock or lease.
     /// It waits for every earlier operation to return, then detaches every route of the session
     /// and terminates each run outside the table lock, and only then makes the session CLOSED.
+    /// Its outcome is recorded for `close_session_settled` waiters.
     fn finish_close(
         &self,
         session: SessionHandle,
         lifecycle: &Lifecycle,
     ) -> Result<(), RouteError> {
+        let outcome = self.teardown(session, lifecycle);
+        // Recorded even if poisoned, so a waiter wakes and then fails closed on the poison.
+        let mut activity = lifecycle
+            .activity
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        activity.ended = Some(match outcome {
+            Ok(()) => Ended::Closed,
+            Err(_) => Ended::Uncertain,
+        });
+        lifecycle.settled.notify_all();
+        outcome
+    }
+
+    fn teardown(&self, session: SessionHandle, lifecycle: &Lifecycle) -> Result<(), RouteError> {
         {
             let mut activity = activity(lifecycle)?;
             while activity.in_flight > 0 {
