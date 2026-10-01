@@ -396,6 +396,33 @@ pub(crate) fn start_candidate(bytes: &[u8]) -> Result<StartCandidate<'_>, CodecE
     StartCandidate::from_wire(bytes, &f)
 }
 
+/// The dispatch boundary of one complete received wire frame (P3 §3.1, §4, §11.1.1, §11.2): both
+/// common fields are checked before dispatch, and only a START candidate may reach admission. No
+/// field is decoded: the START bootstrap stays opaque for the limiter-first admission path, and
+/// every other type's fields are left to the run the Router selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Routable<'a> {
+    /// A START candidate (`start_candidate`): a new candidate for Router admission, or the
+    /// duplicate/conflict rule of the run already routed under its key.
+    Start { request_id: &'a [u8] },
+    /// A structurally routable non-START frame (§11.2): another defined type with the exact
+    /// profile ID and a 1–64-byte request ID, deliverable only to the run under its key.
+    Run { request_id: &'a [u8] },
+}
+
+/// Classifies one complete frame by `Routable`. An error is structurally unroutable input: a
+/// codec/transport rejection that must reach no run, admission, or limiter.
+pub(crate) fn routable(bytes: &[u8]) -> Result<Routable<'_>, CodecError> {
+    let (kind, f) = parse_wire(bytes)?;
+    if kind != START_TYPE {
+        return Ok(Routable::Run { request_id: f[1] });
+    }
+    let candidate = StartCandidate::from_wire(bytes, &f)?;
+    Ok(Routable::Start {
+        request_id: candidate.request_id,
+    })
+}
+
 /// Routing fields only (P3 §4): the defined wire type and the canonical 1–64-byte request ID of
 /// one structurally framed message (`parse_wire`). Nothing type-specific is decoded and the
 /// result carries no authority: the run it is routed to still validates the complete message.
@@ -874,7 +901,51 @@ mod tests {
         for (name, bytes) in cases {
             let candidate = start_candidate(&bytes).expect_err(name);
             assert_eq!(decode(&bytes).unwrap_err(), candidate, "{name}");
+            assert_eq!(routable(&bytes).unwrap_err(), candidate, "{name}");
         }
+    }
+
+    #[test]
+    fn dispatch_classification_uses_the_shared_structure_only() {
+        let rid = hex(RID);
+        for vector in [START, ACCEPT, IK, RK, BM, IF, RFA, IFA, CANCEL_I, CANCEL_R] {
+            let bytes = hex(vector);
+            let expected = match start_candidate(&bytes) {
+                Ok(_) => Routable::Start {
+                    request_id: rid.as_slice(),
+                },
+                Err(_) => Routable::Run {
+                    request_id: rid.as_slice(),
+                },
+            };
+            assert_eq!(routable(&bytes).unwrap(), expected);
+            assert_eq!(route_fields(&bytes).unwrap().1, rid.as_slice());
+        }
+        // A START candidate whose bootstrap is semantically invalid is still dispatched to
+        // admission: the bootstrap is not decoded here.
+        let garbage = start_with_field(&rid, &[0xFF; 3]);
+        assert_eq!(
+            routable(&garbage).unwrap(),
+            Routable::Start {
+                request_id: rid.as_slice()
+            }
+        );
+        assert_eq!(decode(&garbage).unwrap_err(), CodecError::Truncated);
+        // Common-field failures of a non-START frame are unroutable, exactly as `route_fields`.
+        let mut bad_profile = hex(IK);
+        bad_profile[14] ^= 1;
+        let long_id = encode_frame(3, &[PROFILE_ID, &[7; 65], &[0; 32]], MAX_FRAME).unwrap();
+        let empty_id = encode_frame(3, &[PROFILE_ID, &[], &[0; 32]], MAX_FRAME).unwrap();
+        for bytes in [bad_profile, long_id, empty_id] {
+            assert_eq!(
+                routable(&bytes).unwrap_err(),
+                route_fields(&bytes).unwrap_err()
+            );
+        }
+        // A non-START frame's own fields are its run's concern, not dispatch's.
+        let short_key = encode_frame(3, &[PROFILE_ID, &rid, &[0; 31]], MAX_FRAME).unwrap();
+        assert!(matches!(routable(&short_key), Ok(Routable::Run { .. })));
+        assert!(decode(&short_key).is_err());
     }
 
     #[test]

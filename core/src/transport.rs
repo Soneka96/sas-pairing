@@ -21,7 +21,8 @@
 //! `protocol::wire_frame_extent`, the codec's own header checks and wire-type field-count table,
 //! so the assembler cannot drift from `decode`. It checks magic, version, defined type, every
 //! declared length, and the complete-frame maximum, and nothing else: complete frames are exact
-//! received bytes for `Router::receive_start`/`deliver`, which this module never calls. A frame
+//! received bytes for `Router::receive_start`/`deliver`, which this module never calls (the
+//! `host` dispatch layer does, and ends the connection here when a frame is unroutable). A frame
 //! found complete inside one input is returned without retaining anything; otherwise one
 //! authority incomplete-frame slot is acquired before the first byte is retained. A retained
 //! frame has a 10-second whole-frame deadline from its first byte that nothing extends, and a
@@ -265,10 +266,20 @@ pub(crate) struct TransportConnection<'r> {
     ended: bool,
 }
 
-impl TransportConnection<'_> {
-    /// This connection's one Router session, for the adapter's `receive_start`/`deliver` calls.
+impl<'r> TransportConnection<'r> {
+    /// This connection's one Router session, for the host's `receive_start`/`deliver` calls.
     pub(crate) fn session(&self) -> SessionHandle {
         self.session
+    }
+
+    /// The Router that owns this connection's session.
+    pub(crate) fn router(&self) -> &'r Router {
+        self.router
+    }
+
+    /// Whether teardown has begun; the connection then accepts nothing more.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.ended
     }
 
     /// Takes received bytes and returns at most one complete frame, exactly as received. An
@@ -298,6 +309,14 @@ impl TransportConnection<'_> {
     /// Explicit local close: the same synchronous teardown as a failure. `Ok(())` means the
     /// Router session is CLOSED and every resource of this connection is released.
     pub(crate) fn close(mut self) -> Result<(), TransportError> {
+        self.teardown()
+    }
+
+    /// `close` for an owner that keeps this object: the same one teardown, after which every
+    /// call reports `Closed`. The host dispatch layer uses it when a complete frame is
+    /// structurally unroutable or its Router session already ended; for a session already
+    /// CLOSED (or CLOSING) `Router::close_session_settled` reports (or waits for) that outcome.
+    pub(crate) fn close_in_place(&mut self) -> Result<(), TransportError> {
         self.teardown()
     }
 

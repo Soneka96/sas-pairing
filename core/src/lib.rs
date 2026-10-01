@@ -11,6 +11,7 @@ use std::{
 mod ceremony;
 mod crypto;
 mod deadline;
+mod host;
 pub mod protocol;
 mod request_id;
 mod router;

@@ -349,6 +349,12 @@ impl Router {
         self.table.lock().unwrap().sessions.len()
     }
 
+    /// Admitting and installed routes over every session (tests only; read-only).
+    #[cfg(test)]
+    pub(crate) fn routes_for_test(&self) -> usize {
+        self.table.lock().unwrap().routes.len()
+    }
+
     /// Inbound START on `session`. An exact duplicate or conflict for an existing key goes to
     /// that run (see `StartRouting`); a changed START for an existing key terminally fails it
     /// and is never a new candidate. Only a key that is absent is claimed atomically and then

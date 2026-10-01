@@ -13,7 +13,8 @@
 //! 1 token / 5 s; at most 12 per rolling 60 s), at most 4 pending (accepted, unexposed)
 //! Responders and 2 concurrent expensive preliminary operations per authority, and a fixed
 //! 60-second pending resource lifetime from admission. Session + request-ID routing lives in
-//! `router`; transport controls and timer scheduling are not implemented.
+//! `router`, the socket-free transport controls in `transport`, and complete-frame dispatch in
+//! `host`; no scheduler drives ceremony deadlines, and no real socket exists.
 #![allow(dead_code)] // The protocol remains internal until later P4 work defines its complete API.
 use crate::{
     Authorization, Ceremony, CeremonyExecutor, Error as OwnerError, PendingAdmission,
