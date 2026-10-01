@@ -642,6 +642,35 @@ impl Router {
         self.on_run(&key, &run, Some(target.instance), op)
     }
 
+    /// The existing `RemoteCeremony::poll_deadlines` on exactly the run `target` names, through
+    /// `with_exact_run`: one exact key, the instance rechecked under the run's own lock, no scan,
+    /// no cursor, and no other run touched or waited for. For an owner about to write bytes that
+    /// run produced, independent of where the fair `poll_session_deadlines` cursor stands. No
+    /// deadline math of its own and never progress. `Ok(None)`: still live and unexpired.
+    /// `Ok(Some)`: it ended by deadline processing exactly as the driver reports it, its route
+    /// removed only while it still names that run. A stale reference, or one whose run is no
+    /// longer live, is `UnknownRoute` and changes nothing; any other run failure is
+    /// `OwnershipUncertain`, as in the driver.
+    pub(crate) fn poll_exact_run_deadlines(
+        &self,
+        session: SessionHandle,
+        target: &RunRef,
+    ) -> Result<Option<DeadlineEnded>, RouteError> {
+        let routed = self.with_exact_run(session, target, |run| Ok(run.poll_deadlines()))?;
+        if routed.result.is_some() {
+            // Deadline processing never succeeds: a routed succeeded run is a broken invariant.
+            return Err(uncertain());
+        }
+        match routed.output {
+            Ok(DeadlineOutcome::Active) => Ok(None),
+            Ok(DeadlineOutcome::Finished) => Err(RouteError::UnknownRoute),
+            Ok(DeadlineOutcome::TimedOut(timeout)) => Ok(Some(DeadlineEnded::TimedOut(timeout))),
+            Ok(DeadlineOutcome::PendingExpired) => Ok(Some(DeadlineEnded::PendingExpired)),
+            Err(CeremonyError::ClockUnavailable) => Ok(Some(DeadlineEnded::ClockUnavailable)),
+            Err(_) => Err(uncertain()),
+        }
+    }
+
     /// Honest local Initiator on `session`: the core generates and reserves the 16-byte request
     /// ID exactly as `RemoteCeremony::initiator` does, then the run is registered under
     /// `(session, request_id)` before its START bytes are returned. If that key is already

@@ -381,6 +381,21 @@ impl<'r> HostConnection<'r> {
         })
     }
 
+    /// The existing deadline processing of exactly `run` (`Router::poll_exact_run_deadlines`),
+    /// for a caller about to write bytes that run produced: no scan, no cursor, no other run.
+    /// `Ok(Ok(None))`: still live. `Ok(Ok(Some))`: it ended, reported as the deadline driver
+    /// reports it, with any authenticated timeout CANCEL as an ordinary frame. A stale or
+    /// foreign reference is `UnknownRoute` with nothing changed; a closing session or uncertain
+    /// cleanup ends the connection. Never progress: it refreshes nothing.
+    pub(crate) fn poll_run_deadline(
+        &mut self,
+        run: &RunRef,
+    ) -> HostResult<Option<(CeremonyDeadline, Option<Outbound>)>> {
+        let polled =
+            self.routed(|router, session| router.poll_exact_run_deadlines(session, run))?;
+        Ok(polled.map(|ended| ended.map(deadline)))
+    }
+
     /// The Initiator's P3 §9 send boundary: call only after the complete `sent.bytes()` frame
     /// was written locally. Its run's `confirm_initiator_finish_ack_sent` decides, against its
     /// exact pending bytes, deadlines, and state; on success the result is returned once, the
@@ -2022,6 +2037,65 @@ mod tests {
 
     const INACTIVITY: CeremonyDeadline = CeremonyDeadline::TimedOut(Deadline::Inactivity);
     const ABSOLUTE: CeremonyDeadline = CeremonyDeadline::TimedOut(Deadline::Absolute);
+
+    #[test]
+    fn the_exact_run_deadline_check_touches_only_its_own_live_run() {
+        let r = Node::new("host-exact-run-deadline");
+        let (tc, cc) = (ManualClock::new(), ManualClock::new());
+        let (mut h, mut g) = (r.host(&tc, &cc), r.host(&tc, &cc));
+        let session = h.session();
+        let (x, y) = ([0x10; 16], [0x20; 16]);
+        let (cx, cy) = (ManualClock::new(), ManualClock::new());
+        let start = |h: &mut HostConnection<'_>, clock: &Arc<ManualClock>, id: [u8; 16]| {
+            h.start_initiator_with(
+                clock.clone(),
+                &mut OneId(Some(id)),
+                initiator_bootstrap(),
+                None,
+            )
+            .unwrap()
+            .unwrap()
+            .run
+            .unwrap()
+        };
+        let old = start(&mut h, &cx, x);
+        start(&mut h, &cy, y);
+        // A sibling's expiry is never touched or reported by X's check.
+        cy.advance(INACTIVITY_DEADLINE);
+        assert_eq!(h.poll_run_deadline(&old), Ok(Ok(None)));
+        assert_eq!((r.routes(), r.reserved()), (2, 2));
+        assert_eq!(r.state(session, &y), "InitiatorAwaitAccept");
+        // Another connection's session never reaches X.
+        cx.advance(INACTIVITY_DEADLINE);
+        assert_eq!(g.poll_run_deadline(&old), Ok(Err(RouteError::UnknownRoute)));
+        assert_eq!(r.routes(), 2);
+        // X's own check ends exactly X, as the driver would (no SAS yet, so no CANCEL).
+        assert_eq!(h.poll_run_deadline(&old), Ok(Ok(Some((INACTIVITY, None)))));
+        assert_eq!((r.routes(), r.reserved()), (1, 1));
+        // X's key is reused by a fresh run that has also expired: the stale reference neither
+        // reaches nor ends it.
+        let cz = ManualClock::new();
+        let fresh = start(&mut h, &cz, x);
+        cz.advance(INACTIVITY_DEADLINE);
+        assert_eq!(h.poll_run_deadline(&old), Ok(Err(RouteError::UnknownRoute)));
+        assert_eq!(r.state(session, &x), "InitiatorAwaitAccept");
+        assert_eq!(
+            h.poll_run_deadline(&fresh),
+            Ok(Ok(Some((INACTIVITY, None))))
+        );
+        // A run whose clock is unusable fails closed through the same check.
+        let cw = ManualClock::new();
+        let w = start(&mut h, &cw, [0x30; 16]);
+        cw.fail();
+        assert_eq!(
+            h.poll_run_deadline(&w),
+            Ok(Ok(Some((CeremonyDeadline::ClockUnavailable, None))))
+        );
+        assert_eq!(r.routes(), 1);
+        assert!(!h.is_closed());
+        drop((h, g));
+        r.release();
+    }
 
     #[test]
     fn idle_pre_sas_runs_are_driven_to_expiry_one_run_per_call() {

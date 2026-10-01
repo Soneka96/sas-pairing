@@ -141,31 +141,55 @@ impl CeremonyDeadlines {
 
 /// Test-only monotonic source, advanced by hand; tests never sleep.
 #[cfg(test)]
-pub(crate) struct ManualClock(std::sync::Mutex<Option<Duration>>);
+pub(crate) struct ManualClock(std::sync::Mutex<Manual>);
+
+#[cfg(test)]
+struct Manual {
+    now: Option<Duration>,
+    /// `(readings left, advance)`: advance once that many more readings have been taken.
+    jump: Option<(usize, Duration)>,
+}
 
 #[cfg(test)]
 impl ManualClock {
     pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self(std::sync::Mutex::new(Some(Duration::ZERO))))
+        Arc::new(Self(std::sync::Mutex::new(Manual {
+            now: Some(Duration::ZERO),
+            jump: None,
+        })))
     }
     pub(crate) fn advance(&self, by: Duration) {
-        let mut now = self.0.lock().unwrap();
-        *now = Some(now.expect("clock was failed") + by);
+        let mut clock = self.0.lock().unwrap();
+        clock.now = Some(clock.now.expect("clock was failed") + by);
     }
     /// Sets an arbitrary value, including one earlier than before (a backwards fault).
     pub(crate) fn set(&self, to: Duration) {
-        *self.0.lock().unwrap() = Some(to);
+        self.0.lock().unwrap().now = Some(to);
     }
     /// Makes every later `now` report that no value can be obtained.
     pub(crate) fn fail(&self) {
-        *self.0.lock().unwrap() = None;
+        self.0.lock().unwrap().now = None;
+    }
+    /// Advances by `by` once `readings` more readings have been taken, so time can pass
+    /// deterministically between two checks inside one call.
+    pub(crate) fn advance_after(&self, readings: usize, by: Duration) {
+        self.0.lock().unwrap().jump = Some((readings, by));
     }
 }
 
 #[cfg(test)]
 impl MonotonicClock for ManualClock {
     fn now(&self) -> Option<Duration> {
-        *self.0.lock().unwrap()
+        let mut clock = self.0.lock().unwrap();
+        match clock.jump {
+            Some((0, by)) => {
+                clock.jump = None;
+                clock.now = clock.now.map(|now| now + by);
+            }
+            Some((left, by)) => clock.jump = Some((left - 1, by)),
+            None => {}
+        }
+        clock.now
     }
 }
 

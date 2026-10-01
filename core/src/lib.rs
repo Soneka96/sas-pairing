@@ -20,6 +20,8 @@ mod start_limiter;
 mod test_hook;
 mod transport;
 #[cfg(windows)]
+mod windows_owner_loop;
+#[cfg(windows)]
 mod windows_tcp;
 
 use deadline::{Clock, system_clock};
