@@ -19,6 +19,8 @@ mod start_limiter;
 #[cfg(test)]
 mod test_hook;
 mod transport;
+#[cfg(windows)]
+mod windows_tcp;
 
 use deadline::{Clock, system_clock};
 use start_limiter::{StartAdmission, StartLimiter};

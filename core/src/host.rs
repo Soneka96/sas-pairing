@@ -55,7 +55,7 @@
 //!
 //! Lock order: no lock is held here. Every Router call returns, with its leases and guards
 //! released, before any teardown, so the "no close from inside `with_run`" rule holds.
-#![allow(dead_code)] // Used only by tests until a socket adapter exists.
+#![allow(dead_code)] // Used by tests and the Windows TCP adapter until an owner loop exists.
 use crate::{
     Error as OwnerError, TrustedAuthority,
     ceremony::{
@@ -257,7 +257,7 @@ pub(crate) struct LocalAction {
 
 /// A host call that either ended the connection (`Err`) or leaves it live with the run-local
 /// outcome inside `Ok`.
-type HostResult<T> = Result<Result<T, RouteError>, HostError>;
+pub(crate) type HostResult<T> = Result<Result<T, RouteError>, HostError>;
 
 /// One `receive`: `consumed` leading input bytes were taken (the caller feeds the rest again),
 /// and `frame` is the one complete frame finished and dispatched by this call, if any: its
@@ -698,10 +698,11 @@ fn uncertain() -> RouteError {
     RouteError::Ceremony(CeremonyError::Owner(OwnerError::OwnershipUncertain))
 }
 
-/// How a run ended by its own deadline processing, found by the driver or by a local action,
-/// and the authenticated timeout CANCEL the run built while its SAS existed, as an ordinary
-/// frame. Never constructs a CANCEL itself.
-fn deadline(ended: DeadlineEnded) -> (CeremonyDeadline, Option<Outbound>) {
+/// How a run ended by its own deadline processing, found by the driver, by a local action, or
+/// (in the socket adapter) by an inbound frame or a final-ACK send confirmation, and the
+/// authenticated timeout CANCEL the run built while its SAS existed, as an ordinary frame.
+/// Never constructs a CANCEL itself.
+pub(crate) fn deadline(ended: DeadlineEnded) -> (CeremonyDeadline, Option<Outbound>) {
     match ended {
         DeadlineEnded::TimedOut(timeout) => (
             CeremonyDeadline::TimedOut(timeout.expired()),
