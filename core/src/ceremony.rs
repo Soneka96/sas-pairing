@@ -803,6 +803,14 @@ impl RemoteCeremony {
         }
     }
 
+    /// This run's local in-memory instance: its admission `Ceremony`'s process-unique, never
+    /// reissued ID. Router plumbing only, so a local reference can tell this run from a later
+    /// one under a reused routing key. Never on the wire, in any transcript or MAC, in a result,
+    /// or persisted; not `ceremony_identity`, peer identity, authentication, or authorization.
+    pub(crate) fn instance(&self) -> u64 {
+        self.admission.id
+    }
+
     pub(crate) fn is_awaiting_approval(&self) -> bool {
         matches!(self.state, State::AwaitLocalApproval { .. })
     }

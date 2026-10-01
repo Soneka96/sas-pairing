@@ -21,6 +21,9 @@ pub(crate) enum Point {
     /// The deadline driver holds a run's lock (and its session lease, but no table lock),
     /// before polling that run's deadlines.
     DeadlineRunLocked,
+    /// A local action through an exact run reference holds that run's lock (and its session
+    /// lease, but no table lock), after the instance check and before the action itself.
+    LocalRunLocked,
 }
 
 type Hook = Box<dyn FnMut(Point)>;

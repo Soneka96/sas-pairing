@@ -1,8 +1,9 @@
 //! Crate-private, socket-free host dispatch: the thin layer a future socket adapter drives
 //! between one `TransportConnection` and its one `Router` session. Nothing here opens, reads,
-//! writes, schedules, sleeps, or spawns. The adapter supplies received bytes, polls, a final-ACK
-//! send confirmation, and a close; it receives, per call, at most one dispatched frame with at
-//! most one protocol event, one outbound frame, and one `PairingResult`.
+//! writes, schedules, sleeps, or spawns. The adapter supplies received bytes, polls, trusted
+//! local ceremony actions, a final-ACK send confirmation, and a close; it receives, per call,
+//! at most one dispatched frame or local action with at most one event, one outbound frame,
+//! and one `PairingResult`. It drives a complete remote ceremony through this type alone.
 //!
 //! Responsibilities stay split. The transport owns connection admission, bounded frame
 //! assembly, its 10 s / 2 s frame deadlines, and teardown. The Router owns `(session,
@@ -36,23 +37,38 @@
 //! call (never folded into `receive` or the transport frame-deadline poll): one bounded,
 //! cooperative pass over this connection's own Router session, which returns at most one
 //! run-local deadline event and at most one timeout CANCEL frame. The deadline semantics are
-//! the runs' own; this layer only drives them. Local ceremony actions (authorization, SAS
-//! decisions, own MAC and INITIATOR_FINISH emission, local cancel, Initiator start) remain
-//! direct Router actions. Clocks stay separate: the transport clock is the connection's, the
-//! START limiter clock the authority's, and new Responders get a fresh production ceremony
-//! clock (test-injectable).
+//! the runs' own; this layer only drives them.
+//!
+//! Trusted local ceremony actions are explicit calls here too, each one call to one existing
+//! `RemoteCeremony` entrypoint on exactly one run: Initiator start, exposure authorization, key
+//! exposure, SAS presentation, MATCH, own BOOTSTRAP_MAC, REJECT, CANCEL, and INITIATOR_FINISH.
+//! A run is named by the opaque `RunRef` this layer returned when it was routed or last left
+//! live, never by its peer-controlled request ID, so a stale callback never reaches a
+//! replacement run under a reused key; SAS decisions still require the exact
+//! `ceremony_identity`. The run alone decides legality, deadlines, authorization, the guard,
+//! the opportunity budget, and terminality; this layer checks no state and chains nothing:
+//! authorization never exposes, MATCH never emits a MAC, and a MAC never emits
+//! INITIATOR_FINISH. A deadline the action finds expired ends the run instead, reported as the
+//! deadline driver reports it (with any timeout CANCEL); the requested action did not happen.
+//! Clocks stay separate: the transport clock is the connection's, the START limiter clock the
+//! authority's, and new runs get a fresh production ceremony clock (test-injectable).
 //!
 //! Lock order: no lock is held here. Every Router call returns, with its leases and guards
 //! released, before any teardown, so the "no close from inside `with_run`" rule holds.
 #![allow(dead_code)] // Used only by tests until a socket adapter exists.
 use crate::{
-    Error as OwnerError,
-    ceremony::{CeremonyError, CompletionReceipt, PairingResult, PeerApproval, PeerCancellation},
+    Error as OwnerError, TrustedAuthority,
+    ceremony::{
+        BootstrapMacEmission, CeremonyError, CompletionReceipt, FinishEmission, LocalCancellation,
+        PairingResult, PeerApproval, PeerCancellation, RemoteCeremony, SasApproval,
+        SasPresentation,
+    },
     deadline::{Clock, Deadline, system_clock},
     protocol::{self, Bootstrap, CodecError, Routable},
+    request_id::{OsRequestIds, RequestIdGenerator},
     router::{
         DeadlineCursor, DeadlineEnded, DeadlineEvent, DeadlinePoll, Inbound, RouteError, Routed,
-        SessionHandle, StartRouting,
+        Router, RunRef, SessionHandle, StartRouting,
     },
     transport::{Fed, TransportConnection, TransportError},
 };
@@ -99,12 +115,14 @@ pub(crate) enum HostEvent {
     Cancel(PeerCancellation),
 }
 
-/// The one protocol frame the dispatched inbound transition produced, for the adapter to write.
-/// Produced is not sent, and sent is not received by the peer.
+/// The one protocol frame a call produced, for the adapter to write: exactly these bytes were
+/// produced. Produced is not sent, sent is not received by the peer, and nothing is durable.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Outbound {
-    /// ACCEPT or RESPONDER_FINISH_ACK. Nothing waits for or learns whether it is sent; a lost
-    /// frame is never retried.
+    /// Any frame but the final ACK: ACCEPT, RESPONDER_FINISH_ACK, START, INITIATOR_KEY,
+    /// RESPONDER_KEY, BOOTSTRAP_MAC, INITIATOR_FINISH, or an authenticated CANCEL. Nothing waits
+    /// for or learns whether it is sent; a lost frame is never retried, and a failed write
+    /// refunds nothing.
     Frame(Vec<u8>),
     /// The Initiator's final INITIATOR_FINISH_ACK and its single-use send confirmation.
     FinalAck(FinalAck),
@@ -142,9 +160,12 @@ impl FinalAck {
 /// The outcome of one complete frame the Router accepted.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Dispatched {
-    /// The frame's request ID: the routing key on this connection, for local actions on that
-    /// run. Routing and diagnostic data only, never identity.
+    /// The frame's request ID: the routing key on this connection. Routing and diagnostic data
+    /// only, never identity, and never a target for local actions.
     pub(crate) request_id: Vec<u8>,
+    /// The exact run this frame reached, present only while it is still live afterwards: the
+    /// target for that run's next local action.
+    pub(crate) run: Option<RunRef>,
     pub(crate) event: HostEvent,
     pub(crate) outbound: Option<Outbound>,
     /// Present exactly when this frame brought its run to local success (the Responder's
@@ -190,6 +211,54 @@ pub(crate) struct CeremonyPoll {
     pub(crate) outbound: Option<Outbound>,
 }
 
+/// What one trusted local action did. Diagnostic and sequencing data only; any output is the
+/// action's `outbound` frame. No local action ever produces a `PairingResult`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalEvent {
+    /// A local Initiator was routed with its reserved request ID; the outbound frame is START.
+    /// No opportunity is spent and no guard is held.
+    InitiatorStarted,
+    /// Fresh exposure authorization was recorded on exactly this run. Nothing was exposed,
+    /// reserved, or sent: exposure is a separate action.
+    ExposureAuthorized,
+    /// The guard and one opportunity were reserved and this role's contribution produced; the
+    /// outbound frame is INITIATOR_KEY or RESPONDER_KEY. Producing it spent the opportunity.
+    KeyExposed,
+    /// Local MATCH for the exact `ceremony_identity`. Nothing is sent: own BOOTSTRAP_MAC is a
+    /// separate action.
+    SasApproved(SasApproval),
+    /// Own BOOTSTRAP_MAC produced once; it is the outbound frame.
+    BootstrapMacEmitted,
+    /// Own BOOTSTRAP_MAC was already produced: nothing is recomputed or sent again.
+    BootstrapMacAlreadyEmitted,
+    /// INITIATOR_FINISH produced once; it is the outbound frame. No result yet.
+    InitiatorFinishEmitted,
+    /// INITIATOR_FINISH was already produced: nothing is recomputed or sent again.
+    InitiatorFinishAlreadyEmitted,
+    /// Local MISMATCH: the run is ALREADY terminal with no result and its opportunity kept. The
+    /// outbound frame, if construction succeeded, is a best-effort authenticated CANCEL `0x01`.
+    SasRejected,
+    /// Local CANCEL: as `SasRejected`, with CANCEL reason `0x02`.
+    SasCancelled,
+    /// The run's own deadline processing ended it first; the requested action did NOT happen.
+    /// Exactly as from `poll_ceremony_deadlines`, including any authenticated timeout CANCEL.
+    Deadline(CeremonyDeadline),
+}
+
+/// One trusted local action's outcome: at most one outbound frame, always an ordinary
+/// `Outbound::Frame` (produced, not sent; no send confirmation), and never a result.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct LocalAction {
+    /// The run, present only while it is still live after this action.
+    pub(crate) run: Option<RunRef>,
+    pub(crate) event: LocalEvent,
+    pub(crate) outbound: Option<Outbound>,
+}
+
+/// A host call that either ended the connection (`Err`) or leaves it live with the run-local
+/// outcome inside `Ok`.
+type HostResult<T> = Result<Result<T, RouteError>, HostError>;
+
 /// One `receive`: `consumed` leading input bytes were taken (the caller feeds the rest again),
 /// and `frame` is the one complete frame finished and dispatched by this call, if any: its
 /// outcome, or the Router's refusal of that attempt or run with the connection still live.
@@ -200,7 +269,8 @@ pub(crate) struct HostFed {
 }
 
 /// One live connection's host side: its `TransportConnection` (and so its one Router session
-/// and live count) plus the local Responder configuration for new STARTs. Dropping it drops the
+/// and live count) plus the local Responder configuration for new STARTs. Local Initiators
+/// take their own explicit configuration. Dropping it drops the
 /// transport connection, whose own teardown runs once.
 pub(crate) struct HostConnection<'r> {
     transport: TransportConnection<'r>,
@@ -246,7 +316,8 @@ impl<'r> HostConnection<'r> {
         }
     }
 
-    /// This connection's one Router session, for local actions through `Router::with_run`.
+    /// This connection's one Router session. Diagnostic only: local actions take a `RunRef`,
+    /// never a session or a request ID.
     pub(crate) fn session(&self) -> SessionHandle {
         self.transport.session()
     }
@@ -299,16 +370,8 @@ impl<'r> HostConnection<'r> {
         };
         let mut outbound = None;
         let event = event.map(|DeadlineEvent { request_id, ended }| {
-            let kind = match ended {
-                DeadlineEnded::TimedOut(timeout) => {
-                    outbound = timeout
-                        .cancel()
-                        .map(|cancel| Outbound::Frame(cancel.to_vec()));
-                    CeremonyDeadline::TimedOut(timeout.expired())
-                }
-                DeadlineEnded::PendingExpired => CeremonyDeadline::PendingExpired,
-                DeadlineEnded::ClockUnavailable => CeremonyDeadline::ClockUnavailable,
-            };
+            let kind;
+            (kind, outbound) = deadline(ended);
             CeremonyDeadlineEvent { request_id, kind }
         });
         Ok(CeremonyPoll {
@@ -323,39 +386,155 @@ impl<'r> HostConnection<'r> {
     /// exact pending bytes, deadlines, and state; on success the result is returned once, the
     /// route removed, and the guard released, while this connection stays live. A token of
     /// another connection, or for a run that already ended, creates nothing (`UnknownRoute`).
-    pub(crate) fn confirm_sent(
-        &mut self,
-        sent: FinalAck,
-    ) -> Result<Result<PairingResult, RouteError>, HostError> {
-        if self.transport.is_closed() {
-            return Err(HostError::Transport(TransportError::Closed));
-        }
+    pub(crate) fn confirm_sent(&mut self, sent: FinalAck) -> HostResult<PairingResult> {
         let FinalAck {
             session,
             request_id,
             bytes,
         } = sent;
-        if session != self.transport.session() {
-            return Ok(Err(RouteError::UnknownRoute));
-        }
-        let confirmed = self
-            .transport
-            .router()
-            .with_run(session, &request_id, |run| {
+        let confirmed = self.routed(|router, ours| {
+            if session != ours {
+                return Err(RouteError::UnknownRoute);
+            }
+            router.with_run(session, &request_id, |run| {
                 run.confirm_initiator_finish_ack_sent(&bytes)
-            });
+            })
+        })?;
         match confirmed {
             Ok(Routed {
                 result: Some(result),
                 ..
             }) => Ok(Ok(result)),
             // Unreachable: a confirmed run has succeeded and this call removed its route.
-            Ok(Routed { result: None, .. }) => Err(self.end(HostError::Routing(
-                RouteError::Ceremony(CeremonyError::Owner(OwnerError::OwnershipUncertain)),
-            ))),
-            Err(error) if ends_session(&error) => Err(self.end(HostError::Routing(error))),
+            Ok(Routed { result: None, .. }) => Err(self.end(HostError::Routing(uncertain()))),
             Err(error) => Ok(Err(error)),
         }
+    }
+
+    /// Starts an honest local Initiator on this connection's own session from explicit
+    /// trusted local configuration (never this host's Responder configuration, never peer
+    /// input). The shared core generates the 16-byte request ID with the OS CSPRNG, reserves it
+    /// against every live local Initiator of the authority (retrying collisions), starts the
+    /// run's absolute deadline, and routes the run before START exists; this layer only returns
+    /// that START as an ordinary frame with the run's `RunRef`. No opportunity is spent, no
+    /// guard taken, nothing retransmitted. A session already closing ends the connection.
+    pub(crate) fn start_initiator(
+        &mut self,
+        local: Bootstrap,
+        expected: Option<Bootstrap>,
+    ) -> HostResult<LocalAction> {
+        self.initiate(system_clock(), &mut OsRequestIds, local, expected)
+    }
+
+    /// `start_initiator` with a hand ceremony clock and scripted request IDs.
+    #[cfg(test)]
+    pub(crate) fn start_initiator_with(
+        &mut self,
+        clock: Clock,
+        ids: &mut dyn RequestIdGenerator,
+        local: Bootstrap,
+        expected: Option<Bootstrap>,
+    ) -> HostResult<LocalAction> {
+        self.initiate(clock, ids, local, expected)
+    }
+
+    /// Records fresh, ceremony-specific exposure authorization from the trusted `authority` on
+    /// exactly `run` (`RemoteCeremony::authorize`). It exposes nothing and sends nothing; an
+    /// authority that does not own the run is the run's stale-authorization failure.
+    pub(crate) fn authorize_exposure(
+        &mut self,
+        run: &RunRef,
+        authority: &TrustedAuthority,
+    ) -> HostResult<LocalAction> {
+        self.act(run, |ceremony| {
+            ceremony.authorize(authority)?;
+            Ok((LocalEvent::ExposureAuthorized, None))
+        })
+    }
+
+    /// Crosses `run`'s exposure boundary (`RemoteCeremony::expose_key`): the run consumes its
+    /// authorization and atomically reserves the guard and one opportunity before producing
+    /// its contribution. A refusal (missing or stale authorization, busy guard, exhausted
+    /// budget, no preliminary permit) is the run's own outcome with no frame; nothing waits.
+    pub(crate) fn expose_key(&mut self, run: &RunRef) -> HostResult<LocalAction> {
+        self.act(run, |ceremony| {
+            Ok((LocalEvent::KeyExposed, Some(ceremony.expose_key()?)))
+        })
+    }
+
+    /// `run`'s live SAS for local comparison, exactly as `RemoteCeremony::presentation` gives
+    /// it (its `ceremony_identity` and decimal value), or `None` outside the live comparison.
+    /// Read-only: it refreshes no deadline, makes no progress, and never ends the run; an
+    /// expired SAS is only withheld until the next action or deadline poll ends it.
+    pub(crate) fn presentation(&mut self, run: &RunRef) -> HostResult<Option<SasPresentation>> {
+        Ok(self
+            .on_run(run, |ceremony| Ok(ceremony.presentation()))?
+            .map(|routed| routed.output))
+    }
+
+    /// Local MATCH for exactly `ceremony_identity` on `run`. It sends nothing and never emits
+    /// own BOOTSTRAP_MAC; another identity changes nothing.
+    pub(crate) fn approve_sas(
+        &mut self,
+        run: &RunRef,
+        ceremony_identity: &[u8; 32],
+    ) -> HostResult<LocalAction> {
+        self.act(run, |ceremony| {
+            let approval = ceremony.approve_sas(ceremony_identity)?;
+            Ok((LocalEvent::SasApproved(approval), None))
+        })
+    }
+
+    /// Produces `run`'s own BOOTSTRAP_MAC once, after its local MATCH; a repeat produces
+    /// nothing. It never approves and never emits INITIATOR_FINISH.
+    pub(crate) fn emit_bootstrap_mac(&mut self, run: &RunRef) -> HostResult<LocalAction> {
+        self.act(run, |ceremony| {
+            Ok(match ceremony.emit_bootstrap_mac()? {
+                BootstrapMacEmission::Emitted(mac) => (LocalEvent::BootstrapMacEmitted, Some(mac)),
+                BootstrapMacEmission::AlreadyEmitted => {
+                    (LocalEvent::BootstrapMacAlreadyEmitted, None)
+                }
+            })
+        })
+    }
+
+    /// Local MISMATCH for exactly `ceremony_identity` on `run`: terminal before any best-effort
+    /// CANCEL (`0x01`) is returned; no result, nothing refunded, nothing retried.
+    pub(crate) fn reject_sas(
+        &mut self,
+        run: &RunRef,
+        ceremony_identity: &[u8; 32],
+    ) -> HostResult<LocalAction> {
+        self.act(run, |ceremony| {
+            let cancel = ceremony.reject_sas(ceremony_identity)?;
+            Ok((LocalEvent::SasRejected, cancelled(cancel)))
+        })
+    }
+
+    /// Local CANCEL for exactly `ceremony_identity` on `run`: as `reject_sas`, reason `0x02`.
+    pub(crate) fn cancel_sas(
+        &mut self,
+        run: &RunRef,
+        ceremony_identity: &[u8; 32],
+    ) -> HostResult<LocalAction> {
+        self.act(run, |ceremony| {
+            let cancel = ceremony.cancel_sas(ceremony_identity)?;
+            Ok((LocalEvent::SasCancelled, cancelled(cancel)))
+        })
+    }
+
+    /// Produces the Initiator's INITIATOR_FINISH once, after both approvals are authenticated;
+    /// a repeat produces nothing. The run decides role and readiness. No result: the Initiator
+    /// succeeds only through `confirm_sent` of its final ACK.
+    pub(crate) fn emit_initiator_finish(&mut self, run: &RunRef) -> HostResult<LocalAction> {
+        self.act(run, |ceremony| {
+            Ok(match ceremony.emit_initiator_finish()? {
+                FinishEmission::Emitted(finish) => {
+                    (LocalEvent::InitiatorFinishEmitted, Some(finish))
+                }
+                FinishEmission::AlreadyEmitted => (LocalEvent::InitiatorFinishAlreadyEmitted, None),
+            })
+        })
     }
 
     /// Explicit local close: the transport's one teardown.
@@ -363,21 +542,21 @@ impl<'r> HostConnection<'r> {
         self.transport.close().map_err(HostError::Transport)
     }
 
-    fn dispatch(&mut self, frame: &[u8]) -> Result<Result<Dispatched, RouteError>, HostError> {
+    fn dispatch(&mut self, frame: &[u8]) -> HostResult<Dispatched> {
         let router = self.transport.router();
         let session = self.transport.session();
         let routed = match protocol::routable(frame) {
             Ok(Routable::Start { request_id }) => {
                 let clock = self.ceremony_clock.clone().unwrap_or_else(system_clock);
                 router
-                    .receive_start_with_clock(
+                    .receive_start_run(
                         clock,
                         session,
                         frame,
                         self.local.clone(),
                         self.expected.clone(),
                     )
-                    .map(|start| {
+                    .map(|(start, run)| {
                         let (event, outbound) = match start {
                             StartRouting::Accepted(accept) => {
                                 (HostEvent::StartAccepted, Some(Outbound::Frame(accept)))
@@ -386,6 +565,7 @@ impl<'r> HostConnection<'r> {
                         };
                         Dispatched {
                             request_id: request_id.to_vec(),
+                            run,
                             event,
                             outbound,
                             result: None,
@@ -403,6 +583,95 @@ impl<'r> HostConnection<'r> {
         }
     }
 
+    fn initiate(
+        &mut self,
+        clock: Clock,
+        ids: &mut dyn RequestIdGenerator,
+        local: Bootstrap,
+        expected: Option<Bootstrap>,
+    ) -> HostResult<LocalAction> {
+        let started = self.routed(|router, session| {
+            router.start_initiator_run(clock, ids, session, local, expected)
+        })?;
+        Ok(started.map(|(run, start)| LocalAction {
+            run: Some(run),
+            event: LocalEvent::InitiatorStarted,
+            outbound: Some(Outbound::Frame(start)),
+        }))
+    }
+
+    /// One local action: exactly one call `op` makes to one `RemoteCeremony` entrypoint of the
+    /// run `target` names, mapped to at most one ordinary outbound frame. A deadline the run's
+    /// own `step` found expired is reported as the deadline driver reports it, reusing the
+    /// run's own timeout CANCEL; the action itself did not happen. Other refusals are returned
+    /// as they are, run-local; session-ending ones have already ended the connection.
+    fn act(
+        &mut self,
+        target: &RunRef,
+        op: impl FnOnce(&mut RemoteCeremony) -> Result<(LocalEvent, Option<Vec<u8>>), CeremonyError>,
+    ) -> HostResult<LocalAction> {
+        let ended = match self.on_run(target, op)? {
+            Ok(Routed {
+                output: (event, frame),
+                result: None,
+                run,
+            }) => {
+                return Ok(Ok(LocalAction {
+                    run,
+                    event,
+                    outbound: frame.map(Outbound::Frame),
+                }));
+            }
+            // Unreachable: only the final-ACK send confirmation reaches success.
+            Ok(Routed {
+                result: Some(_), ..
+            }) => {
+                return Err(self.end(HostError::Routing(uncertain())));
+            }
+            Err(RouteError::Ceremony(CeremonyError::TimedOut(timeout))) => {
+                DeadlineEnded::TimedOut(timeout)
+            }
+            Err(RouteError::Ceremony(CeremonyError::PendingExpired)) => {
+                DeadlineEnded::PendingExpired
+            }
+            Err(RouteError::Ceremony(CeremonyError::ClockUnavailable)) => {
+                DeadlineEnded::ClockUnavailable
+            }
+            Err(error) => return Ok(Err(error)),
+        };
+        let (kind, outbound) = deadline(ended);
+        Ok(Ok(LocalAction {
+            run: None,
+            event: LocalEvent::Deadline(kind),
+            outbound,
+        }))
+    }
+
+    /// `Router::with_exact_run` on this connection's own session; see `routed`.
+    fn on_run<T>(
+        &mut self,
+        target: &RunRef,
+        op: impl FnOnce(&mut RemoteCeremony) -> Result<T, CeremonyError>,
+    ) -> HostResult<Routed<T>> {
+        self.routed(|router, session| router.with_exact_run(session, target, op))
+    }
+
+    /// One Router call on this connection's own session, returned with every lease, lock, and
+    /// guard released. A closed connection makes none; an outcome after which the session
+    /// cannot continue (`ends_session`) ends the connection; every other outcome is returned.
+    fn routed<T>(
+        &mut self,
+        op: impl FnOnce(&'r Router, SessionHandle) -> Result<T, RouteError>,
+    ) -> HostResult<T> {
+        if self.transport.is_closed() {
+            return Err(HostError::Transport(TransportError::Closed));
+        }
+        match op(self.transport.router(), self.transport.session()) {
+            Err(error) if ends_session(&error) => Err(self.end(HostError::Routing(error))),
+            other => Ok(other),
+        }
+    }
+
     /// Ends the connection through the transport's one teardown (Router session settled, then
     /// the live count released) and reports `cause`, or the transport's `OwnershipUncertain`
     /// if that teardown could not be established.
@@ -414,7 +683,8 @@ impl<'r> HostConnection<'r> {
     }
 }
 
-/// Router outcomes after which this connection's session cannot continue.
+/// Router outcomes after which this connection's session cannot continue, for every host call.
+/// A stale or foreign local `RunRef` (`UnknownRoute`) is not among them.
 fn ends_session(error: &RouteError) -> bool {
     matches!(
         error,
@@ -422,6 +692,33 @@ fn ends_session(error: &RouteError) -> bool {
             | RouteError::UnknownSession
             | RouteError::Ceremony(CeremonyError::Owner(OwnerError::OwnershipUncertain))
     )
+}
+
+fn uncertain() -> RouteError {
+    RouteError::Ceremony(CeremonyError::Owner(OwnerError::OwnershipUncertain))
+}
+
+/// How a run ended by its own deadline processing, found by the driver or by a local action,
+/// and the authenticated timeout CANCEL the run built while its SAS existed, as an ordinary
+/// frame. Never constructs a CANCEL itself.
+fn deadline(ended: DeadlineEnded) -> (CeremonyDeadline, Option<Outbound>) {
+    match ended {
+        DeadlineEnded::TimedOut(timeout) => (
+            CeremonyDeadline::TimedOut(timeout.expired()),
+            timeout
+                .cancel()
+                .map(|cancel| Outbound::Frame(cancel.to_vec())),
+        ),
+        DeadlineEnded::PendingExpired => (CeremonyDeadline::PendingExpired, None),
+        DeadlineEnded::ClockUnavailable => (CeremonyDeadline::ClockUnavailable, None),
+    }
+}
+
+fn cancelled(cancel: LocalCancellation) -> Option<Vec<u8>> {
+    match cancel {
+        LocalCancellation::Emitted(bytes) => Some(bytes),
+        LocalCancellation::NotEmitted => None,
+    }
 }
 
 fn inbound(session: SessionHandle, request_id: &[u8], routed: Routed<Inbound>) -> Dispatched {
@@ -450,6 +747,7 @@ fn inbound(session: SessionHandle, request_id: &[u8], routed: Routed<Inbound>) -
     };
     Dispatched {
         request_id: request_id.to_vec(),
+        run: routed.run,
         event,
         outbound,
         result: routed.result,
@@ -469,7 +767,7 @@ mod tests {
         protocol::{CancelReason, MAX_FRAME, Message, PROFILE_ID, Role},
         request_id::{OsRequestIds, RequestIdGenerator},
         router::{MAX_CEREMONY_POLLS_PER_CALL, Router},
-        start_limiter::{REFILL_PERIOD, StartLimiterSnapshot},
+        start_limiter::{REFILL_PERIOD, ROLLING_WINDOW, StartLimiterSnapshot},
         test_hook::{self, Point},
         transport::{AcceptPermit, IDLE_READ_DEADLINE, WHOLE_FRAME_DEADLINE},
     };
@@ -624,6 +922,10 @@ mod tests {
             self.local(session, request_id, |run| Ok(run.state_label_for_test()))
                 .output
         }
+        /// The live run under exactly `(session, request_id)` (read-only lookup).
+        fn run_ref(&self, session: SessionHandle, request_id: &[u8]) -> RunRef {
+            self.local(session, request_id, |_| Ok(())).run.unwrap()
+        }
         fn limiter(&self) -> StartLimiterSnapshot {
             self.executor.start_limiter_snapshot()
         }
@@ -660,6 +962,10 @@ mod tests {
         }
         fn status(&self) -> Status {
             self.executor.status().unwrap()
+        }
+        /// Opportunities left, also while the guard is held.
+        fn remaining(&self) -> u8 {
+            self.executor.0.shared.lock().unwrap().remaining
         }
     }
 
@@ -835,6 +1141,7 @@ mod tests {
             deliver_in(rh, &finish, finish.len()).unwrap(),
             Dispatched {
                 request_id: id.clone(),
+                run: Some(r.run_ref(rh.session(), &id)),
                 event: HostEvent::InitiatorFinishDuplicate,
                 outbound: None,
                 result: None,
@@ -957,6 +1264,7 @@ mod tests {
             second.frame.unwrap().unwrap(),
             Dispatched {
                 request_id: x.to_vec(),
+                run: Some(r.run_ref(session, &x)),
                 event: HostEvent::InitiatorKey,
                 outbound: None,
                 result: None,
@@ -1019,6 +1327,7 @@ mod tests {
                 deliver_in(&mut rh, &sx, chunk).unwrap(),
                 Dispatched {
                     request_id: x.to_vec(),
+                    run: Some(r.run_ref(rh.session(), &x)),
                     event: HostEvent::StartDuplicate,
                     outbound: None,
                     result: None,
@@ -1196,6 +1505,7 @@ mod tests {
             deliver_in(&mut a, &initiator_key(&x), 7).unwrap(),
             Dispatched {
                 request_id: x.to_vec(),
+                run: Some(r.run_ref(a.session(), &x)),
                 event: HostEvent::InitiatorKey,
                 outbound: None,
                 result: None,
@@ -2204,6 +2514,1093 @@ mod tests {
             Err(HostError::Transport(TransportError::Closed))
         );
         drop(h);
+        r.release();
+    }
+    const UNKNOWN: RouteError = RouteError::UnknownRoute;
+    const MISMATCH: RouteError = RouteError::Ceremony(CeremonyError::CeremonyIdentityMismatch);
+
+    /// The outcome of a local action that left its connection live.
+    fn acted(outcome: HostResult<LocalAction>) -> LocalAction {
+        outcome.expect("connection ended").expect("action refused")
+    }
+    /// A run-local refusal of a local action; the connection stays live.
+    fn refused(outcome: HostResult<LocalAction>) -> RouteError {
+        outcome
+            .expect("connection ended")
+            .expect_err("action applied")
+    }
+    /// The one ordinary frame a local action produced.
+    fn produced(action: LocalAction) -> Vec<u8> {
+        match action.outbound {
+            Some(Outbound::Frame(bytes)) => bytes,
+            other => panic!("no ordinary outbound frame: {other:?}"),
+        }
+    }
+    /// A produced frame's message; tests alone decode outputs, which must be canonical.
+    fn message(bytes: &[u8]) -> Message {
+        let decoded = protocol::decode(bytes).unwrap();
+        assert_eq!(decoded.canonical_bytes(), bytes);
+        decoded.message
+    }
+    fn cancel_of(bytes: &[u8]) -> (Role, CancelReason) {
+        match message(bytes) {
+            Message::Cancel { sender, reason, .. } => (sender, reason),
+            other => panic!("not a CANCEL: {other:?}"),
+        }
+    }
+    /// Admits a new START on `host` and returns its live Responder run.
+    fn admit_run(host: &mut HostConnection<'_>, start: &[u8]) -> RunRef {
+        let dispatched = deliver_in(host, start, 64).unwrap();
+        assert_eq!(dispatched.event, HostEvent::StartAccepted);
+        dispatched.run.expect("live Responder")
+    }
+    /// Delivers a contributory INITIATOR_KEY for `request_id` to its Responder on `host`.
+    fn validated(host: &mut HostConnection<'_>, request_id: &[u8]) {
+        let dispatched = deliver_in(host, &initiator_key(request_id), 9).unwrap();
+        assert_eq!(
+            (dispatched.event, dispatched.outbound),
+            (HostEvent::InitiatorKey, None)
+        );
+    }
+    /// Authorizes and then exposes `run` through `host`, two separate local actions, and
+    /// returns the produced key contribution.
+    fn expose_through(
+        host: &mut HostConnection<'_>,
+        run: &RunRef,
+        authority: &TrustedAuthority,
+    ) -> Vec<u8> {
+        assert_eq!(
+            acted(host.authorize_exposure(run, authority)),
+            LocalAction {
+                run: Some(run.clone()),
+                event: LocalEvent::ExposureAuthorized,
+                outbound: None,
+            }
+        );
+        let exposed = acted(host.expose_key(run));
+        assert_eq!(
+            (exposed.event, &exposed.run),
+            (LocalEvent::KeyExposed, &Some(run.clone()))
+        );
+        produced(exposed)
+    }
+
+    /// Both sides of one ceremony at their live SAS presentations.
+    struct Live {
+        id: Vec<u8>,
+        i: RunRef,
+        r: RunRef,
+        identity: [u8; 32],
+    }
+
+    /// One ceremony on `ih` (ceremony clock `ci`, request IDs from `ids`) and `rh`, driven
+    /// through the two hosts alone up to both live SAS presentations.
+    fn through_sas(
+        i: &Node,
+        ih: &mut HostConnection<'_>,
+        r: &Node,
+        rh: &mut HostConnection<'_>,
+        ci: &Arc<ManualClock>,
+        ids: &mut dyn RequestIdGenerator,
+    ) -> Live {
+        let started = acted(ih.start_initiator_with(ci.clone(), ids, initiator_bootstrap(), None));
+        let iref = started.run.clone().unwrap();
+        let accepted = deliver_in(rh, &produced(started), 7).unwrap();
+        let rref = accepted.run.clone().unwrap();
+        let accept = frame_out(accepted);
+        assert_eq!(
+            deliver_in(ih, &accept, 11).unwrap().event,
+            HostEvent::Accept
+        );
+        let ikey = expose_through(ih, &iref, &i.trusted);
+        assert_eq!(
+            deliver_in(rh, &ikey, 5).unwrap().event,
+            HostEvent::InitiatorKey
+        );
+        let rkey = expose_through(rh, &rref, &r.trusted);
+        assert_eq!(
+            deliver_in(ih, &rkey, 5).unwrap().event,
+            HostEvent::ResponderKey
+        );
+        let shown = ih.presentation(&iref).unwrap().unwrap().unwrap();
+        assert_eq!(rh.presentation(&rref), Ok(Ok(Some(shown.clone()))));
+        Live {
+            id: iref.request_id().to_vec(),
+            i: iref,
+            r: rref,
+            identity: *shown.ceremony_identity(),
+        }
+    }
+
+    #[test]
+    fn a_complete_ceremony_is_driven_through_the_hosts_alone() {
+        let (i, r) = (Node::new("host-local-e2e-i"), Node::new("host-local-e2e-r"));
+        let (tc, ci, cr) = (ManualClock::new(), ManualClock::new(), ManualClock::new());
+        let (mut ih, mut rh) = (i.host(&tc, &ci), r.host(&tc, &cr));
+        // From here on every ceremony transition is a host call; the nodes are only read.
+        let started = acted(ih.start_initiator_with(
+            ci.clone(),
+            &mut OsRequestIds,
+            initiator_bootstrap(),
+            None,
+        ));
+        assert_eq!(started.event, LocalEvent::InitiatorStarted);
+        let iref = started.run.clone().expect("live Initiator");
+        let start = produced(started);
+        let Message::Start { request_id: id, .. } = message(&start) else {
+            panic!("not START");
+        };
+        // An honest 16-byte ID, reserved and routed before START was returned, on this
+        // connection's one session; nothing spent, no guard held.
+        assert_eq!((id.len(), iref.request_id()), (16, id.as_slice()));
+        assert_eq!(
+            (i.reserved(), i.routes(), i.router.sessions_for_test()),
+            (1, 1, 1)
+        );
+        assert_eq!(
+            (i.counts(), i.status()),
+            ((1, 0, 0), Status::Ready { remaining: 10 })
+        );
+
+        let accepted = deliver_in(&mut rh, &start, 7).unwrap();
+        assert_eq!(accepted.event, HostEvent::StartAccepted);
+        let rref = accepted.run.clone().expect("live Responder");
+        let accept = frame_out(accepted);
+        // ACCEPT authorizes nothing: the Initiator's own authorization is still fresh below.
+        let dispatched = deliver_in(&mut ih, &accept, 11).unwrap();
+        assert_eq!(
+            (dispatched.event, dispatched.run, dispatched.outbound),
+            (HostEvent::Accept, Some(iref.clone()), None)
+        );
+        // Authorization records consent only: no frame, reservation, or opportunity.
+        assert_eq!(
+            acted(ih.authorize_exposure(&iref, &i.trusted)),
+            LocalAction {
+                run: Some(iref.clone()),
+                event: LocalEvent::ExposureAuthorized,
+                outbound: None,
+            }
+        );
+        assert_eq!(i.status(), Status::Ready { remaining: 10 });
+        // Exposure is its own action: the guard and one opportunity, then INITIATOR_KEY.
+        let exposed = acted(ih.expose_key(&iref));
+        assert_eq!(
+            (exposed.event, &exposed.run),
+            (LocalEvent::KeyExposed, &Some(iref.clone()))
+        );
+        let ikey = produced(exposed);
+        assert!(
+            matches!(message(&ikey), Message::InitiatorKey { ref request_id, .. } if *request_id == id)
+        );
+        assert_eq!((i.status(), i.remaining()), (Status::Busy, 9));
+
+        let dispatched = deliver_in(&mut rh, &ikey, 5).unwrap();
+        assert_eq!(
+            (dispatched.event, dispatched.run, dispatched.outbound),
+            (HostEvent::InitiatorKey, Some(rref.clone()), None)
+        );
+        // Validated, still pending, nothing spent.
+        assert_eq!(
+            (r.counts(), r.status()),
+            ((1, 0, 1), Status::Ready { remaining: 10 })
+        );
+        assert_eq!(
+            acted(rh.authorize_exposure(&rref, &r.trusted)).outbound,
+            None
+        );
+        assert_eq!(r.status(), Status::Ready { remaining: 10 });
+        let exposed = acted(rh.expose_key(&rref));
+        assert_eq!(exposed.event, LocalEvent::KeyExposed);
+        let rkey = produced(exposed);
+        assert!(
+            matches!(message(&rkey), Message::ResponderKey { ref request_id, .. } if *request_id == id)
+        );
+        // Crossing exposure released its pending slot and spent exactly one opportunity.
+        assert_eq!(
+            (r.counts(), r.status(), r.remaining()),
+            ((1, 0, 0), Status::Busy, 9)
+        );
+        let dispatched = deliver_in(&mut ih, &rkey, 5).unwrap();
+        assert_eq!(
+            (dispatched.event, dispatched.outbound),
+            (HostEvent::ResponderKey, None)
+        );
+
+        // Both present the same live SAS under the transcript-derived identity.
+        let shown = ih.presentation(&iref).unwrap().unwrap().expect("SAS");
+        assert_eq!(rh.presentation(&rref), Ok(Ok(Some(shown.clone()))));
+        let identity = *shown.ceremony_identity();
+        assert_ne!(&identity[..16], id.as_slice());
+        assert_eq!(shown.decimal().len(), "NNNN NNNN NNNN".len());
+
+        // MATCH records approval and sends nothing; a repeat records nothing new.
+        for approval in [SasApproval::Recorded, SasApproval::AlreadyRecorded] {
+            assert_eq!(
+                acted(ih.approve_sas(&iref, &identity)),
+                LocalAction {
+                    run: Some(iref.clone()),
+                    event: LocalEvent::SasApproved(approval),
+                    outbound: None,
+                }
+            );
+        }
+        // The decided SAS is withdrawn from the comparison interface.
+        assert_eq!(ih.presentation(&iref), Ok(Ok(None)));
+        // Own BOOTSTRAP_MAC is a separate action, produced exactly once.
+        let emitted = acted(ih.emit_bootstrap_mac(&iref));
+        assert_eq!(emitted.event, LocalEvent::BootstrapMacEmitted);
+        let imac = produced(emitted);
+        assert!(matches!(
+            message(&imac),
+            Message::BootstrapMac {
+                sender: Role::Initiator,
+                ..
+            }
+        ));
+        assert_eq!(
+            acted(ih.emit_bootstrap_mac(&iref)),
+            LocalAction {
+                run: Some(iref.clone()),
+                event: LocalEvent::BootstrapMacAlreadyEmitted,
+                outbound: None,
+            }
+        );
+        // Not yet: the Responder's approval is unauthenticated. Nothing sent, nothing changed.
+        assert_eq!(
+            refused(ih.emit_initiator_finish(&iref)),
+            RouteError::Ceremony(CeremonyError::ApprovalsNotAuthenticated)
+        );
+
+        // R authenticates I's approval while its own human still decides: its SAS stays
+        // presented and nothing is approved or sent for it.
+        let dispatched = deliver_in(&mut rh, &imac, 9).unwrap();
+        assert_eq!(
+            (dispatched.event, dispatched.outbound),
+            (HostEvent::BootstrapMac(PeerApproval::Authenticated), None)
+        );
+        assert_eq!(rh.presentation(&rref), Ok(Ok(Some(shown))));
+        assert_eq!(
+            acted(rh.approve_sas(&rref, &identity)).event,
+            LocalEvent::SasApproved(SasApproval::Recorded)
+        );
+        let rmac = produced(acted(rh.emit_bootstrap_mac(&rref)));
+        // R is completion-ready, but only the Initiator finishes: refused, connection live.
+        assert_eq!(
+            refused(rh.emit_initiator_finish(&rref)),
+            RouteError::Ceremony(CeremonyError::NotInitiator)
+        );
+        assert!(!rh.is_closed());
+
+        // Both approvals authenticated: still nothing is emitted by itself.
+        let dispatched = deliver_in(&mut ih, &rmac, 9).unwrap();
+        assert_eq!(
+            (dispatched.event, dispatched.outbound),
+            (HostEvent::BootstrapMac(PeerApproval::Authenticated), None)
+        );
+        let finished = acted(ih.emit_initiator_finish(&iref));
+        assert_eq!(finished.event, LocalEvent::InitiatorFinishEmitted);
+        let finish = produced(finished);
+        assert!(matches!(message(&finish), Message::InitiatorFinish { .. }));
+        assert_eq!(
+            acted(ih.emit_initiator_finish(&iref)),
+            LocalAction {
+                run: Some(iref.clone()),
+                event: LocalEvent::InitiatorFinishAlreadyEmitted,
+                outbound: None,
+            }
+        );
+        let dispatched = deliver_in(&mut rh, &finish, 17).unwrap();
+        assert_eq!(
+            (dispatched.event, &dispatched.result),
+            (HostEvent::InitiatorFinish, &None)
+        );
+        let ack = frame_out(dispatched);
+        // RESPONDER_FINISH_ACK is not Initiator success either.
+        let dispatched = deliver_in(&mut ih, &ack, 6).unwrap();
+        assert_eq!(
+            (dispatched.event, &dispatched.result, &dispatched.run),
+            (HostEvent::ResponderFinishAck, &None, &Some(iref.clone()))
+        );
+        let Some(Outbound::FinalAck(final_ack)) = dispatched.outbound else {
+            panic!("no confirmable final ACK");
+        };
+        assert_eq!((i.routes(), i.status()), (1, Status::Busy));
+        // R succeeds on the exact final ACK; its route goes with it.
+        let dispatched = deliver_in(&mut rh, final_ack.bytes(), 10).unwrap();
+        assert_eq!(
+            (dispatched.event, &dispatched.outbound, &dispatched.run),
+            (HostEvent::InitiatorFinishAck, &None, &None)
+        );
+        let responder = dispatched.result.expect("Responder result");
+        assert_eq!(
+            (r.routes(), r.status()),
+            (0, Status::Ready { remaining: 9 })
+        );
+        // I succeeds only when its adapter confirms the full local write.
+        let initiator = ih.confirm_sent(final_ack).unwrap().unwrap();
+        assert_eq!(
+            (i.routes(), i.reserved(), i.status()),
+            (0, 0, Status::Ready { remaining: 9 })
+        );
+        for (result, peer, role) in [
+            (&initiator, responder_bootstrap(), crate::Role::Responder),
+            (&responder, initiator_bootstrap(), crate::Role::Initiator),
+        ] {
+            assert_eq!(result.ceremony_identity(), &identity);
+            assert_eq!(result.request_id(), id.as_slice());
+            assert_eq!(
+                result.authenticated_peer_bootstrap(),
+                peer.canonical_bytes()
+            );
+            assert_eq!(result.peer_role(), role);
+        }
+        // Success closed neither connection, and the ended runs' references reach nothing.
+        assert!(!ih.is_closed() && !rh.is_closed());
+        assert_eq!((i.counts(), r.counts()), ((1, 0, 0), (1, 0, 0)));
+        assert_eq!(ih.presentation(&iref), Ok(Err(UNKNOWN)));
+        assert_eq!(refused(ih.emit_initiator_finish(&iref)), UNKNOWN);
+        assert_eq!(refused(ih.cancel_sas(&iref, &identity)), UNKNOWN);
+        assert_eq!(refused(rh.approve_sas(&rref, &identity)), UNKNOWN);
+        assert_eq!(refused(rh.reject_sas(&rref, &identity)), UNKNOWN);
+        assert_eq!(refused(rh.expose_key(&rref)), UNKNOWN);
+        assert_eq!(
+            (i.status(), r.status()),
+            (
+                Status::Ready { remaining: 9 },
+                Status::Ready { remaining: 9 }
+            )
+        );
+        assert_eq!(initiator.ceremony_identity(), responder.ceremony_identity());
+        drop((ih, rh));
+        i.release();
+        r.release();
+    }
+
+    /// A request-ID source that never yields one.
+    struct NoIds;
+    impl RequestIdGenerator for NoIds {
+        fn generate(&mut self) -> Option<[u8; 16]> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_host_initiator_start_routes_one_reserved_run_and_needs_its_live_session() {
+        let i = Node::new("host-local-start");
+        let (tc, ci) = (ManualClock::new(), ManualClock::new());
+        let mut h = i.host(&tc, &ci);
+        // Production path: OS CSPRNG request ID and a system ceremony clock.
+        let started = acted(h.start_initiator(initiator_bootstrap(), None));
+        assert_eq!(started.event, LocalEvent::InitiatorStarted);
+        let run = started.run.clone().unwrap();
+        let Message::Start {
+            request_id,
+            bootstrap,
+        } = message(&produced(started))
+        else {
+            panic!("not START");
+        };
+        assert_eq!(
+            (request_id.len(), request_id.as_slice()),
+            (16, run.request_id())
+        );
+        assert_eq!(
+            bootstrap.canonical_bytes(),
+            initiator_bootstrap().canonical_bytes()
+        );
+        // Reserved and routed on this connection's one session; no opportunity, no guard.
+        assert_eq!(
+            (
+                i.reserved(),
+                i.routes(),
+                i.router.sessions_for_test(),
+                i.counts()
+            ),
+            (1, 1, 1, (1, 0, 0))
+        );
+        assert_eq!(i.status(), Status::Ready { remaining: 10 });
+        // Another start on the same connection is an independent run.
+        let second = acted(h.start_initiator(initiator_bootstrap(), None));
+        assert!(second.run.is_some() && second.run != Some(run.clone()));
+        assert_eq!((i.reserved(), i.routes()), (2, 2));
+        // No request ID: no START, reservation, or route, and the connection stays live.
+        assert_eq!(
+            refused(h.start_initiator_with(ci.clone(), &mut NoIds, initiator_bootstrap(), None)),
+            RouteError::Ceremony(CeremonyError::RequestIdGenerationFailed)
+        );
+        assert_eq!((i.reserved(), i.routes()), (2, 2));
+        assert!(!h.is_closed());
+        // Its session closed elsewhere: nothing starts, and the connection ends settled.
+        i.router.close_session(h.session()).unwrap();
+        assert_eq!(
+            h.start_initiator(initiator_bootstrap(), None),
+            Err(HostError::Routing(RouteError::UnknownSession))
+        );
+        assert!(h.is_closed());
+        assert_eq!((i.reserved(), i.routes(), i.counts()), (0, 0, (0, 0, 0)));
+        // Retained references act on nothing once the connection is closed.
+        assert_eq!(
+            h.expose_key(&run),
+            Err(HostError::Transport(TransportError::Closed))
+        );
+        assert_eq!(i.status(), Status::Ready { remaining: 10 });
+        drop(h);
+        i.release();
+    }
+
+    #[test]
+    fn exposure_authorization_is_ceremony_specific_and_exposes_nothing() {
+        let (r, other) = (
+            Node::new("host-local-auth-r"),
+            Node::new("host-local-auth-other"),
+        );
+        let (tc, cc) = (ManualClock::new(), ManualClock::new());
+        let mut h = r.host(&tc, &cc);
+        let (x, y) = ([1; 16], [2; 16]);
+        let (xr, yr) = (admit_run(&mut h, &start(&x)), admit_run(&mut h, &start(&y)));
+        validated(&mut h, &x);
+        validated(&mut h, &y);
+        // Another authority's trusted handle: the run's own stale-authorization failure.
+        assert_eq!(
+            refused(h.authorize_exposure(&xr, &other.trusted)),
+            RouteError::Ceremony(CeremonyError::Owner(OwnerError::StaleAuthorization))
+        );
+        // X ended unexposed with nothing spent or sent; Y, both authorities, and the
+        // connection are untouched.
+        assert_eq!(
+            (r.routes(), r.counts(), r.status(), other.status()),
+            (
+                1,
+                (1, 0, 1),
+                Status::Ready { remaining: 10 },
+                Status::Ready { remaining: 10 }
+            )
+        );
+        assert!(!h.is_closed());
+        assert_eq!(refused(h.expose_key(&xr)), UNKNOWN);
+        // Y's own authority authorizes Y: still nothing is exposed, reserved, or sent.
+        assert_eq!(acted(h.authorize_exposure(&yr, &r.trusted)).outbound, None);
+        assert_eq!(
+            (r.counts(), r.status()),
+            ((1, 0, 1), Status::Ready { remaining: 10 })
+        );
+        assert_eq!(r.state(h.session(), &y), "ResponderAwaitAuthorization");
+        // Only Y's explicit exposure crosses the boundary.
+        let rkey = produced(acted(h.expose_key(&yr)));
+        assert!(matches!(message(&rkey), Message::ResponderKey { .. }));
+        assert_eq!(
+            (r.counts(), r.status(), r.remaining()),
+            ((1, 0, 0), Status::Busy, 9)
+        );
+        drop(h);
+        r.release();
+        other.release();
+    }
+
+    #[test]
+    fn a_busy_guard_refuses_exposure_and_its_release_exposes_nothing_by_itself() {
+        let r = Node::new("host-local-busy");
+        let (tc, cc) = (ManualClock::new(), ManualClock::new());
+        let (mut a, mut b) = (r.host(&tc, &cc), r.host(&tc, &cc));
+        let (x, y) = ([1; 16], [2; 16]);
+        let (ax, bx) = (admit_run(&mut a, &start(&x)), admit_run(&mut b, &start(&x)));
+        validated(&mut a, &x);
+        validated(&mut b, &x);
+        expose_through(&mut a, &ax, &r.trusted);
+        assert_eq!((r.status(), r.remaining()), (Status::Busy, 9));
+        // B's run is authorized, but the one exposed guard is held: refused with no
+        // contribution, second opportunity, wait, or retry. The connection stays live.
+        assert_eq!(
+            acted(b.authorize_exposure(&bx, &r.trusted)).event,
+            LocalEvent::ExposureAuthorized
+        );
+        assert_eq!(
+            refused(b.expose_key(&bx)),
+            RouteError::Ceremony(CeremonyError::Owner(OwnerError::Busy))
+        );
+        assert_eq!(
+            (r.status(), r.remaining(), r.routes()),
+            (Status::Busy, 9, 1)
+        );
+        assert!(!b.is_closed());
+        // Y is prepared on B (commitment sent, peer key validated) while A holds the guard.
+        let by = admit_run(&mut b, &start(&y));
+        validated(&mut b, &y);
+        // A cancels locally: terminal first, then its authenticated CANCEL (0x02); the guard is
+        // released and A's opportunity stays spent.
+        let shown = a.presentation(&ax).unwrap().unwrap().unwrap();
+        let cancelled = acted(a.cancel_sas(&ax, shown.ceremony_identity()));
+        assert_eq!(
+            (cancelled.event, &cancelled.run),
+            (LocalEvent::SasCancelled, &None)
+        );
+        assert_eq!(
+            cancel_of(&produced(cancelled)),
+            (Role::Responder, CancelReason::UserCancellation)
+        );
+        assert_eq!(r.status(), Status::Ready { remaining: 9 });
+        // Nothing happens to Y by itself: no frame, spend, or guard.
+        assert_eq!(idle(&mut b), 1);
+        assert_eq!(b.presentation(&by), Ok(Ok(None)));
+        assert_eq!(
+            (r.status(), r.counts()),
+            (Status::Ready { remaining: 9 }, (2, 0, 1))
+        );
+        // Only Y's own explicit, freshly authorized exposure crosses the boundary.
+        let ykey = expose_through(&mut b, &by, &r.trusted);
+        assert!(
+            matches!(message(&ykey), Message::ResponderKey { ref request_id, .. } if *request_id == y)
+        );
+        assert_eq!((r.status(), r.remaining()), (Status::Busy, 8));
+        drop((a, b));
+        r.release();
+    }
+
+    #[test]
+    fn the_eleventh_exposure_is_refused_as_exhaustion_without_a_contribution() {
+        let r = Node::new("host-local-exhausted");
+        let (tc, cc) = (ManualClock::new(), ManualClock::new());
+        let mut h = r.host(&tc, &cc);
+        for n in 1..=10u8 {
+            r.limiter.advance(ROLLING_WINDOW);
+            let id = [n; 16];
+            let run = admit_run(&mut h, &start(&id));
+            validated(&mut h, &id);
+            expose_through(&mut h, &run, &r.trusted);
+            let shown = h.presentation(&run).unwrap().unwrap().unwrap();
+            let rejected = acted(h.reject_sas(&run, shown.ceremony_identity()));
+            assert_eq!(rejected.event, LocalEvent::SasRejected);
+        }
+        assert_eq!(
+            (r.status(), r.remaining(), r.routes()),
+            (Status::Exhausted, 0, 0)
+        );
+        r.limiter.advance(ROLLING_WINDOW);
+        let id = [11; 16];
+        let run = admit_run(&mut h, &start(&id));
+        validated(&mut h, &id);
+        assert_eq!(acted(h.authorize_exposure(&run, &r.trusted)).outbound, None);
+        assert_eq!(
+            refused(h.expose_key(&run)),
+            RouteError::Ceremony(CeremonyError::Owner(OwnerError::Exhausted))
+        );
+        // No contribution and no further spend; only that run ended. The connection is live:
+        // exhaustion is not a peer, authentication, or compromise outcome.
+        assert_eq!(
+            (r.status(), r.remaining(), r.routes(), r.counts()),
+            (Status::Exhausted, 0, 0, (1, 0, 0))
+        );
+        assert!(!h.is_closed());
+        drop(h);
+        r.release();
+    }
+
+    #[test]
+    fn a_run_ref_acts_only_on_its_own_run_on_its_own_connection() {
+        let (r, other) = (
+            Node::new("host-local-cross-r"),
+            Node::new("host-local-cross-other"),
+        );
+        let (tc, cc) = (ManualClock::new(), ManualClock::new());
+        let (mut a, mut b) = (r.host(&tc, &cc), r.host(&tc, &cc));
+        let x = [7; 16];
+        let (ax, bx) = (admit_run(&mut a, &start(&x)), admit_run(&mut b, &start(&x)));
+        assert_ne!(ax, bx);
+        assert_eq!((ax.request_id(), bx.request_id()), (&x[..], &x[..]));
+        validated(&mut a, &x);
+        validated(&mut b, &x);
+        let charged = r.limiter();
+        // Each connection's reference reaches nothing on the other: no authorization,
+        // exposure, query, or output on either equal-ID run, and both connections stay live.
+        assert_eq!(refused(a.authorize_exposure(&bx, &r.trusted)), UNKNOWN);
+        assert_eq!(refused(a.expose_key(&bx)), UNKNOWN);
+        assert_eq!(refused(b.expose_key(&ax)), UNKNOWN);
+        assert_eq!(a.presentation(&bx), Ok(Err(UNKNOWN)));
+        assert!(!a.is_closed() && !b.is_closed());
+        assert_eq!(
+            (r.routes(), r.counts(), r.status(), r.limiter()),
+            (2, (2, 0, 2), Status::Ready { remaining: 10 }, charged)
+        );
+        // A's own reference changes only A's run: B's run was not authorized by it, so B's
+        // own authorization is still fresh.
+        assert_eq!(
+            acted(a.authorize_exposure(&ax, &r.trusted)).run,
+            Some(ax.clone())
+        );
+        assert_eq!(
+            acted(b.authorize_exposure(&bx, &r.trusted)).run,
+            Some(bx.clone())
+        );
+        // A run of another authority's router never reaches this one, or the reverse.
+        let mut foreign = other.host(&tc, &cc);
+        let fx = admit_run(&mut foreign, &start(&x));
+        assert_eq!(refused(a.expose_key(&fx)), UNKNOWN);
+        assert_eq!(refused(foreign.expose_key(&ax)), UNKNOWN);
+        // Closing A strands its references: a new connection reusing X never inherits them.
+        a.close().unwrap();
+        let mut c = r.host(&tc, &cc);
+        let cx = admit_run(&mut c, &start(&x));
+        assert_ne!(cx, ax);
+        validated(&mut c, &x);
+        assert_eq!(refused(c.authorize_exposure(&ax, &r.trusted)), UNKNOWN);
+        assert_eq!(refused(b.authorize_exposure(&ax, &r.trusted)), UNKNOWN);
+        assert_eq!(r.status(), Status::Ready { remaining: 10 });
+        assert_eq!(
+            acted(c.authorize_exposure(&cx, &r.trusted)).event,
+            LocalEvent::ExposureAuthorized
+        );
+        drop((b, c, foreign));
+        r.release();
+        other.release();
+    }
+
+    #[test]
+    fn a_stale_run_ref_or_identity_never_reaches_a_replacement_under_a_reused_request_id() {
+        let (i, r) = (
+            Node::new("host-local-reuse-i"),
+            Node::new("host-local-reuse-r"),
+        );
+        let (tc, ci, cr) = (ManualClock::new(), ManualClock::new(), ManualClock::new());
+        let (mut ih, mut rh) = (i.host(&tc, &ci), r.host(&tc, &cr));
+        let x = [0x5A; 16];
+        let old = through_sas(&i, &mut ih, &r, &mut rh, &ci, &mut OneId(Some(x)));
+        assert_eq!(old.id, x.to_vec());
+        // The live run ignores decisions for any other identity: no change, output, or close.
+        let other = [0xA5; 32];
+        assert_eq!(refused(rh.approve_sas(&old.r, &other)), MISMATCH);
+        assert_eq!(refused(rh.reject_sas(&old.r, &other)), MISMATCH);
+        assert_eq!(refused(rh.cancel_sas(&old.r, &other)), MISMATCH);
+        assert!(rh.presentation(&old.r).unwrap().unwrap().is_some());
+        assert_eq!(
+            (r.status(), r.remaining(), r.routes()),
+            (Status::Busy, 9, 1)
+        );
+        // R's human rejects: terminal before its authenticated CANCEL (0x01) is handed back.
+        let rejected = acted(rh.reject_sas(&old.r, &old.identity));
+        assert_eq!(
+            (rejected.event, &rejected.run),
+            (LocalEvent::SasRejected, &None)
+        );
+        let cancel = produced(rejected);
+        assert_eq!(
+            cancel_of(&cancel),
+            (Role::Responder, CancelReason::UserRejection)
+        );
+        assert_eq!(
+            (r.routes(), r.status()),
+            (0, Status::Ready { remaining: 9 })
+        );
+        assert!(!rh.is_closed());
+        // Nothing revives it.
+        assert_eq!(refused(rh.approve_sas(&old.r, &old.identity)), UNKNOWN);
+        // I authenticates the rejection; its reservation of X is released.
+        let dispatched = deliver_in(&mut ih, &cancel, 8).unwrap();
+        assert!(matches!(
+            dispatched.event,
+            HostEvent::Cancel(c) if c.reason() == CancelReason::UserRejection
+        ));
+        assert_eq!((dispatched.run, i.routes(), i.reserved()), (None, 0, 0));
+
+        // A fresh ceremony reuses X on the same two connections.
+        let fresh = through_sas(&i, &mut ih, &r, &mut rh, &ci, &mut OneId(Some(x)));
+        assert_eq!(fresh.id, old.id);
+        assert!(fresh.i != old.i && fresh.r != old.r && fresh.identity != old.identity);
+        let spent = (i.remaining(), r.remaining());
+        assert_eq!(spent, (8, 8));
+        // Every old reference reaches nothing on the replacement.
+        assert_eq!(refused(rh.authorize_exposure(&old.r, &r.trusted)), UNKNOWN);
+        assert_eq!(refused(rh.expose_key(&old.r)), UNKNOWN);
+        assert_eq!(refused(rh.approve_sas(&old.r, &fresh.identity)), UNKNOWN);
+        assert_eq!(refused(rh.emit_bootstrap_mac(&old.r)), UNKNOWN);
+        assert_eq!(refused(rh.cancel_sas(&old.r, &fresh.identity)), UNKNOWN);
+        assert_eq!(refused(ih.emit_initiator_finish(&old.i)), UNKNOWN);
+        assert_eq!(refused(ih.reject_sas(&old.i, &fresh.identity)), UNKNOWN);
+        assert_eq!(rh.presentation(&old.r), Ok(Err(UNKNOWN)));
+        // An old presentation's identity cannot decide the replacement either (I2).
+        assert_eq!(refused(rh.approve_sas(&fresh.r, &old.identity)), MISMATCH);
+        assert_eq!(refused(rh.reject_sas(&fresh.r, &old.identity)), MISMATCH);
+        assert_eq!(refused(rh.cancel_sas(&fresh.r, &old.identity)), MISMATCH);
+        assert_eq!(refused(ih.approve_sas(&fresh.i, &old.identity)), MISMATCH);
+        // The replacement is untouched: same SAS on display, nothing spent, no result.
+        assert_eq!(
+            rh.presentation(&fresh.r)
+                .unwrap()
+                .unwrap()
+                .map(|shown| *shown.ceremony_identity()),
+            Some(fresh.identity)
+        );
+        assert_eq!(
+            (i.remaining(), r.remaining(), i.status(), r.status()),
+            (spent.0, spent.1, Status::Busy, Status::Busy)
+        );
+        assert!(!ih.is_closed() && !rh.is_closed());
+        // Its own references proceed normally.
+        for (host, run) in [(&mut ih, &fresh.i), (&mut rh, &fresh.r)] {
+            assert_eq!(
+                acted(host.approve_sas(run, &fresh.identity)).event,
+                LocalEvent::SasApproved(SasApproval::Recorded)
+            );
+        }
+        drop((ih, rh));
+        i.release();
+        r.release();
+    }
+
+    #[test]
+    fn an_authorization_never_carries_over_to_a_replacement_run() {
+        let r = Node::new("host-local-auth-reuse");
+        let (tc, cc) = (ManualClock::new(), ManualClock::new());
+        let mut h = r.host(&tc, &cc);
+        let x = [3; 16];
+        let old = admit_run(&mut h, &start(&x));
+        validated(&mut h, &x);
+        acted(h.authorize_exposure(&old, &r.trusted));
+        // The deadline driver ends the authorized, unexposed run: nothing spent or sent.
+        cc.advance(INACTIVITY_DEADLINE);
+        assert_eq!(
+            h.poll_ceremony_deadlines().unwrap(),
+            CeremonyPoll {
+                inspected: 1,
+                event: ended(&x, INACTIVITY),
+                outbound: None,
+            }
+        );
+        // Its reference now reaches nothing, and no second deadline outcome follows.
+        assert_eq!(refused(h.expose_key(&old)), UNKNOWN);
+        assert_eq!(idle(&mut h), 0);
+        // The peer reuses X: a fresh run, with no authorization of its own.
+        let fresh = admit_run(&mut h, &start(&x));
+        validated(&mut h, &x);
+        assert_eq!(refused(h.authorize_exposure(&old, &r.trusted)), UNKNOWN);
+        assert_eq!(refused(h.expose_key(&old)), UNKNOWN);
+        assert_eq!(r.state(h.session(), &x), "ResponderAwaitAuthorization");
+        // The old consent does not transfer: refused with no key and nothing spent.
+        assert_eq!(
+            refused(h.expose_key(&fresh)),
+            RouteError::Ceremony(CeremonyError::Owner(OwnerError::MissingAuthorization))
+        );
+        assert_eq!(
+            (r.status(), r.routes(), r.counts()),
+            (Status::Ready { remaining: 10 }, 0, (1, 0, 0))
+        );
+        assert!(!h.is_closed());
+        drop(h);
+        r.release();
+    }
+
+    /// One local SAS decision through a host.
+    type Decide = fn(&mut HostConnection<'_>, &RunRef, &[u8; 32]) -> HostResult<LocalAction>;
+
+    #[test]
+    fn a_post_sas_action_at_its_deadline_surfaces_the_timeout_cancel_instead() {
+        let (i, r) = (
+            Node::new("host-local-deadline-sas-i"),
+            Node::new("host-local-deadline-sas-r"),
+        );
+        let (tc, cr) = (ManualClock::new(), ManualClock::new());
+        let (mut ih, mut rh) = (i.host(&tc, &ManualClock::new()), r.host(&tc, &cr));
+        let decisions: [Decide; 3] = [
+            |host, run, identity| host.approve_sas(run, identity),
+            |host, run, identity| host.reject_sas(run, identity),
+            |host, run, identity| host.cancel_sas(run, identity),
+        ];
+        for (n, decide) in decisions.into_iter().enumerate() {
+            r.limiter.advance(REFILL_PERIOD);
+            let ci = ManualClock::new();
+            let live = through_sas(&i, &mut ih, &r, &mut rh, &ci, &mut OsRequestIds);
+            let spent = (i.remaining(), r.remaining());
+            // Long into the suspended human wait, at exactly the absolute deadline.
+            ci.advance(ABSOLUTE_DEADLINE);
+            let action = acted(decide(&mut ih, &live.i, &live.identity));
+            // The deadline won: the run is already terminal, the decision was not applied, and
+            // the only frame is the timeout CANCEL (0x03) the run built, not a 0x01/0x02 one.
+            assert_eq!(
+                (action.event, &action.run),
+                (LocalEvent::Deadline(ABSOLUTE), &None),
+                "{n}"
+            );
+            let cancel = produced(action);
+            assert_eq!(cancel_of(&cancel), (Role::Initiator, CancelReason::Timeout));
+            assert_eq!(
+                (i.routes(), i.reserved(), i.remaining(), i.status()),
+                (0, 0, spent.0, Status::Ready { remaining: spent.0 })
+            );
+            assert!(!ih.is_closed());
+            // Its reference reaches nothing now, and no second timeout or CANCEL exists.
+            assert_eq!(refused(decide(&mut ih, &live.i, &live.identity)), UNKNOWN);
+            assert_eq!(idle(&mut ih), 0);
+            // R authenticates it and ends too, without a result.
+            let dispatched = deliver_in(&mut rh, &cancel, 9).unwrap();
+            assert!(matches!(
+                dispatched.event,
+                HostEvent::Cancel(c) if c.reason() == CancelReason::Timeout
+            ));
+            assert_eq!(
+                (dispatched.result, r.routes(), r.remaining()),
+                (None, 0, spent.1)
+            );
+        }
+        // One nanosecond earlier a decision applies normally; one nanosecond later the next
+        // action (own BOOTSTRAP_MAC) loses to the deadline and no MAC is produced.
+        r.limiter.advance(REFILL_PERIOD);
+        let ci = ManualClock::new();
+        let live = through_sas(&i, &mut ih, &r, &mut rh, &ci, &mut OsRequestIds);
+        ci.advance(ABSOLUTE_DEADLINE - NS);
+        assert_eq!(
+            acted(ih.approve_sas(&live.i, &live.identity)).event,
+            LocalEvent::SasApproved(SasApproval::Recorded)
+        );
+        ci.advance(NS);
+        let action = acted(ih.emit_bootstrap_mac(&live.i));
+        assert_eq!(
+            (action.event, &action.run),
+            (LocalEvent::Deadline(ABSOLUTE), &None)
+        );
+        assert_eq!(
+            cancel_of(&produced(action)),
+            (Role::Initiator, CancelReason::Timeout)
+        );
+        assert_eq!(
+            (i.routes(), i.status()),
+            (0, Status::Ready { remaining: 6 })
+        );
+        assert!(!ih.is_closed());
+        drop((ih, rh));
+        i.release();
+        r.release();
+    }
+
+    #[test]
+    fn a_pre_sas_action_at_its_deadline_ends_the_run_with_nothing_exposed_or_sent() {
+        let (i, r) = (
+            Node::new("host-local-deadline-pre-i"),
+            Node::new("host-local-deadline-pre-r"),
+        );
+        let (tc, ci, cr) = (ManualClock::new(), ManualClock::new(), ManualClock::new());
+        let (mut ih, mut rh) = (i.host(&tc, &ci), r.host(&tc, &cr));
+        // An Initiator past ACCEPT awaits its local exposure decision.
+        let started = acted(ih.start_initiator_with(
+            ci.clone(),
+            &mut OsRequestIds,
+            initiator_bootstrap(),
+            None,
+        ));
+        let iref = started.run.clone().unwrap();
+        let accept = admit(&mut rh, &produced(started));
+        deliver_in(&mut ih, &accept, 9).unwrap();
+        // Authorization is progress and restarts the inactivity window; queries are not.
+        ci.advance(INACTIVITY_DEADLINE - NS);
+        acted(ih.authorize_exposure(&iref, &i.trusted));
+        ci.advance(INACTIVITY_DEADLINE - NS);
+        for _ in 0..3 {
+            assert_eq!(ih.presentation(&iref), Ok(Ok(None)));
+        }
+        ci.advance(NS);
+        // Exactly 60 s idle: the deadline wins, with no key, opportunity, or CANCEL (no SAS).
+        assert_eq!(
+            acted(ih.expose_key(&iref)),
+            LocalAction {
+                run: None,
+                event: LocalEvent::Deadline(INACTIVITY),
+                outbound: None,
+            }
+        );
+        assert_eq!(
+            (i.routes(), i.reserved(), i.status()),
+            (0, 0, Status::Ready { remaining: 10 })
+        );
+        assert!(!ih.is_closed());
+
+        // A Responder's fixed pending lifetime runs from admission, whatever progress it makes.
+        let y = [9; 16];
+        let yr = admit_run(&mut rh, &start(&y));
+        cr.advance(Duration::from_secs(30));
+        validated(&mut rh, &y);
+        cr.advance(Duration::from_secs(20));
+        acted(rh.authorize_exposure(&yr, &r.trusted));
+        assert_eq!(r.counts(), (1, 0, 2));
+        cr.advance(Duration::from_secs(10));
+        assert_eq!(
+            acted(rh.expose_key(&yr)),
+            LocalAction {
+                run: None,
+                event: LocalEvent::Deadline(CeremonyDeadline::PendingExpired),
+                outbound: None,
+            }
+        );
+        // Its slot is released; nothing was exposed or spent; the other run is untouched.
+        assert_eq!(
+            (r.counts(), r.routes(), r.status()),
+            ((1, 0, 1), 1, Status::Ready { remaining: 10 })
+        );
+        assert!(!rh.is_closed());
+
+        // An unusable ceremony clock fails the targeted run closed: no timeout claim, nothing
+        // sent, and the connection stays live.
+        let cz = ManualClock::new();
+        let mut zh = r.host(&tc, &cz);
+        let zr = admit_run(&mut zh, &start(&[0x0C; 16]));
+        cz.fail();
+        assert_eq!(
+            acted(zh.authorize_exposure(&zr, &r.trusted)),
+            LocalAction {
+                run: None,
+                event: LocalEvent::Deadline(CeremonyDeadline::ClockUnavailable),
+                outbound: None,
+            }
+        );
+        assert_eq!(
+            (r.routes(), r.status()),
+            (1, Status::Ready { remaining: 10 })
+        );
+        assert!(!zh.is_closed());
+        drop((ih, rh, zh));
+        i.release();
+        r.release();
+    }
+
+    #[test]
+    fn sas_presentation_is_read_only_and_withheld_at_expiry_until_the_run_is_driven() {
+        let (i, r) = (
+            Node::new("host-local-present-i"),
+            Node::new("host-local-present-r"),
+        );
+        let (tc, ci, cr) = (ManualClock::new(), ManualClock::new(), ManualClock::new());
+        let (mut ih, mut rh) = (i.host(&tc, &ci), r.host(&tc, &cr));
+        let live = through_sas(&i, &mut ih, &r, &mut rh, &ci, &mut OsRequestIds);
+        let shown = ih.presentation(&live.i).unwrap().unwrap().unwrap();
+        assert_eq!(*shown.ceremony_identity(), live.identity);
+        ci.advance(ABSOLUTE_DEADLINE - NS);
+        for _ in 0..3 {
+            assert_eq!(ih.presentation(&live.i), Ok(Ok(Some(shown.clone()))));
+        }
+        ci.advance(NS);
+        // Expired: withheld, but the query neither ended the run nor produced a CANCEL.
+        assert_eq!(ih.presentation(&live.i), Ok(Ok(None)));
+        assert_eq!((i.routes(), i.status()), (1, Status::Busy));
+        // Only the explicit driver ends it, with its timeout CANCEL.
+        let poll = ih.poll_ceremony_deadlines().unwrap();
+        assert_eq!(poll.event, ended(&live.id, ABSOLUTE));
+        timeout_cancel(poll.outbound, &live.id, Role::Initiator);
+        assert_eq!(ih.presentation(&live.i), Ok(Err(UNKNOWN)));
+        assert_eq!(i.status(), Status::Ready { remaining: 9 });
+        drop((ih, rh));
+        i.release();
+        r.release();
+    }
+
+    #[test]
+    fn uncertain_cleanup_of_a_local_cancel_ends_the_connection_and_sends_nothing() {
+        let (i, r) = (
+            Node::new("host-local-uncertain-i"),
+            Node::new("host-local-uncertain-r"),
+        );
+        let (tc, ci, cr) = (ManualClock::new(), ManualClock::new(), ManualClock::new());
+        let (mut ih, mut rh) = (i.host(&tc, &ci), r.host(&tc, &cr));
+        let live = through_sas(&i, &mut ih, &r, &mut rh, &ci, &mut OsRequestIds);
+        // The authority's shared state becomes unusable, so the guard release cannot be
+        // established.
+        let executor = i.executor.clone();
+        let _ = thread::spawn(move || {
+            let _shared = executor.0.shared.lock().unwrap();
+            panic!("simulate uncertain guard state");
+        })
+        .join();
+        // The run is terminal, its built CANCEL is withheld, nothing is reported as run-local,
+        // and the connection ends with its live count held.
+        assert_eq!(
+            ih.cancel_sas(&live.i, &live.identity),
+            Err(HostError::Transport(TransportError::OwnershipUncertain))
+        );
+        assert!(ih.is_closed());
+        assert_eq!((i.counts().0, i.routes()), (1, 0));
+        assert_eq!(
+            ih.presentation(&live.i),
+            Err(HostError::Transport(TransportError::Closed))
+        );
+        drop(ih);
+        assert_eq!(i.counts().0, 1);
+        drop(rh);
+        i.release();
+        r.release();
+    }
+
+    #[test]
+    fn a_local_action_and_a_session_close_linearize_at_the_session_lease() {
+        let (i, r) = (
+            Node::new("host-local-close-i"),
+            Node::new("host-local-close-r"),
+        );
+        let (tc, ci, cr) = (ManualClock::new(), ManualClock::new(), ManualClock::new());
+        let (mut ih, mut rh) = (i.host(&tc, &ci), r.host(&tc, &cr));
+        let live = through_sas(&i, &mut ih, &r, &mut rh, &ci, &mut OsRequestIds);
+        let (router, session) = (&i.router, ih.session());
+        // The action enters first and holds its run; a close from elsewhere then waits for it.
+        let (arrived_tx, arrived) = mpsc::channel();
+        let (resume_tx, resume) = mpsc::channel::<()>();
+        let approved = thread::scope(|scope| {
+            let closer = scope.spawn(move || {
+                arrived.recv().unwrap();
+                test_hook::install(move |point| {
+                    if let Point::CloseWaiting { in_flight } = point {
+                        assert_eq!(in_flight, 1);
+                        let _ = resume_tx.send(());
+                    }
+                });
+                router.close_session(session)
+            });
+            test_hook::install(move |point| {
+                if point == Point::LocalRunLocked {
+                    arrived_tx.send(()).unwrap();
+                    resume.recv().unwrap();
+                }
+            });
+            let approved = ih.approve_sas(&live.i, &live.identity);
+            test_hook::install(|_| {});
+            assert_eq!(closer.join().unwrap(), Ok(()));
+            approved
+        });
+        // The entered action finished only its own step and kept its outcome; nothing is sent.
+        assert_eq!(
+            acted(approved).event,
+            LocalEvent::SasApproved(SasApproval::Recorded)
+        );
+        // The close then ended the run (no result, no CANCEL, opportunity kept).
+        assert_eq!(
+            (i.routes(), i.reserved(), i.status()),
+            (0, 0, Status::Ready { remaining: 9 })
+        );
+        // Nothing enters afterwards: the next action finds no session; the connection ends.
+        assert_eq!(
+            ih.emit_bootstrap_mac(&live.i),
+            Err(HostError::Routing(RouteError::UnknownSession))
+        );
+        assert!(ih.is_closed());
+        assert_eq!(i.counts(), (0, 0, 0));
+        drop(ih);
+
+        // Close first: the action can no longer enter, produces nothing, and ends its connection.
+        let mut ih = i.host(&tc, &ci);
+        let started = acted(ih.start_initiator_with(
+            ci.clone(),
+            &mut OsRequestIds,
+            initiator_bootstrap(),
+            None,
+        ));
+        let run = started.run.unwrap();
+        assert_eq!(i.reserved(), 1);
+        i.router.close_session(ih.session()).unwrap();
+        assert_eq!(
+            ih.authorize_exposure(&run, &i.trusted),
+            Err(HostError::Routing(RouteError::UnknownSession))
+        );
+        assert!(ih.is_closed());
+        assert_eq!(
+            (i.routes(), i.reserved(), i.counts(), i.status()),
+            (0, 0, (0, 0, 0), Status::Ready { remaining: 9 })
+        );
+        drop((ih, rh));
+        i.release();
         r.release();
     }
 }

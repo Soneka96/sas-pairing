@@ -32,6 +32,12 @@
 //! are skipped as inspected work, never waited for. The call stops at the first terminal
 //! deadline outcome, so it returns at most one.
 //!
+//! Exact-run local actions: a peer may reuse a request ID once its run ended, so trusted local
+//! callbacks never act on "whatever is routed under this key now". Routing a run (Initiator
+//! start, Responder admission) and every operation that leaves it live return an opaque
+//! `RunRef` naming its session, key, and in-memory instance; `with_exact_run` acts only on
+//! that exact instance, under its own lock, through the run's own entrypoints.
+//!
 //! Lock order: run mutex -> table mutex -> lifecycle mutex. The lifecycle mutex is a leaf, so a
 //! lease may be dropped anywhere. Authority shared state is taken by ceremony work under a run
 //! mutex (or with none held) and never while a router lock is acquired after it. Teardown waits
@@ -79,6 +85,33 @@ pub(crate) const MAX_CEREMONY_POLLS_PER_CALL: usize = 8;
 pub(crate) struct SessionHandle {
     router: u64,
     session: u64,
+}
+
+/// Trusted-local plumbing that names exactly one routed run, so a later local action reaches
+/// that run and never a replacement under a reused `(session, request_id)` key. Only the
+/// router creates one, from a run it has just routed or operated on. It binds the session, the
+/// routing key, and the run's own in-memory instance (its admission ceremony's process-unique,
+/// never reissued ID); every action through `with_exact_run` rechecks all three under the
+/// run's lock before anything runs, so a copy kept after its run ended, was replaced, or whose
+/// session closed, or one from another session, acts on nothing (`UnknownRoute`). It holds no
+/// run, lock, or `Arc`: the router stays the runs' only owner and mutation path.
+///
+/// A `RunRef` is not the request ID (peer-controlled routing data that may be reused), not
+/// `ceremony_identity` (the transcript-derived authority that SAS decisions still require), not
+/// peer identity, authentication, authorization, or trust. Holding one grants nothing: every
+/// action keeps all of its own checks. Never sent, hashed, persisted, or resumed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunRef {
+    session: SessionHandle,
+    request_id: Vec<u8>,
+    instance: u64,
+}
+
+impl RunRef {
+    /// The run's routing key on its session: diagnostic and correlation data only.
+    pub(crate) fn request_id(&self) -> &[u8] {
+        &self.request_id
+    }
 }
 
 /// Ordered by session, then request-ID bytes, so one session's routes are contiguous in the
@@ -246,6 +279,8 @@ pub(crate) enum Inbound {
 pub(crate) struct Routed<T> {
     pub(crate) output: T,
     pub(crate) result: Option<PairingResult>,
+    /// The exact run, present only while it is still live after this operation.
+    pub(crate) run: Option<RunRef>,
 }
 
 /// One session's deadline-driver position: the request ID most recently inspected (`None`
@@ -486,6 +521,21 @@ impl Router {
         local: Bootstrap,
         expected: Option<Bootstrap>,
     ) -> Result<StartRouting, RouteError> {
+        self.receive_start_run(clock, session, bytes, local, expected)
+            .map(|(start, _)| start)
+    }
+
+    /// `receive_start_with_clock` that also returns the exact run the START reached: the new
+    /// Responder for `Accepted`, or the installed run an exact duplicate was routed to; `None`
+    /// for a duplicate of a START still being admitted.
+    pub(crate) fn receive_start_run(
+        &self,
+        clock: Clock,
+        session: SessionHandle,
+        bytes: &[u8],
+        local: Bootstrap,
+        expected: Option<Bootstrap>,
+    ) -> Result<(StartRouting, Option<RunRef>), RouteError> {
         let new = NewResponder {
             clock,
             local,
@@ -514,10 +564,11 @@ impl Router {
     ) -> Result<Routed<Inbound>, RouteError> {
         let (kind, request_id) = protocol::route_fields(bytes)?;
         if kind == 1 {
-            self.route_start(session, bytes, None)?;
+            let (_, run) = self.route_start(session, bytes, None)?;
             return Ok(Routed {
                 output: Inbound::StartDuplicate,
                 result: None,
+                run,
             });
         }
         let key = RoutingKey {
@@ -531,7 +582,7 @@ impl Router {
                 return Err(RouteError::SessionProtocolFailure);
             }
         };
-        self.on_run(&key, &run, |run| {
+        self.on_run(&key, &run, None, |run| {
             Ok(match kind {
                 2 => run.receive_accept(bytes).map(|()| Inbound::Accept)?,
                 3 => run
@@ -547,11 +598,11 @@ impl Router {
         })
     }
 
-    /// A local action (authorization, SAS decision, own MAC or finish emission, send
-    /// confirmation, deadline poll, ...) on the run routed under exactly `(session,
-    /// request_id)`. Inbound frames must use `deliver`/`receive_start`, which take the request
-    /// ID from the frame itself. A local action naming no run is `UnknownRoute`, not a session
-    /// failure: it is not peer input. `op` must not call back into the router.
+    /// A local operation on whatever run is routed under exactly `(session, request_id)` now
+    /// (the final-ACK send confirmation, whose token binds its exact bytes, and tests). Inbound
+    /// frames must use `deliver`/`receive_start`, which take the request ID from the frame
+    /// itself. A local operation naming no run is `UnknownRoute`, not a session failure: it is
+    /// not peer input. `op` must not call back into the router.
     pub(crate) fn with_run<T>(
         &self,
         session: SessionHandle,
@@ -563,7 +614,32 @@ impl Router {
             request_id: request_id.to_vec(),
         };
         let (_lease, run) = self.active(&key)?;
-        self.on_run(&key, &run, op)
+        self.on_run(&key, &run, None, op)
+    }
+
+    /// A trusted local ceremony action (authorization, exposure, SAS decision, own MAC or
+    /// finish emission, presentation) on exactly the run `target` names, entered on `session`
+    /// like any operation. `target` must name `session`, a route must still exist under its
+    /// key, and that route's run must be `target`'s own instance (checked under the run's lock,
+    /// before `op`); otherwise nothing runs and nothing changes (`UnknownRoute`): a stale
+    /// reference never reaches a replacement run under a reused request ID, and one from
+    /// another session never reaches this one. The lookup is one exact key, never a scan.
+    /// `op` must not call back into the router.
+    pub(crate) fn with_exact_run<T>(
+        &self,
+        session: SessionHandle,
+        target: &RunRef,
+        op: impl FnOnce(&mut RemoteCeremony) -> Result<T, CeremonyError>,
+    ) -> Result<Routed<T>, RouteError> {
+        if target.session != session {
+            return Err(RouteError::UnknownRoute);
+        }
+        let key = RoutingKey {
+            session,
+            request_id: target.request_id.clone(),
+        };
+        let (_lease, run) = self.active(&key)?;
+        self.on_run(&key, &run, Some(target.instance), op)
     }
 
     /// Honest local Initiator on `session`: the core generates and reserves the 16-byte request
@@ -591,6 +667,19 @@ impl Router {
         local: Bootstrap,
         expected: Option<Bootstrap>,
     ) -> Result<(Vec<u8>, Vec<u8>), RouteError> {
+        self.start_initiator_run(clock, ids, session, local, expected)
+            .map(|(run, start)| (run.request_id, start))
+    }
+
+    /// `start_initiator_with` returning the exact routed run instead of only its request ID.
+    pub(crate) fn start_initiator_run(
+        &self,
+        clock: Clock,
+        ids: &mut dyn RequestIdGenerator,
+        session: SessionHandle,
+        local: Bootstrap,
+        expected: Option<Bootstrap>,
+    ) -> Result<(RunRef, Vec<u8>), RouteError> {
         let lease = self.enter(&*self.table()?, session)?;
         loop {
             // Declared after `lease`, so every early return drops the run (and its
@@ -609,6 +698,7 @@ impl Router {
             )?;
             let start = run.start()?;
             let request_id = protocol::route_fields(&start)?.1.to_vec();
+            let instance = run.instance();
             #[cfg(test)]
             test_hook::fire(Point::InitiatorStarted);
             let mut run = Some(run);
@@ -627,7 +717,14 @@ impl Router {
             }
             drop(guard);
             match run {
-                None => return Ok((request_id, start)),
+                None => {
+                    let run = RunRef {
+                        session,
+                        request_id,
+                        instance,
+                    };
+                    return Ok((run, start));
+                }
                 // Dropping the uninstalled run releases its request-ID reservation.
                 Some(run) if !closing => drop(run),
                 Some(run) => {
@@ -783,7 +880,7 @@ impl Router {
         session: SessionHandle,
         bytes: &[u8],
         new: Option<NewResponder>,
-    ) -> Result<StartRouting, RouteError> {
+    ) -> Result<(StartRouting, Option<RunRef>), RouteError> {
         let (kind, request_id) = protocol::route_fields(bytes)?;
         if kind != 1 {
             return Err(protocol::CodecError::InvalidField("message_type").into());
@@ -794,11 +891,12 @@ impl Router {
         };
         let (lease, claim) = match self.classify_start(&key, bytes, new.is_some())? {
             StartRoute::New(lease, claim) => (lease, claim),
-            StartRoute::Duplicate => return Ok(StartRouting::Duplicate),
+            StartRoute::Duplicate => return Ok((StartRouting::Duplicate, None)),
             StartRoute::Existing(_lease, run) => {
                 // Duplicate or conflict for that run only; never a new candidate.
-                self.on_run(&key, &run, |run| run.receive_start_duplicate(bytes))?;
-                return Ok(StartRouting::Duplicate);
+                let routed =
+                    self.on_run(&key, &run, None, |run| run.receive_start_duplicate(bytes))?;
+                return Ok((StartRouting::Duplicate, routed.run));
             }
         };
         let NewResponder {
@@ -834,10 +932,15 @@ impl Router {
         };
         match admitted {
             Ok((run, accept)) if ours && !conflicted && !closing => {
+                let routed = RunRef {
+                    session,
+                    request_id: key.request_id.clone(),
+                    instance: run.instance(),
+                };
                 table
                     .routes
                     .insert(key, Route::Active(Arc::new(Mutex::new(run))));
-                Ok(StartRouting::Accepted(accept))
+                Ok((StartRouting::Accepted(accept), Some(routed)))
             }
             Ok((run, _accept)) => {
                 // Conflicted or session closing: the run is made terminal (and its slot
@@ -947,22 +1050,38 @@ impl Router {
         }
     }
 
-    /// Runs `op` under the run's own lock, never the table lock. If the run is finished
-    /// afterwards, its own terminal cleanup (I1/I2 invalidation, then guard, slot, and
+    /// Runs `op` under the run's own lock, never the table lock. With `instance`, the locked
+    /// run must be exactly that instance, or nothing runs (`UnknownRoute`). If the run is
+    /// finished afterwards, its own terminal cleanup (I1/I2 invalidation, then guard, slot, and
     /// reservation release) has already happened; only then is the route removed and the key
-    /// reusable. The caller that removes the route of a succeeded run receives its result.
+    /// reusable. The caller that removes the route of a succeeded run receives its result; a
+    /// run still live afterwards is named by the returned `RunRef`.
     fn on_run<T>(
         &self,
         key: &RoutingKey,
         run: &Run,
+        instance: Option<u64>,
         op: impl FnOnce(&mut RemoteCeremony) -> Result<T, CeremonyError>,
     ) -> Result<Routed<T>, RouteError> {
         let mut ceremony = lock(run)?;
+        if instance.is_some_and(|instance| instance != ceremony.instance()) {
+            return Err(RouteError::UnknownRoute);
+        }
+        #[cfg(test)]
+        if instance.is_some() {
+            test_hook::fire(Point::LocalRunLocked);
+        }
         let outcome = op(&mut ceremony);
         let result = self.remove_finished(key, run, &ceremony)?;
+        let live = (!ceremony.is_finished()).then(|| RunRef {
+            session: key.session,
+            request_id: key.request_id.clone(),
+            instance: ceremony.instance(),
+        });
         Ok(Routed {
             output: outcome?,
             result,
+            run: live,
         })
     }
 
