@@ -1595,6 +1595,8 @@ impl RemoteCeremony {
                     };
                     return self.fail(error.into());
                 }
+                #[cfg(test)]
+                crate::test_hook::fire(crate::test_hook::Point::InitiatorReserved);
                 let ephemeral = EphemeralSas::new();
                 let public_key = ephemeral.public_key();
                 let request_id = match &start.message {
@@ -2447,6 +2449,151 @@ mod tests {
         drop(run);
         drop(exec);
         authority.release().unwrap();
+    }
+
+    // R-WIRE-014: START bytes changed in transit after the Initiator sent them. The Responder
+    // commits over the bytes it received, and the Initiator verifies RESPONDER_KEY against the
+    // exact START it sent, so the commitment fails before any DH or SAS: no presentation, no
+    // result, and the opportunity the Initiator consumed at exposure is never refunded.
+    #[test]
+    fn a_start_changed_in_transit_fails_the_commitment_with_no_sas_and_no_refund() {
+        let a = Authorities::new("start-in-transit");
+        let mut i = RemoteCeremony::initiator_with_fixed_start_for_test(
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            &vector("START"),
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap();
+        let sent = i.start().unwrap();
+        let received = start_as(&vector_request_id(), b"altered in transit");
+        assert_ne!(received, sent);
+        let (mut r, accept) = present(&a, &received, responder_bootstrap(), None).unwrap();
+        i.receive_accept(&accept).unwrap();
+        i.authorize(&a.i).unwrap();
+        let ikey = i.expose_key().unwrap();
+        r.receive_initiator_key(&ikey).unwrap();
+        r.authorize(&a.r).unwrap();
+        let rkey = r.expose_key().unwrap();
+        assert_eq!(
+            i.receive_responder_key(&rkey),
+            Err(CeremonyError::Crypto(crypto::Error::CommitmentMismatch))
+        );
+        assert!(i.is_finished() && i.presentation().is_none() && i.result().is_none());
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        // Nothing later revives it or recomputes anything.
+        assert!(i.receive_responder_key(&rkey).is_err());
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        drop(i);
+        drop(r);
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
+        a.release();
+    }
+
+    // R-WIRE-026 (context half; the expected-peer half is in
+    // `mismatch_noncontributory_busy_and_terminal_paths_do_not_leak_or_refund`): an ACCEPT whose
+    // bootstrap `shared_context` differs from the Initiator's independently supplied context
+    // fails the run before authorization, reservation, ephemeral generation, or INITIATOR_KEY.
+    #[test]
+    fn an_accept_with_another_shared_context_fails_before_any_reservation() {
+        let a = Authorities::new("accept-context");
+        let mut i = RemoteCeremony::initiator_with_fixed_start_for_test(
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            &vector("START"),
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap();
+        i.start().unwrap();
+        let responder = responder_bootstrap();
+        let commitment = match decoded("ACCEPT").message {
+            Message::Accept { commitment, .. } => commitment,
+            _ => unreachable!(),
+        };
+        let accept = Message::Accept {
+            request_id: vector_request_id(),
+            commitment,
+            bootstrap: Bootstrap::new(
+                responder.application_identity().to_vec(),
+                responder.key_algorithm().to_vec(),
+                responder.public_key().to_vec(),
+                [responder.shared_context(), b"/other"].concat(),
+            )
+            .unwrap(),
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(
+            i.receive_accept(&accept),
+            Err(CeremonyError::SharedContextMismatch)
+        );
+        assert!(i.is_finished() && i.presentation().is_none());
+        assert_eq!(i.authorize(&a.i), Err(CeremonyError::InvalidState));
+        assert!(i.expose_key().is_err());
+        assert_eq!((operations(&a.ei), remaining(&a.ei)), (0, 10));
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+        drop(i);
+        a.release();
+    }
+
+    // R-OWNER-001, R-OWNER-030, and the RNG-failure case of R-OWNER-013. `Sas::new()` returns
+    // `Sas`, not a `Result`, and may panic if OS entropy fails. A panic at exactly the point where
+    // each role generates its ephemeral key must leave no contribution, no result, and no
+    // refund. The hooks fire immediately before `EphemeralSas::new()`, with nothing in between.
+    #[test]
+    fn an_ephemeral_generation_panic_exposes_nothing_and_refunds_nothing() {
+        use crate::test_hook::{self, Point};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let fail_at = |target: Point| {
+            test_hook::install(move |point| {
+                if point == target {
+                    panic!("simulated OS entropy failure inside Sas::new()");
+                }
+            })
+        };
+        let a = Authorities::new("ephemeral-panic");
+
+        // Initiator: authorized, guard and opportunity reserved, then generation fails.
+        let mut i = RemoteCeremony::initiator_with_fixed_start_for_test(
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            &vector("START"),
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap();
+        i.start().unwrap();
+        i.receive_accept(&vector("ACCEPT")).unwrap();
+        i.authorize(&a.i).unwrap();
+        fail_at(Point::InitiatorReserved);
+        let exposed = catch_unwind(AssertUnwindSafe(|| i.expose_key()));
+        test_hook::install(|_| {});
+        assert!(exposed.is_err(), "no INITIATOR_KEY exists");
+        // Already terminal, consumed, and still holding the guard until terminal cleanup.
+        assert!(i.is_finished() && i.result().is_none() && i.presentation().is_none());
+        assert_eq!(a.ei.status().unwrap(), Status::Busy);
+        assert_eq!(remaining(&a.ei), 9);
+        assert_eq!(operations(&a.ei), 0, "the permit unwound");
+        // Nothing can retry with that reservation or revive the run.
+        assert!(i.authorize(&a.i).is_err());
+        assert!(i.expose_key().is_err());
+        assert_eq!(remaining(&a.ei), 9);
+        drop(i);
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+
+        // Responder: limiter-charged, permit and pending slot held, then generation fails before
+        // any commitment or ACCEPT exists.
+        let charged = limiter(&a);
+        fail_at(Point::ResponderAdmitted);
+        let accepted = catch_unwind(AssertUnwindSafe(|| present_valid(&a, &vector("START"))));
+        test_hook::install(|_| {});
+        assert!(accepted.is_err(), "no ACCEPT exists");
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        assert_limiter(&a, charged.tokens - 1, charged.rolling + 1);
+        a.release();
     }
 
     #[test]
@@ -7753,8 +7900,8 @@ mod tests {
 
     // P3 11.1.1 authority-wide START admission limiter (R-OWNER-025, -027, -034 to -039). Each
     // test drives the authority's one injected limiter clock (`lr`) by hand; ceremony clocks are
-    // separate. Source address, socket, connection, and listener rotation are transport-dependent
-    // and not exercised: no transport exists.
+    // separate. Connection and source-port rotation through real sockets is exercised by the
+    // Windows TCP adapter and owner-loop tests.
 
     /// The Responder authority's START limiter.
     fn limiter(a: &Authorities) -> StartLimiterSnapshot {

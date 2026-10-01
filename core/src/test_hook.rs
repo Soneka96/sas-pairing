@@ -9,6 +9,9 @@ pub(crate) enum Point {
     /// Responder admission holds its preliminary permit and pending slot, before its
     /// ephemeral, commitment, and ACCEPT.
     ResponderAdmitted,
+    /// An exposing Initiator holds its permit and its reserved guard and opportunity, before
+    /// its ephemeral generation (`Sas::new()`), INITIATOR_KEY, and any state transition.
+    InitiatorReserved,
     /// A routed Initiator holds its reserved request ID and built START, before route install.
     InitiatorStarted,
     /// Session teardown marked the session closing and is about to wait for in-flight work.

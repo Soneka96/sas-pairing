@@ -1294,6 +1294,272 @@ mod tests {
         );
     }
 
+    // R-MAC-004 with live vodozemac state (no fixed secrets needed): changing any one SAS
+    // context field at one endpoint (request ID, START, ACCEPT, I_pub, or R_pub) changes that
+    // endpoint's SAS, and the approval MAC it then emits never verifies at the honest endpoint.
+    #[test]
+    fn every_sas_context_field_is_bound_into_the_live_sas() {
+        let start = vector_frame("START");
+        let accept = vector_frame("ACCEPT");
+        let (request_id, initiator_boot) = match &start.message {
+            Message::Start {
+                request_id,
+                bootstrap,
+            } => (request_id.clone(), bootstrap.clone()),
+            _ => unreachable!(),
+        };
+        let (commitment, responder_boot) = match &accept.message {
+            Message::Accept {
+                commitment,
+                bootstrap,
+                ..
+            } => (*commitment, bootstrap.clone()),
+            _ => unreachable!(),
+        };
+        let initiator_public = match vector_frame("INITIATOR_KEY").message {
+            Message::InitiatorKey { public_key, .. } => public_key,
+            _ => unreachable!(),
+        };
+        let responder_public = match vector_frame("RESPONDER_KEY").message {
+            Message::ResponderKey { public_key, .. } => public_key,
+            _ => unreachable!(),
+        };
+        let frame = |message: Message| protocol::decode(&message.encode().unwrap()).unwrap();
+        let info = |request_id: &[u8],
+                    initiator_boot: &Bootstrap,
+                    commitment: [u8; 32],
+                    initiator_public: [u8; 32],
+                    responder_public: [u8; 32]| {
+            let request_id = request_id.to_vec();
+            sas_info(
+                &frame(Message::Start {
+                    request_id: request_id.clone(),
+                    bootstrap: initiator_boot.clone(),
+                }),
+                &frame(Message::Accept {
+                    request_id: request_id.clone(),
+                    commitment,
+                    bootstrap: responder_boot.clone(),
+                }),
+                &frame(Message::InitiatorKey {
+                    request_id: request_id.clone(),
+                    public_key: initiator_public,
+                }),
+                &frame(Message::ResponderKey {
+                    request_id,
+                    public_key: responder_public,
+                }),
+            )
+            .unwrap()
+            .1
+        };
+        let honest_info = info(
+            &request_id,
+            &initiator_boot,
+            commitment,
+            initiator_public,
+            responder_public,
+        );
+        assert_eq!(honest_info, string(&fixture(), &["sas", "info_string"]));
+        let altered_boot = Bootstrap::new(
+            [initiator_boot.application_identity(), b"!"].concat(),
+            initiator_boot.key_algorithm().to_vec(),
+            initiator_boot.public_key().to_vec(),
+            initiator_boot.shared_context().to_vec(),
+        )
+        .unwrap();
+        let flip = |mut bytes: [u8; 32], at: usize| {
+            bytes[at] ^= 0x01;
+            bytes
+        };
+        let mutated = [
+            (
+                "request ID",
+                info(
+                    &[0x5a; 16],
+                    &initiator_boot,
+                    commitment,
+                    initiator_public,
+                    responder_public,
+                ),
+            ),
+            (
+                "START",
+                info(
+                    &request_id,
+                    &altered_boot,
+                    commitment,
+                    initiator_public,
+                    responder_public,
+                ),
+            ),
+            (
+                "ACCEPT",
+                info(
+                    &request_id,
+                    &initiator_boot,
+                    flip(commitment, 0),
+                    initiator_public,
+                    responder_public,
+                ),
+            ),
+            (
+                "I_pub",
+                info(
+                    &request_id,
+                    &initiator_boot,
+                    commitment,
+                    flip(initiator_public, 31),
+                    responder_public,
+                ),
+            ),
+            (
+                "R_pub",
+                info(
+                    &request_id,
+                    &initiator_boot,
+                    commitment,
+                    initiator_public,
+                    flip(responder_public, 0),
+                ),
+            ),
+        ];
+        let (initiator_state, responder_state) = (EphemeralSas::new(), EphemeralSas::new());
+        let (i_pub, r_pub) = (initiator_state.public_key(), responder_state.public_key());
+        let honest = initiator_state.establish(&r_pub).unwrap();
+        let other = responder_state.establish(&i_pub).unwrap();
+        let honest_sas = *honest.sas(&honest_info).0.as_bytes();
+        assert_eq!(*other.sas(&honest_info).0.as_bytes(), honest_sas);
+        let identity = [0x3c; 32];
+        let (_, responder) = vector_bootstraps();
+        let (expected_input, expected_info) =
+            bootstrap_mac_strings(Role::Responder, &identity, &honest_sas, &responder).unwrap();
+        for (field, mutated_info) in mutated {
+            assert_ne!(mutated_info, honest_info, "{field}");
+            let (mutated_sas, mutated_decimal) = other.sas(&mutated_info);
+            assert_ne!(
+                *mutated_sas.as_bytes(),
+                honest_sas,
+                "{field}: SAS unchanged"
+            );
+            assert_ne!(mutated_decimal, honest.sas(&honest_info).1, "{field}");
+            let (input, mac_info) = bootstrap_mac_strings(
+                Role::Responder,
+                &identity,
+                mutated_sas.as_bytes(),
+                &responder,
+            )
+            .unwrap();
+            let tag = other.calculate_mac(&input, &mac_info).unwrap();
+            assert_eq!(
+                honest.verify_mac(&expected_input, &expected_info, &tag),
+                Err(Error::MacMismatch),
+                "{field}"
+            );
+        }
+    }
+
+    // R-MAC-014: every generated context string (and MAC input) is canonical unpadded Base64url,
+    // and the core never decodes one received from anywhere: each endpoint rebuilds both strings
+    // from its own state. So a peer that encoded a context or input noncanonically (padding, the
+    // standard alphabet, nonzero trailing bits, appended whitespace) produced a tag the canonical
+    // reconstruction rejects, even where a lenient decoder would recover the same bytes.
+    #[test]
+    fn noncanonical_base64url_contexts_and_inputs_never_authenticate() {
+        use base64::{
+            alphabet,
+            engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
+        };
+        let lenient = |alphabet: &alphabet::Alphabet| {
+            GeneralPurpose::new(
+                alphabet,
+                GeneralPurposeConfig::new()
+                    .with_encode_padding(false)
+                    .with_decode_allow_trailing_bits(true)
+                    .with_decode_padding_mode(DecodePaddingMode::Indifferent),
+            )
+        };
+        const URL: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let identity = [0x3c; 32];
+        let (own, _) = vector_bootstraps();
+        let generated = [
+            bootstrap_mac_strings(Role::Initiator, &identity, &[1, 2, 3, 4, 5, 6], &own).unwrap(),
+            completion_mac_strings(Completion::InitiatorFinish, &identity).unwrap(),
+            completion_mac_strings(Completion::ResponderFinishAck, &identity).unwrap(),
+            completion_mac_strings(Completion::InitiatorFinishAck, &identity).unwrap(),
+            cancel_mac_strings(
+                Role::Responder,
+                Role::Initiator,
+                &identity,
+                CancelReason::Timeout,
+            )
+            .unwrap(),
+        ];
+        let (initiator_state, responder_state) = (EphemeralSas::new(), EphemeralSas::new());
+        let (i_pub, r_pub) = (initiator_state.public_key(), responder_state.public_key());
+        let sender = initiator_state.establish(&r_pub).unwrap();
+        let receiver = responder_state.establish(&i_pub).unwrap();
+        let (mut standard_seen, mut trailing_seen) = (false, false);
+        for (input, info) in generated {
+            let tag = sender.calculate_mac(&input, &info).unwrap();
+            assert_eq!(receiver.verify_mac(&input, &info, &tag), Ok(()));
+            for (is_info, canonical) in [(true, &info), (false, &input)] {
+                let split = canonical.rfind('/').map_or(0, |slash| slash + 1);
+                let (prefix, body) = canonical.split_at(split);
+                assert!(!body.is_empty() && body.bytes().all(|byte| URL.contains(&byte)));
+                let bytes = URL_SAFE_NO_PAD.decode(body).unwrap();
+                assert_eq!(URL_SAFE_NO_PAD.encode(&bytes), body);
+                let mut variants = vec![format!("{canonical}\n"), format!("{canonical} ")];
+                let padding = match body.len() % 4 {
+                    0 => "==",
+                    2 => "==",
+                    _ => "=",
+                };
+                let padded = format!("{body}{padding}");
+                variants.push(format!("{prefix}{padded}"));
+                if body.contains(['-', '_']) {
+                    let standard = body.replace('-', "+").replace('_', "/");
+                    assert_eq!(
+                        lenient(&alphabet::STANDARD).decode(&standard).unwrap(),
+                        bytes
+                    );
+                    variants.push(format!("{prefix}{standard}"));
+                    standard_seen = true;
+                }
+                if body.len() % 4 != 0 {
+                    let last = body.as_bytes()[body.len() - 1];
+                    let index = URL.iter().position(|symbol| *symbol == last).unwrap();
+                    let sibling = format!("{}{}", &body[..body.len() - 1], URL[index + 1] as char);
+                    assert!(URL_SAFE_NO_PAD.decode(&sibling).is_err());
+                    assert_eq!(
+                        lenient(&alphabet::URL_SAFE).decode(&sibling).unwrap(),
+                        bytes
+                    );
+                    variants.push(format!("{prefix}{sibling}"));
+                    trailing_seen = true;
+                }
+                if body.len() % 4 != 0 {
+                    assert_eq!(lenient(&alphabet::URL_SAFE).decode(&padded).unwrap(), bytes);
+                }
+                for variant in variants {
+                    assert_ne!(&variant, canonical);
+                    let (variant_input, variant_info) = if is_info {
+                        (input.as_str(), variant.as_str())
+                    } else {
+                        (variant.as_str(), info.as_str())
+                    };
+                    let forged = sender.calculate_mac(variant_input, variant_info).unwrap();
+                    assert_eq!(
+                        receiver.verify_mac(&input, &info, &forged),
+                        Err(Error::MacMismatch),
+                        "{variant}"
+                    );
+                }
+            }
+        }
+        assert!(standard_seen && trailing_seen);
+    }
+
     #[test]
     fn generated_mac_strings_are_capped_including_prefix() {
         let encoded = |n: usize| n / 3 * 4 + [0, 2, 3][n % 3];

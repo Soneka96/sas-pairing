@@ -286,6 +286,44 @@ fn shared_guard_race_has_one_winner() {
     authority.release().unwrap();
 }
 
+// R-OWNER-031: clean release first requires that no ceremony state of the authority remains.
+// While any exists the explicit release is refused, the OS lease stays held (another process
+// and an in-process re-registration are both denied), and the exposed ceremony keeps its guard.
+// Only once that state has ended is the lease released, so a replacement starts a fresh budget.
+#[test]
+fn ownership_is_never_released_while_ceremony_state_remains() {
+    let scope = format!("release-live-{}", std::process::id());
+    let authority = TrustedAuthority::register(scope.as_bytes()).unwrap();
+    let executor = authority.executor();
+    let mut ceremony = executor.begin(Role::Responder).unwrap();
+    let token = authority.authorize(&mut ceremony).unwrap();
+    assert_eq!(executor.reserve(&mut ceremony, Some(token)).unwrap(), 9);
+    assert_eq!(authority.release().unwrap_err(), Error::Busy);
+    assert_eq!(executor.status().unwrap(), Status::Busy);
+    let contender = Command::new(env!("CARGO_BIN_EXE_ownership_probe"))
+        .arg(&scope)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!contender.status.success(), "the lease is still held");
+    assert_eq!(
+        TrustedAuthority::register(scope.as_bytes()).unwrap_err(),
+        Error::AlreadyRegistered
+    );
+    executor.terminate(&mut ceremony).unwrap();
+    assert_eq!(executor.status().unwrap(), Status::Ready { remaining: 9 });
+    drop(ceremony);
+    drop(executor);
+    let replacement = TrustedAuthority::register(scope.as_bytes()).unwrap();
+    assert_eq!(
+        replacement.executor().status().unwrap(),
+        Status::Ready { remaining: 10 }
+    );
+    replacement.release().unwrap();
+}
+
 #[test]
 fn graceful_shutdown_allows_replacement_with_fresh_volatile_budget() {
     let (mut child, mut input) = owner("normal-release");

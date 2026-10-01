@@ -825,6 +825,150 @@ mod tests {
         assert_eq!(wire_frame_extent(&over).unwrap_err(), CodecError::Oversized);
     }
 
+    // R-WIRE-002 to R-WIRE-008, R-WIRE-011, and the codec half of R-WIRE-017: every class of
+    // structural mutation, applied to every authoritative wire vector, is rejected before any
+    // message exists. A swap of two adjacent fields of equal width (a completion digest and its
+    // MAC; a CANCEL role and reason that are both defined) is the only mutation that can stay
+    // structurally valid: it decodes to a different message, which its run then rejects through
+    // the transcript-digest, sender-role, and MAC checks.
+    #[test]
+    fn every_structural_mutation_class_is_rejected_for_every_wire_type() {
+        for vector in [START, ACCEPT, IK, RK, BM, IF, RFA, IFA, CANCEL_I, CANCEL_R] {
+            let bytes = hex(vector);
+            let original = decode(&bytes).unwrap();
+            let (kind, fields) = parse(&bytes).unwrap();
+            let rebuild = |fields: &[&[u8]]| encode_frame(kind, fields, MAX_FRAME).unwrap();
+            assert_eq!(rebuild(&fields), bytes);
+            // Truncation at every byte boundary: header, length prefixes, and field contents.
+            for end in 0..bytes.len() {
+                assert!(decode(&bytes[..end]).is_err(), "{kind}: truncated at {end}");
+            }
+            let tails: [&[u8]; 4] = [&[0], &[0; 3], &[0; 4], &[0, 0, 0, 1, 0]];
+            for tail in tails {
+                assert!(
+                    decode(&[bytes.as_slice(), tail].concat()).is_err(),
+                    "{kind}"
+                );
+            }
+            for index in 0..7 {
+                let mut bad = bytes.clone();
+                bad[index] ^= 0x20;
+                assert_eq!(decode(&bad).unwrap_err(), CodecError::BadMagic, "{kind}");
+            }
+            for version in [0, 2, 0x0100, u16::MAX] {
+                let mut bad = bytes.clone();
+                bad[7..9].copy_from_slice(&version.to_be_bytes());
+                let expected = CodecError::UnsupportedVersion(version);
+                assert_eq!(decode(&bad).unwrap_err(), expected, "{kind}");
+            }
+            for unknown in [0, 0x0a, 0x20, 0x33, 0x38, 0xff] {
+                let mut bad = bytes.clone();
+                bad[9] = unknown;
+                let expected = CodecError::UnknownType(unknown);
+                assert_eq!(decode(&bad).unwrap_err(), expected, "{kind}");
+            }
+            for index in 0..fields.len() {
+                let mut missing = fields.clone();
+                missing.remove(index);
+                assert!(decode(&rebuild(&missing)).is_err(), "{kind}: omit {index}");
+                let mut duplicated = fields.clone();
+                duplicated.insert(index, fields[index]);
+                assert!(
+                    decode(&rebuild(&duplicated)).is_err(),
+                    "{kind}: repeat {index}"
+                );
+            }
+            for index in 0..fields.len() - 1 {
+                let mut swapped = fields.clone();
+                swapped.swap(index, index + 1);
+                match decode(&rebuild(&swapped)) {
+                    Err(_) => {}
+                    Ok(other) => {
+                        assert!(matches!(kind, 6..=9), "{kind}: swap {index}");
+                        assert_eq!(fields[index].len(), fields[index + 1].len());
+                        assert_ne!(other.message, original.message, "{kind}: swap {index}");
+                    }
+                }
+            }
+            let request_ids: [&[u8]; 2] = [&[], &[7; 65]];
+            for request_id in request_ids {
+                let mut bad = fields.clone();
+                bad[1] = request_id;
+                let expected = CodecError::InvalidField("request_id");
+                assert_eq!(decode(&rebuild(&bad)).unwrap_err(), expected, "{kind}");
+            }
+            let profiles: [&[u8]; 3] = [
+                &[],
+                &PROFILE_ID[..PROFILE_ID.len() - 1],
+                b"sas-pairing-vodozemac-profile-draft-02",
+            ];
+            for profile in profiles {
+                let mut bad = fields.clone();
+                bad[0] = profile;
+                let expected = CodecError::InvalidField("profile_id");
+                assert_eq!(decode(&rebuild(&bad)).unwrap_err(), expected, "{kind}");
+            }
+        }
+        // Undefined role and reason codes in the two bidirectional messages.
+        for (vector, at) in [(BM, 2), (CANCEL_I, 2), (CANCEL_R, 2)] {
+            let bytes = hex(vector);
+            let (kind, fields) = parse(&bytes).unwrap();
+            for role in [0, 3, 0xff] {
+                let mut bad = fields.clone();
+                bad[at] = std::slice::from_ref(&role);
+                let encoded = encode_frame(kind, &bad, MAX_FRAME).unwrap();
+                let expected = CodecError::InvalidField("role");
+                assert_eq!(decode(&encoded).unwrap_err(), expected);
+            }
+        }
+        for vector in [CANCEL_I, CANCEL_R] {
+            let bytes = hex(vector);
+            let (kind, fields) = parse(&bytes).unwrap();
+            for reason in [0, 5, 0xff] {
+                let mut bad = fields.clone();
+                bad[3] = std::slice::from_ref(&reason);
+                let encoded = encode_frame(kind, &bad, MAX_FRAME).unwrap();
+                let expected = CodecError::InvalidField("reason");
+                assert_eq!(decode(&encoded).unwrap_err(), expected);
+            }
+        }
+        // `key_algorithm` outside `[a-z0-9][a-z0-9.-]*`, including non-ASCII, in both the START
+        // and ACCEPT bootstraps and at construction.
+        let valid = boot(IBOOT);
+        let key_algorithms: [&[u8]; 8] = [
+            b"ed25519\xc3\xa9",
+            b"\x80",
+            b"\xffed25519",
+            b"Ed25519",
+            b"ed 25519",
+            b"ed_25519",
+            b"-ed25519",
+            b".ed25519",
+        ];
+        for key_algorithm in key_algorithms {
+            let fields = [
+                valid.application_identity(),
+                key_algorithm,
+                valid.public_key(),
+                valid.shared_context(),
+            ];
+            let nested = encode_frame(0x20, &fields, MAX_FRAME).unwrap();
+            let expected = CodecError::InvalidField("key_algorithm");
+            let rid = hex(RID);
+            let start = start_with_field(&rid, &nested);
+            assert_eq!(decode(&start).unwrap_err(), expected);
+            let accept = encode_frame(2, &[PROFILE_ID, &rid, &[0; 32], &nested], MAX_FRAME);
+            assert_eq!(decode(&accept.unwrap()).unwrap_err(), expected);
+            let built = Bootstrap::new(
+                fields[0].to_vec(),
+                fields[1].to_vec(),
+                fields[2].to_vec(),
+                fields[3].to_vec(),
+            );
+            assert_eq!(built.unwrap_err(), expected);
+        }
+    }
+
     /// A wire START carrying `bootstrap` verbatim as its opaque third field.
     fn start_with_field(request_id: &[u8], bootstrap: &[u8]) -> Vec<u8> {
         encode_frame(START_TYPE, &[PROFILE_ID, request_id, bootstrap], MAX_FRAME).unwrap()
