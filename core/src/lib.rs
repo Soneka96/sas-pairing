@@ -13,6 +13,7 @@ mod crypto;
 mod deadline;
 pub mod protocol;
 mod request_id;
+mod router;
 mod start_limiter;
 
 use deadline::{Clock, system_clock};

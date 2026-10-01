@@ -393,6 +393,14 @@ pub(crate) fn start_candidate(bytes: &[u8]) -> Result<StartCandidate<'_>, CodecE
     StartCandidate::from_wire(bytes, &f)
 }
 
+/// Routing fields only (P3 §4): the defined wire type and the canonical 1–64-byte request ID of
+/// one structurally framed message (`parse_wire`). Nothing type-specific is decoded and the
+/// result carries no authority: the run it is routed to still validates the complete message.
+pub(crate) fn route_fields(bytes: &[u8]) -> Result<(u8, &[u8]), CodecError> {
+    let (kind, f) = parse_wire(bytes)?;
+    Ok((kind, f[1]))
+}
+
 /// The outer wire-message structure shared by `decode` and `start_candidate`: frame maximum,
 /// §3.1 framing, a defined wire type, and both common fields. Nothing type-specific.
 fn parse_wire(bytes: &[u8]) -> Result<(u8, Vec<&[u8]>), CodecError> {

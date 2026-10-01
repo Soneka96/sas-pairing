@@ -12,8 +12,8 @@
 //! P3 11.1.1 core pre-exposure controls: the authority-wide START admission limiter (burst 4,
 //! 1 token / 5 s; at most 12 per rolling 60 s), at most 4 pending (accepted, unexposed)
 //! Responders and 2 concurrent expensive preliminary operations per authority, and a fixed
-//! 60-second pending resource lifetime from admission. Connection/session routing, transport
-//! controls, and timer scheduling are not implemented.
+//! 60-second pending resource lifetime from admission. Session + request-ID routing lives in
+//! `router`; transport controls and timer scheduling are not implemented.
 #![allow(dead_code)] // The protocol remains internal until later P4 work defines its complete API.
 use crate::{
     Authorization, Ceremony, CeremonyExecutor, Error as OwnerError, PendingAdmission,
@@ -479,7 +479,7 @@ impl RemoteCeremony {
     /// shared state, or construction failure escapes. The shared lock is held only for each
     /// check-and-insert, never while generating. Any failure after reservation drops
     /// `admission`, whose cleanup releases the ID.
-    fn initiator_with(
+    pub(crate) fn initiator_with(
         clock: Clock,
         ids: &mut dyn RequestIdGenerator,
         executor: CeremonyExecutor,
@@ -844,6 +844,11 @@ impl RemoteCeremony {
             self.state,
             State::ApprovalsAuthenticatedAwaitingCompletion { .. }
         )
+    }
+
+    /// Irrevocably terminal or locally succeeded: no later input can change this run.
+    pub(crate) fn is_finished(&self) -> bool {
+        matches!(self.state, State::Terminal | State::Succeeded(_))
     }
 
     /// The immutable local result, only after this role's own success point. Repeated calls
@@ -1335,6 +1340,34 @@ impl RemoteCeremony {
     #[cfg(test)]
     fn sas_bytes_for_test(&self) -> Option<[u8; 6]> {
         self.session().map(|session| session.sas_bytes)
+    }
+
+    /// Read-only state name, so routing tests can show a run was left untouched.
+    #[cfg(test)]
+    pub(crate) fn state_label_for_test(&self) -> &'static str {
+        match &self.state {
+            State::InitiatorCreated { .. } => "InitiatorCreated",
+            State::InitiatorAwaitAccept { .. } => "InitiatorAwaitAccept",
+            State::InitiatorAwaitAuthorization { .. } => "InitiatorAwaitAuthorization",
+            State::InitiatorAwaitResponderKey { .. } => "InitiatorAwaitResponderKey",
+            State::ResponderAcceptSentAwaitInitiatorKey { .. } => {
+                "ResponderAcceptSentAwaitInitiatorKey"
+            }
+            State::ResponderAwaitAuthorization { .. } => "ResponderAwaitAuthorization",
+            State::AwaitLocalApproval { .. } => "AwaitLocalApproval",
+            State::LocallyApprovedAwaitingAuthentication { .. } => {
+                "LocallyApprovedAwaitingAuthentication"
+            }
+            State::LocalMacSentAwaitingPeerMac { .. } => "LocalMacSentAwaitingPeerMac",
+            State::ApprovalsAuthenticatedAwaitingCompletion { .. } => {
+                "ApprovalsAuthenticatedAwaitingCompletion"
+            }
+            State::AwaitResponderFinish { .. } => "AwaitResponderFinish",
+            State::AwaitInitiatorFinishAck { .. } => "AwaitInitiatorFinishAck",
+            State::AwaitInitiatorFinishAckSend { .. } => "AwaitInitiatorFinishAckSend",
+            State::Succeeded(_) => "Succeeded",
+            State::Terminal => "Terminal",
+        }
     }
 
     pub(crate) fn receive_accept(&mut self, bytes: &[u8]) -> Result<(), CeremonyError> {
