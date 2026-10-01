@@ -15,6 +15,12 @@ pub(crate) enum Point {
     CloseWaiting { in_flight: usize },
     /// Transport teardown established its Router session CLOSED and still holds its live count.
     TransportSessionClosed,
+    /// The deadline driver selected an installed run and released the table lock, before
+    /// trying the run's lock.
+    DeadlineSelected,
+    /// The deadline driver holds a run's lock (and its session lease, but no table lock),
+    /// before polling that run's deadlines.
+    DeadlineRunLocked,
 }
 
 type Hook = Box<dyn FnMut(Point)>;

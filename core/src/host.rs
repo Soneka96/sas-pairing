@@ -32,10 +32,15 @@
 //! `confirm_initiator_finish_ack_sent`. Nothing is retained for retransmission and exact
 //! duplicate inbound frames produce no repeated output.
 //!
-//! Ceremony deadline polling and local ceremony actions (authorization, SAS decisions, own MAC
-//! and INITIATOR_FINISH emission, local cancel, Initiator start) remain direct Router actions.
-//! Clocks stay separate: the transport clock is the connection's, the START limiter clock the
-//! authority's, and new Responders get a fresh production ceremony clock (test-injectable).
+//! Ceremony deadlines are driven while idle by `poll_ceremony_deadlines`, a separate explicit
+//! call (never folded into `receive` or the transport frame-deadline poll): one bounded,
+//! cooperative pass over this connection's own Router session, which returns at most one
+//! run-local deadline event and at most one timeout CANCEL frame. The deadline semantics are
+//! the runs' own; this layer only drives them. Local ceremony actions (authorization, SAS
+//! decisions, own MAC and INITIATOR_FINISH emission, local cancel, Initiator start) remain
+//! direct Router actions. Clocks stay separate: the transport clock is the connection's, the
+//! START limiter clock the authority's, and new Responders get a fresh production ceremony
+//! clock (test-injectable).
 //!
 //! Lock order: no lock is held here. Every Router call returns, with its leases and guards
 //! released, before any teardown, so the "no close from inside `with_run`" rule holds.
@@ -43,9 +48,12 @@
 use crate::{
     Error as OwnerError,
     ceremony::{CeremonyError, CompletionReceipt, PairingResult, PeerApproval, PeerCancellation},
-    deadline::{Clock, system_clock},
+    deadline::{Clock, Deadline, system_clock},
     protocol::{self, Bootstrap, CodecError, Routable},
-    router::{Inbound, RouteError, Routed, SessionHandle, StartRouting},
+    router::{
+        DeadlineCursor, DeadlineEnded, DeadlineEvent, DeadlinePoll, Inbound, RouteError, Routed,
+        SessionHandle, StartRouting,
+    },
     transport::{Fed, TransportConnection, TransportError},
 };
 
@@ -144,6 +152,44 @@ pub(crate) struct Dispatched {
     pub(crate) result: Option<PairingResult>,
 }
 
+/// How one run ended by its own deadline processing. Run-local: the connection, its session, and
+/// its other runs continue. None of these is a result, peer-authentication evidence, an SAS
+/// mismatch, or an opportunity outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CeremonyDeadline {
+    /// P3 §11.3 local timeout; which deadline is diagnostic only (one wire reason, `0x03`). Any
+    /// authenticated CANCEL is the poll's `outbound` frame.
+    TimedOut(Deadline),
+    /// The fixed 60-second pending pre-exposure resource lifetime ended: a local resource
+    /// outcome with nothing to send, not a timeout claim about the peer.
+    PendingExpired,
+    /// The run's ceremony clock was unusable, so it failed closed. Not a timeout.
+    ClockUnavailable,
+}
+
+/// One terminal deadline outcome. The run is ALREADY terminal: no result, its SAS, approval,
+/// and any pending final ACK dropped, its guard, pending slot, or request-ID reservation
+/// released, and any consumed opportunity kept; its route is removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CeremonyDeadlineEvent {
+    /// The run's routing key on this connection; routing and diagnostic data only.
+    pub(crate) request_id: Vec<u8>,
+    pub(crate) kind: CeremonyDeadline,
+}
+
+/// One bounded `poll_ceremony_deadlines`. There is never a `PairingResult`: no deadline can
+/// produce success.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CeremonyPoll {
+    /// Routes inspected by this call, at most `router::MAX_CEREMONY_POLLS_PER_CALL`.
+    pub(crate) inspected: usize,
+    pub(crate) event: Option<CeremonyDeadlineEvent>,
+    /// The authenticated timeout CANCEL (reason `0x03`) the run built before dropping its
+    /// shared SAS, as an ordinary frame: best effort, produced not sent, needing no send
+    /// confirmation, never retried. The run is already terminal whether or not it is written.
+    pub(crate) outbound: Option<Outbound>,
+}
+
 /// One `receive`: `consumed` leading input bytes were taken (the caller feeds the rest again),
 /// and `frame` is the one complete frame finished and dispatched by this call, if any: its
 /// outcome, or the Router's refusal of that attempt or run with the connection still live.
@@ -165,6 +211,8 @@ pub(crate) struct HostConnection<'r> {
     /// Ceremony clock for new Responders: `None` in production (a fresh system clock each, as
     /// `Router::receive_start`); a test-injected hand clock otherwise. Never the transport clock.
     ceremony_clock: Option<Clock>,
+    /// Where the next `poll_ceremony_deadlines` resumes in this session's routes. Local only.
+    deadlines: DeadlineCursor,
 }
 
 impl<'r> HostConnection<'r> {
@@ -180,6 +228,7 @@ impl<'r> HostConnection<'r> {
             local,
             expected,
             ceremony_clock: None,
+            deadlines: DeadlineCursor::default(),
         }
     }
 
@@ -222,6 +271,51 @@ impl<'r> HostConnection<'r> {
         self.transport
             .poll_frame_deadlines()
             .map_err(HostError::Transport)
+    }
+
+    /// Drives this connection's ceremony deadlines while no input arrives: one bounded pass of
+    /// `Router::poll_session_deadlines` over this connection's own session only, resuming where
+    /// the previous call stopped. It inspects at most `MAX_CEREMONY_POLLS_PER_CALL` routes,
+    /// skips (never waits for) a run another operation holds or a START still being admitted,
+    /// and stops at the first run that ends, so it returns at most one event and at most one
+    /// outbound frame; the caller may poll again at once. It is never progress: it refreshes no
+    /// deadline. A timeout, pending expiry, or unusable ceremony clock ends only that run; the
+    /// connection stays live. A session already closing or closed, or uncertain cleanup, ends
+    /// the connection through the transport's one teardown (live count held if uncertain).
+    pub(crate) fn poll_ceremony_deadlines(&mut self) -> Result<CeremonyPoll, HostError> {
+        if self.transport.is_closed() {
+            return Err(HostError::Transport(TransportError::Closed));
+        }
+        let polled = self
+            .transport
+            .router()
+            .poll_session_deadlines(self.transport.session(), &mut self.deadlines);
+        let DeadlinePoll {
+            inspected, event, ..
+        } = match polled {
+            Ok(poll) => poll,
+            // `UnknownSession` or `OwnershipUncertain`: the session cannot continue.
+            Err(error) => return Err(self.end(HostError::Routing(error))),
+        };
+        let mut outbound = None;
+        let event = event.map(|DeadlineEvent { request_id, ended }| {
+            let kind = match ended {
+                DeadlineEnded::TimedOut(timeout) => {
+                    outbound = timeout
+                        .cancel()
+                        .map(|cancel| Outbound::Frame(cancel.to_vec()));
+                    CeremonyDeadline::TimedOut(timeout.expired())
+                }
+                DeadlineEnded::PendingExpired => CeremonyDeadline::PendingExpired,
+                DeadlineEnded::ClockUnavailable => CeremonyDeadline::ClockUnavailable,
+            };
+            CeremonyDeadlineEvent { request_id, kind }
+        });
+        Ok(CeremonyPoll {
+            inspected,
+            event,
+            outbound,
+        })
     }
 
     /// The Initiator's P3 §9 send boundary: call only after the complete `sent.bytes()` frame
@@ -373,8 +467,8 @@ mod tests {
         },
         deadline::{ABSOLUTE_DEADLINE, INACTIVITY_DEADLINE, ManualClock},
         protocol::{CancelReason, MAX_FRAME, Message, PROFILE_ID, Role},
-        request_id::OsRequestIds,
-        router::Router,
+        request_id::{OsRequestIds, RequestIdGenerator},
+        router::{MAX_CEREMONY_POLLS_PER_CALL, Router},
         start_limiter::{REFILL_PERIOD, StartLimiterSnapshot},
         test_hook::{self, Point},
         transport::{AcceptPermit, IDLE_READ_DEADLINE, WHOLE_FRAME_DEADLINE},
@@ -1558,6 +1652,558 @@ mod tests {
         admit(&mut h, &start(&[5; 16]));
         drop(h);
         assert_eq!(r.counts(), (1, 0, 0));
+        r.release();
+    }
+
+    /// A request-ID source that yields exactly one scripted ID.
+    struct OneId(Option<[u8; 16]>);
+    impl RequestIdGenerator for OneId {
+        fn generate(&mut self) -> Option<[u8; 16]> {
+            self.0.take()
+        }
+    }
+
+    /// Routes a local Initiator under `id` on `host`'s session, with ceremony clock `clock`.
+    fn initiate_on(node: &Node, host: &HostConnection<'_>, clock: &Arc<ManualClock>, id: [u8; 16]) {
+        let (routed, _) = node
+            .router
+            .start_initiator_with(
+                clock.clone(),
+                &mut OneId(Some(id)),
+                host.session(),
+                initiator_bootstrap(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(routed, id.to_vec());
+    }
+
+    /// One deadline poll that ended nothing; returns how many routes it inspected.
+    fn idle(host: &mut HostConnection<'_>) -> usize {
+        let poll = host.poll_ceremony_deadlines().unwrap();
+        assert_eq!((poll.event, poll.outbound), (None, None));
+        assert!(poll.inspected <= MAX_CEREMONY_POLLS_PER_CALL);
+        poll.inspected
+    }
+
+    fn ended(request_id: &[u8], kind: CeremonyDeadline) -> Option<CeremonyDeadlineEvent> {
+        Some(CeremonyDeadlineEvent {
+            request_id: request_id.to_vec(),
+            kind,
+        })
+    }
+
+    /// The ordinary outbound frame of a poll: a canonical timeout CANCEL from `sender` for
+    /// `request_id`, returned exactly as the run built it.
+    fn timeout_cancel(outbound: Option<Outbound>, request_id: &[u8], sender: Role) -> Vec<u8> {
+        let Some(Outbound::Frame(cancel)) = outbound else {
+            panic!("no ordinary CANCEL frame: {outbound:?}");
+        };
+        let decoded = protocol::decode(&cancel).unwrap();
+        assert_eq!(decoded.canonical_bytes(), cancel.as_slice());
+        assert!(matches!(
+            decoded.message,
+            Message::Cancel { request_id: ref id, sender: from, reason: CancelReason::Timeout, .. }
+                if id == request_id && from == sender
+        ));
+        cancel
+    }
+
+    const INACTIVITY: CeremonyDeadline = CeremonyDeadline::TimedOut(Deadline::Inactivity);
+    const ABSOLUTE: CeremonyDeadline = CeremonyDeadline::TimedOut(Deadline::Absolute);
+
+    #[test]
+    fn idle_pre_sas_runs_are_driven_to_expiry_one_run_per_call() {
+        let r = Node::new("host-deadline-pre-sas");
+        let (tc, cc, ci) = (ManualClock::new(), ManualClock::new(), ManualClock::new());
+        let (mut h, mut g) = (r.host(&tc, &cc), r.host(&tc, &cc));
+        let session = h.session();
+        let (x, y, z) = ([0x10; 16], [0x20; 16], [0x30; 16]);
+        // On H: a local Initiator X (holding a request-ID reservation) and a peer's Responder
+        // Y. On another connection G of the same router: a Responder Z.
+        initiate_on(&r, &h, &ci, x);
+        admit(&mut h, &start(&y));
+        admit(&mut g, &start(&z));
+        let charged = r.limiter();
+        assert_eq!((r.routes(), r.reserved(), r.counts()), (3, 1, (2, 0, 2)));
+        // Polls are not progress: X's inactivity keeps running from its creation.
+        assert_eq!(idle(&mut h), 2);
+        ci.advance(INACTIVITY_DEADLINE - NS);
+        for _ in 0..3 {
+            assert_eq!(idle(&mut h), 2);
+        }
+        ci.advance(NS);
+        // Neither received frames nor the transport frame poll drive ceremony deadlines.
+        assert_eq!(
+            deliver_in(&mut h, &start(&y), 64).unwrap().event,
+            HostEvent::StartDuplicate
+        );
+        assert_eq!(h.poll_frame_deadlines(), Ok(()));
+        assert_eq!(r.state(session, &x), "InitiatorAwaitAccept");
+        // Exactly at 60 s the driver ends X: before SAS there is no authenticated CANCEL.
+        assert_eq!(
+            h.poll_ceremony_deadlines().unwrap(),
+            CeremonyPoll {
+                inspected: 1,
+                event: ended(&x, INACTIVITY),
+                outbound: None,
+            }
+        );
+        // X alone ended: its route and reservation are gone and no result exists; Y, Z, both
+        // connections, the limiter, and the budget are untouched.
+        assert_eq!((r.routes(), r.reserved(), r.counts()), (2, 0, (2, 0, 2)));
+        assert_eq!(
+            r.router.with_run(session, &x, |_| Ok(())).unwrap_err(),
+            RouteError::UnknownRoute
+        );
+        assert_eq!(r.state(session, &y), "ResponderAcceptSentAwaitInitiatorKey");
+        assert!(!h.is_closed());
+        assert_eq!(r.limiter(), charged);
+        assert_eq!(r.status(), Status::Ready { remaining: 10 });
+        // The same request ID routes a fresh run on the live session, under its own clock;
+        // the driver never mistakes it for the expired one.
+        initiate_on(&r, &h, &ManualClock::new(), x);
+        ci.advance(ABSOLUTE_DEADLINE);
+        assert_eq!(idle(&mut h), 2);
+        assert_eq!(r.state(session, &x), "InitiatorAwaitAccept");
+        // At five minutes Y's absolute deadline (reported before the also-expired inactivity)
+        // ends it: no CANCEL before SAS, its pending slot released, its START charge kept.
+        cc.advance(ABSOLUTE_DEADLINE);
+        assert_eq!(
+            h.poll_ceremony_deadlines().unwrap(),
+            CeremonyPoll {
+                inspected: 1,
+                event: ended(&y, ABSOLUTE),
+                outbound: None,
+            }
+        );
+        assert_eq!(
+            (r.routes(), r.counts(), r.limiter()),
+            (2, (2, 0, 1), charged)
+        );
+        // Z is just as expired, but only G's own driver reaches it.
+        assert_eq!(idle(&mut h), 1);
+        assert_eq!(r.routes(), 2);
+        assert_eq!(
+            g.poll_ceremony_deadlines().unwrap(),
+            CeremonyPoll {
+                inspected: 1,
+                event: ended(&z, ABSOLUTE),
+                outbound: None,
+            }
+        );
+        assert_eq!((r.routes(), r.counts()), (1, (2, 0, 0)));
+        // Run timeouts closed neither connection; H admits a fresh, newly charged run.
+        assert!(!h.is_closed() && !g.is_closed());
+        admit(&mut h, &start(&y));
+        assert_eq!(r.limiter().rolling, charged.rolling + 1);
+        drop((h, g));
+        r.release();
+    }
+
+    #[test]
+    fn the_fixed_pending_lifetime_is_driven_without_refresh_and_frees_its_slot() {
+        let r = Node::new("host-deadline-pending");
+        let (tc, cc) = (ManualClock::new(), ManualClock::new());
+        let mut h = r.host(&tc, &cc);
+        let session = h.session();
+        let ids: Vec<[u8; 16]> = (1..=4).map(|n| [n; 16]).collect();
+        for id in &ids {
+            admit(&mut h, &start(id));
+        }
+        assert_eq!((r.counts(), r.charged()), ((1, 0, 4), (0, 4)));
+        // At 30 s the first Responder makes every legal pre-exposure step: INITIATOR_KEY (with
+        // its DH) and a recorded exposure authorization. Both restart its inactivity window;
+        // neither extends its pending lifetime.
+        cc.advance(Duration::from_secs(30));
+        assert_eq!(
+            deliver_in(&mut h, &initiator_key(&ids[0]), 9)
+                .unwrap()
+                .event,
+            HostEvent::InitiatorKey
+        );
+        r.local(session, &ids[0], |run| run.authorize(&r.trusted));
+        assert_eq!(r.state(session, &ids[0]), "ResponderAwaitAuthorization");
+        let charged = r.limiter();
+        cc.advance(Duration::from_secs(30) - NS);
+        assert_eq!(idle(&mut h), 4);
+        cc.advance(NS);
+        // Exactly 60 s after its admission: a local resource expiry, with nothing to send.
+        assert_eq!(
+            h.poll_ceremony_deadlines().unwrap(),
+            CeremonyPoll {
+                inspected: 1,
+                event: ended(&ids[0], CeremonyDeadline::PendingExpired),
+                outbound: None,
+            }
+        );
+        // Its slot is free; no limiter charge was refunded and no opportunity touched.
+        assert_eq!(
+            (r.counts(), r.routes(), r.limiter()),
+            ((1, 0, 3), 3, charged)
+        );
+        assert_eq!(r.status(), Status::Ready { remaining: 10 });
+        // A new START takes the freed slot once the limiter itself has credit again.
+        r.limiter.advance(REFILL_PERIOD);
+        admit(&mut h, &start(&[5; 16]));
+        assert_eq!(r.counts(), (1, 0, 4));
+        // The three other runs also expired; each later call ends exactly one (their own
+        // inactivity diagnostic, evaluated before the equal pending lifetime), with no CANCEL.
+        for id in &ids[1..] {
+            assert_eq!(
+                h.poll_ceremony_deadlines().unwrap(),
+                CeremonyPoll {
+                    inspected: 1,
+                    event: ended(id, INACTIVITY),
+                    outbound: None,
+                }
+            );
+        }
+        assert_eq!((r.counts(), r.routes()), ((1, 0, 1), 1));
+        assert_eq!(r.limiter().rolling, charged.rolling + 1);
+        assert!(!h.is_closed());
+        drop(h);
+        r.release();
+    }
+
+    #[test]
+    fn post_sas_timeout_surfaces_one_authenticated_cancel_after_the_human_wait() {
+        let (i, r) = (
+            Node::new("host-deadline-sas-i"),
+            Node::new("host-deadline-sas-r"),
+        );
+        let (tc, ci, cr) = (ManualClock::new(), ManualClock::new(), ManualClock::new());
+        let (mut ih, mut rh) = (i.host(&tc, &ci), r.host(&tc, &cr));
+        let (si, sr) = (ih.session(), rh.session());
+        let (id, identity) = establish(&i, &mut ih, &r, &mut rh, &ci);
+        assert_eq!((i.status(), r.status()), (Status::Busy, Status::Busy));
+        // The complete SAS awaits the human: inactivity is suspended, so polls long past 60 s
+        // find the run live, still presenting its SAS.
+        ci.advance(2 * INACTIVITY_DEADLINE);
+        for _ in 0..3 {
+            assert_eq!(idle(&mut ih), 1);
+        }
+        assert!(
+            i.local(si, &id, |run| Ok(run.presentation()))
+                .output
+                .is_some()
+        );
+        // I matches and emits its approval MAC; R verifies it while R's own human decision is
+        // still open, which keeps R in the suspended human wait.
+        assert_eq!(
+            i.local(si, &id, |run| run.approve_sas(&identity)).output,
+            SasApproval::Recorded
+        );
+        let BootstrapMacEmission::Emitted(mac) =
+            i.local(si, &id, |run| run.emit_bootstrap_mac()).output
+        else {
+            panic!("no BOOTSTRAP_MAC");
+        };
+        assert_eq!(
+            deliver_in(&mut rh, &mac, 9).unwrap().event,
+            HostEvent::BootstrapMac(PeerApproval::Authenticated)
+        );
+        assert_eq!(r.state(sr, &id), "AwaitLocalApproval");
+        // A second Responder Y is prepared on R, unexposed, while R's guard is held.
+        let y = [0x77; 16];
+        cr.advance(ABSOLUTE_DEADLINE - NS);
+        admit(&mut rh, &start(&y));
+        assert_eq!(
+            deliver_in(&mut rh, &initiator_key(&y), 9).unwrap().event,
+            HostEvent::InitiatorKey
+        );
+        // Minutes past any inactivity window, one nanosecond before the absolute deadline.
+        assert_eq!(idle(&mut rh), 2);
+        assert_eq!(r.status(), Status::Busy);
+        cr.advance(NS);
+        let poll = rh.poll_ceremony_deadlines().unwrap();
+        assert!(poll.inspected <= 2);
+        assert_eq!(poll.event, ended(&id, ABSOLUTE));
+        // The exact bytes the run built while its SAS existed, as an ordinary frame.
+        let cancel = timeout_cancel(poll.outbound, &id, Role::Responder);
+        // Already terminal before anything is sent: route gone, guard released after
+        // invalidation, opportunity kept, connection live, and Y not exposed automatically.
+        assert_eq!(
+            (r.routes(), r.status()),
+            (1, Status::Ready { remaining: 9 })
+        );
+        assert!(!rh.is_closed());
+        assert_eq!(r.state(sr, &y), "ResponderAwaitAuthorization");
+        // Nothing is retained or repeated for resending.
+        assert_eq!(idle(&mut rh), 1);
+        // Best effort only, but authentic: I verifies the timeout CANCEL for exactly its run.
+        let dispatched = deliver_in(&mut ih, &cancel, 13).unwrap();
+        assert!(matches!(
+            dispatched.event,
+            HostEvent::Cancel(c) if c.reason() == CancelReason::Timeout
+        ));
+        assert_eq!((dispatched.outbound, dispatched.result), (None, None));
+        assert_eq!(
+            (i.routes(), i.reserved(), i.status()),
+            (0, 0, Status::Ready { remaining: 9 })
+        );
+        assert!(!ih.is_closed());
+        // Y may now obtain its own fresh authorization and cross exposure normally.
+        r.local(sr, &y, |run| run.authorize(&r.trusted));
+        r.local(sr, &y, |run| run.expose_key());
+        assert_eq!(r.status(), Status::Busy);
+        drop((ih, rh));
+        assert_eq!(r.status(), Status::Ready { remaining: 8 });
+        i.release();
+        r.release();
+    }
+
+    #[test]
+    fn a_final_ack_awaiting_its_send_times_out_through_the_driver_with_no_result() {
+        let (i, r) = (
+            Node::new("host-deadline-ack-i"),
+            Node::new("host-deadline-ack-r"),
+        );
+        let (tc, ci, cr) = (ManualClock::new(), ManualClock::new(), ManualClock::new());
+        let (mut ih, mut rh) = (i.host(&tc, &ci), r.host(&tc, &cr));
+        let (id, _, final_ack) = until_final_ack(&i, &mut ih, &r, &mut rh, &ci);
+        ci.advance(INACTIVITY_DEADLINE - NS);
+        assert_eq!(idle(&mut ih), 1);
+        assert_eq!(i.state(ih.session(), &id), "AwaitInitiatorFinishAckSend");
+        ci.advance(NS);
+        let poll = ih.poll_ceremony_deadlines().unwrap();
+        assert_eq!((poll.inspected, &poll.event), (1, &ended(&id, INACTIVITY)));
+        let cancel = timeout_cancel(poll.outbound, &id, Role::Initiator);
+        // No result; the pending final ACK, SAS, and session dropped, then the guard released;
+        // the opportunity and the connection kept.
+        assert_eq!(
+            (i.routes(), i.reserved(), i.status()),
+            (0, 0, Status::Ready { remaining: 9 })
+        );
+        assert!(!ih.is_closed());
+        // The final-ACK token from before the timeout can never create a result.
+        assert_eq!(
+            ih.confirm_sent(final_ack),
+            Ok(Err(RouteError::UnknownRoute))
+        );
+        assert_eq!(i.status(), Status::Ready { remaining: 9 });
+        // R, still awaiting that final ACK, authenticates the timeout CANCEL: no result either.
+        let dispatched = deliver_in(&mut rh, &cancel, 7).unwrap();
+        assert!(matches!(
+            dispatched.event,
+            HostEvent::Cancel(c) if c.reason() == CancelReason::Timeout
+        ));
+        assert_eq!(dispatched.result, None);
+        assert_eq!(
+            (r.routes(), r.status()),
+            (0, Status::Ready { remaining: 9 })
+        );
+        drop((ih, rh));
+        i.release();
+        r.release();
+    }
+
+    #[test]
+    fn the_driver_skips_a_busy_run_and_an_admitting_start_without_waiting() {
+        let r = Node::new("host-deadline-skip");
+        let (tc, cc) = (ManualClock::new(), ManualClock::new());
+        let mut h = r.host(&tc, &cc);
+        let session = h.session();
+        let (x, y) = ([1; 16], [2; 16]);
+        admit(&mut h, &start(&x));
+        admit(&mut h, &start(&y));
+        cc.advance(INACTIVITY_DEADLINE);
+        // Another operation holds X, first in order; Y behind it has expired.
+        let run = r.router.run_for_test(session, &x);
+        let held = run.lock().unwrap();
+        assert_eq!(
+            h.poll_ceremony_deadlines().unwrap(),
+            CeremonyPoll {
+                inspected: 2,
+                event: ended(&y, INACTIVITY),
+                outbound: None,
+            }
+        );
+        // X was neither waited for nor changed; Y ended alone.
+        assert_eq!(
+            held.state_label_for_test(),
+            "ResponderAcceptSentAwaitInitiatorKey"
+        );
+        drop(held);
+        drop(run);
+        assert_eq!((r.routes(), r.counts()), (1, (1, 0, 1)));
+        // Released, X is polled normally by a later call.
+        assert_eq!(
+            h.poll_ceremony_deadlines().unwrap(),
+            CeremonyPoll {
+                inspected: 1,
+                event: ended(&x, INACTIVITY),
+                outbound: None,
+            }
+        );
+        assert_eq!((r.routes(), r.counts()), (0, (1, 0, 0)));
+
+        // A new START for Z, before W in order, pauses mid-admission with its limiter charge,
+        // permit, and pending slot; W behind it has expired.
+        let (z, w) = ([0x0A; 16], [0x0B; 16]);
+        admit(&mut h, &start(&w));
+        cc.advance(INACTIVITY_DEADLINE);
+        let (arrived, arrival) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel::<()>();
+        thread::scope(|scope| {
+            let admission = scope.spawn(|| {
+                test_hook::install(move |point| {
+                    if point == Point::ResponderAdmitted {
+                        arrived.send(()).unwrap();
+                        resumed.recv().unwrap();
+                    }
+                });
+                r.router.receive_start_with_clock(
+                    ManualClock::new(),
+                    session,
+                    &start(&z),
+                    responder_bootstrap(),
+                    None,
+                )
+            });
+            arrival.recv().unwrap();
+            let charged = r.charged();
+            assert_eq!(r.counts(), (1, 0, 2));
+            // The claim is inspected work, skipped without waiting for its admission.
+            assert_eq!(
+                h.poll_ceremony_deadlines().unwrap(),
+                CeremonyPoll {
+                    inspected: 2,
+                    event: ended(&w, INACTIVITY),
+                    outbound: None,
+                }
+            );
+            // Only W's slot was released; the claim's charge and slot are untouched.
+            assert_eq!((r.charged(), r.counts()), (charged, (1, 0, 1)));
+            resume.send(()).unwrap();
+            assert!(matches!(
+                admission.join().unwrap(),
+                Ok(StartRouting::Accepted(_))
+            ));
+        });
+        // It installed normally, and later polls reach it like any run.
+        assert_eq!(r.state(session, &z), "ResponderAcceptSentAwaitInitiatorKey");
+        assert_eq!(idle(&mut h), 1);
+        assert_eq!((r.routes(), r.counts()), (1, (1, 0, 1)));
+        drop(h);
+        r.release();
+    }
+
+    #[test]
+    fn an_unusable_ceremony_clock_fails_only_its_run_and_a_poisoned_run_ends_the_connection() {
+        let r = Node::new("host-deadline-clock");
+        let (tc, cc, cx, cy) = (
+            ManualClock::new(),
+            ManualClock::new(),
+            ManualClock::new(),
+            ManualClock::new(),
+        );
+        let mut h = r.host(&tc, &cc);
+        let session = h.session();
+        let (x, y, z) = ([1; 16], [2; 16], [3; 16]);
+        initiate_on(&r, &h, &cx, x);
+        initiate_on(&r, &h, &cy, y);
+        // No value: X fails closed, which is neither a timeout claim nor anything to send.
+        cx.fail();
+        assert_eq!(
+            h.poll_ceremony_deadlines().unwrap(),
+            CeremonyPoll {
+                inspected: 1,
+                event: ended(&x, CeremonyDeadline::ClockUnavailable),
+                outbound: None,
+            }
+        );
+        assert_eq!((r.routes(), r.reserved()), (1, 1));
+        assert_eq!(r.state(session, &y), "InitiatorAwaitAccept");
+        assert!(!h.is_closed());
+        // A backwards reading is the same run-local failure.
+        cy.advance(Duration::from_secs(10));
+        assert_eq!(idle(&mut h), 1);
+        cy.set(Duration::from_secs(5));
+        assert_eq!(
+            h.poll_ceremony_deadlines().unwrap(),
+            CeremonyPoll {
+                inspected: 1,
+                event: ended(&y, CeremonyDeadline::ClockUnavailable),
+                outbound: None,
+            }
+        );
+        assert_eq!((r.routes(), r.reserved(), r.counts()), (0, 0, (1, 0, 0)));
+        assert!(!h.is_closed());
+        assert_eq!(r.status(), Status::Ready { remaining: 10 });
+        // A poisoned run lock is ownership uncertainty, not a run outcome: the connection ends,
+        // and since its Router teardown is uncertain its live count stays held for good.
+        admit(&mut h, &start(&z));
+        poison_run(&r.router, session, &z);
+        assert_eq!(
+            h.poll_ceremony_deadlines(),
+            Err(HostError::Transport(TransportError::OwnershipUncertain))
+        );
+        assert!(h.is_closed());
+        assert_eq!(r.counts().0, 1);
+        assert_eq!(
+            h.poll_ceremony_deadlines(),
+            Err(HostError::Transport(TransportError::Closed))
+        );
+        drop(h);
+        assert_eq!(r.counts().0, 1);
+        r.release();
+    }
+
+    #[test]
+    fn uncertain_cleanup_of_a_timed_out_exposed_run_ends_the_connection_and_sends_nothing() {
+        let (i, r) = (
+            Node::new("host-deadline-uncertain-i"),
+            Node::new("host-deadline-uncertain-r"),
+        );
+        let (tc, ci, cr) = (ManualClock::new(), ManualClock::new(), ManualClock::new());
+        let (mut ih, mut rh) = (i.host(&tc, &ci), r.host(&tc, &cr));
+        establish(&i, &mut ih, &r, &mut rh, &ci);
+        ci.advance(ABSOLUTE_DEADLINE);
+        // The authority's shared state becomes unusable, so the guard release on timeout
+        // cannot be established.
+        let executor = i.executor.clone();
+        let _ = thread::spawn(move || {
+            let _shared = executor.0.shared.lock().unwrap();
+            panic!("simulate uncertain guard state");
+        })
+        .join();
+        // The run is terminal, but its built CANCEL is withheld with the uncertain cleanup, no
+        // event is reported as run-local, and the connection ends with its live count held.
+        assert_eq!(
+            ih.poll_ceremony_deadlines(),
+            Err(HostError::Transport(TransportError::OwnershipUncertain))
+        );
+        assert!(ih.is_closed());
+        assert_eq!((i.counts().0, i.routes()), (1, 0));
+        drop(ih);
+        assert_eq!(i.counts().0, 1);
+        drop(rh);
+        i.release();
+        r.release();
+    }
+
+    #[test]
+    fn a_deadline_poll_never_enters_a_session_that_began_closing() {
+        let r = Node::new("host-deadline-closed");
+        let (tc, cc) = (ManualClock::new(), ManualClock::new());
+        let mut h = r.host(&tc, &cc);
+        admit(&mut h, &start(&[1; 16]));
+        cc.advance(ABSOLUTE_DEADLINE);
+        // Closed elsewhere first: its teardown ended the run (no CANCEL, no result), and no
+        // deadline poll can reach it afterwards; the host settles and ends the connection.
+        r.router.close_session(h.session()).unwrap();
+        assert_eq!(
+            h.poll_ceremony_deadlines(),
+            Err(HostError::Routing(RouteError::UnknownSession))
+        );
+        assert!(h.is_closed());
+        assert_eq!((r.counts(), r.routes()), ((0, 0, 0), 0));
+        assert_eq!(
+            h.poll_ceremony_deadlines(),
+            Err(HostError::Transport(TransportError::Closed))
+        );
+        drop(h);
         r.release();
     }
 }

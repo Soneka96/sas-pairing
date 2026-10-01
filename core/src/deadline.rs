@@ -2,8 +2,8 @@
 //! deadline and a 60-second machine/protocol inactivity deadline, both evaluated against one
 //! injected monotonic clock. This is evaluation only: nothing here schedules, sleeps, spawns,
 //! or wakes anything. The owning ceremony enforces deadlines before every state-advancing
-//! operation, and a future host/adapter must drive `RemoteCeremony::poll_deadlines`; expiry is
-//! never delivered on its own.
+//! operation, and the host's bounded deadline driver calls `RemoteCeremony::poll_deadlines` when
+//! a future adapter asks it to; expiry is never delivered on its own.
 //!
 //! Separately, P3 §11.1.1 gives every accepted, unexposed Responder a fixed pending
 //! pre-exposure RESOURCE lifetime. It shares the 60-second value with the inactivity deadline

@@ -4,8 +4,8 @@
 //! local reject/cancel emits a best-effort authenticated CANCEL and a verified peer CANCEL
 //! terminates the run without a result.
 //! The P3 11.3 five-minute absolute and 60-second inactivity deadlines are enforced before
-//! every state-advancing operation and by `poll_deadlines`; no scheduler exists, so a future
-//! host/adapter must drive the poll.
+//! every state-advancing operation and by `poll_deadlines`; no scheduler exists, so the host's
+//! bounded deadline driver (called by a future adapter) drives the poll while a run is idle.
 //! The honest Initiator generates its 16-byte request ID with the OS CSPRNG and atomically
 //! reserves it in the authority's active local Initiator namespace before START can exist;
 //! fixed request IDs are accepted only by `#[cfg(test)]` constructors.
@@ -14,7 +14,8 @@
 //! Responders and 2 concurrent expensive preliminary operations per authority, and a fixed
 //! 60-second pending resource lifetime from admission. Session + request-ID routing lives in
 //! `router`, the socket-free transport controls in `transport`, and complete-frame dispatch in
-//! `host`; no scheduler drives ceremony deadlines, and no real socket exists.
+//! `host`, which also drives ceremony deadlines boundedly on request; no scheduler or real
+//! socket exists.
 #![allow(dead_code)] // The protocol remains internal until later P4 work defines its complete API.
 use crate::{
     Authorization, Ceremony, CeremonyExecutor, Error as OwnerError, PendingAdmission,
@@ -675,8 +676,8 @@ impl RemoteCeremony {
         Ok((run, accept_bytes))
     }
 
-    /// Crate-private hook for the future host/adapter, which must call it to drive expiry: no
-    /// scheduler, thread, or timer exists. It reads the injected clock and, if a deadline has
+    /// Crate-private hook that drives expiry while idle, called by the host's bounded deadline
+    /// driver (`Router::poll_session_deadlines`): no scheduler, thread, or timer exists. It reads the injected clock and, if a deadline has
     /// expired, times the run out (see `time_out`). A clock that gives no value or goes
     /// backwards fails the run closed with `ClockUnavailable` and no CANCEL. Uncertain guard
     /// release is `Owner(OwnershipUncertain)` with any built CANCEL withheld. It equally

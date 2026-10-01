@@ -23,6 +23,15 @@
 //! released before its lease is. Only then are the session's routes detached and its runs
 //! terminated; CLOSED is reached only if that cleanup is certain.
 //!
+//! Idle deadline driving: `poll_session_deadlines` lets the one owner of a session drive the
+//! existing `RemoteCeremony::poll_deadlines` across that session's runs, with no scheduler. Each
+//! call inspects at most `MAX_CEREMONY_POLLS_PER_CALL` routes, found one at a time by a seek in
+//! the ordered route map (no scan, no index, no allocation proportional to the route count),
+//! from a caller-held `DeadlineCursor` that advances in request-ID order and wraps, so every
+//! continuously live run is reached. A claim still being admitted and a run whose lock is busy
+//! are skipped as inspected work, never waited for. The call stops at the first terminal
+//! deadline outcome, so it returns at most one.
+//!
 //! Lock order: run mutex -> table mutex -> lifecycle mutex. The lifecycle mutex is a leaf, so a
 //! lease may be dropped anywhere. Authority shared state is taken by ceremony work under a run
 //! mutex (or with none held) and never while a router lock is acquired after it. Teardown waits
@@ -37,22 +46,28 @@ use crate::test_hook::{self, Point};
 use crate::{
     CeremonyExecutor, Error as OwnerError, Role,
     ceremony::{
-        CeremonyError, CompletionReceipt, PairingResult, PeerApproval, PeerCancellation,
-        RemoteCeremony,
+        CeremonyError, CompletionReceipt, DeadlineOutcome, PairingResult, PeerApproval,
+        PeerCancellation, RemoteCeremony, Timeout,
     },
     deadline::{Clock, system_clock},
     protocol::{self, Bootstrap},
     request_id::{OsRequestIds, RequestIdGenerator},
 };
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{BTreeMap, HashMap, btree_map::Entry},
+    ops::Bound,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, PoisonError,
+        Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError,
         atomic::{AtomicU64, Ordering},
     },
 };
 
 static NEXT_ROUTER: AtomicU64 = AtomicU64::new(1);
+
+/// Hard per-call work bound of `poll_session_deadlines`: route candidates inspected (polled,
+/// busy, or still being admitted). An implementation work cap only: not a P3 limit, a ceremony
+/// count cap, or a security parameter, and unrelated to the pending (4) and connection (16) caps.
+pub(crate) const MAX_CEREMONY_POLLS_PER_CALL: usize = 8;
 
 /// One live local session context of one `Router`: "this locally distinct transport/session
 /// context" and nothing more. It is not peer identity, authentication, possession, trust,
@@ -60,13 +75,15 @@ static NEXT_ROUTER: AtomicU64 = AtomicU64::new(1);
 /// cryptographic input. Only `Router::open_session` creates one. It names its router, so a
 /// handle from another router is unknown here, and session numbers are never reissued, so a
 /// closed handle stays invalid. Volatile: never persisted or resumed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct SessionHandle {
     router: u64,
     session: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Ordered by session, then request-ID bytes, so one session's routes are contiguous in the
+/// route map. The order is local scheduling plumbing for deadline driving, never protocol data.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct RoutingKey {
     session: SessionHandle,
     /// Canonical peer-controlled or locally generated opaque bytes (1..=64).
@@ -149,7 +166,9 @@ struct Table {
     next_claim: u64,
     /// OPEN and CLOSING sessions; a CLOSED session is absent.
     sessions: HashMap<u64, Arc<Lifecycle>>,
-    routes: HashMap<RoutingKey, Route>,
+    /// Ordered so the deadline driver finds a session's next route by one seek, with no
+    /// auxiliary index that could go stale.
+    routes: BTreeMap<RoutingKey, Route>,
 }
 
 /// Session-bound routing for one pairing authority. Its resource controls (START limiter,
@@ -229,6 +248,75 @@ pub(crate) struct Routed<T> {
     pub(crate) result: Option<PairingResult>,
 }
 
+/// One session's deadline-driver position: the request ID most recently inspected (`None`
+/// before the first). Local scheduling plumbing owned by the session's one driver: not peer
+/// data, authentication, or identity, never persisted, hashed, or sent. The key it names may
+/// since have been removed or reused; it is only a position in request-ID order.
+#[derive(Debug, Default)]
+pub(crate) struct DeadlineCursor {
+    after: Option<Vec<u8>>,
+}
+
+/// How a polled run ended by deadline processing. The run is ALREADY terminal and its route
+/// removed; none of these is a result, peer evidence, or an opportunity outcome.
+#[derive(Debug)]
+pub(crate) enum DeadlineEnded {
+    /// P3 §11.3 local timeout, with the authenticated CANCEL bytes when a shared SAS existed.
+    TimedOut(Timeout),
+    /// The fixed pending pre-exposure resource lifetime ended; nothing to send.
+    PendingExpired,
+    /// The run's ceremony clock was unusable; it failed closed with no timeout claim.
+    ClockUnavailable,
+}
+
+/// One terminal deadline outcome and the routing key of its run (diagnostic only).
+#[derive(Debug)]
+pub(crate) struct DeadlineEvent {
+    pub(crate) request_id: Vec<u8>,
+    pub(crate) ended: DeadlineEnded,
+}
+
+/// One bounded `poll_session_deadlines` call: `inspected <= MAX_CEREMONY_POLLS_PER_CALL`
+/// candidates and at most one terminal deadline outcome.
+#[derive(Debug, Default)]
+pub(crate) struct DeadlinePoll {
+    pub(crate) inspected: usize,
+    pub(crate) event: Option<DeadlineEvent>,
+    /// Request IDs this call inspected, in order, and how (tests only; bounded by the cap).
+    #[cfg(test)]
+    pub(crate) trace: Vec<(Vec<u8>, Inspected)>,
+    /// Route-map seeks this call made (tests only).
+    #[cfg(test)]
+    pub(crate) seeks: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Inspected {
+    Admitting,
+    Busy,
+    Polled,
+}
+
+/// One deadline-driver selection step.
+enum Next {
+    /// The session began closing: nothing more enters.
+    Closing,
+    /// No route of the session after the position.
+    End,
+    /// The next route: its exact run, or `None` for a START claim still being admitted.
+    Route(RoutingKey, Option<Run>),
+}
+
+/// One inspected run's deadline poll.
+enum Polled {
+    /// Another operation holds the run; it was not touched.
+    Busy,
+    /// Live and unexpired (or already finished): nothing to report.
+    Live,
+    Ended(DeadlineEnded),
+}
+
 /// What a new START needs beyond its bytes: the Responder's local configuration.
 struct NewResponder {
     clock: Clock,
@@ -261,7 +349,7 @@ impl Router {
                 next_session: 1,
                 next_claim: 1,
                 sessions: HashMap::new(),
-                routes: HashMap::new(),
+                routes: BTreeMap::new(),
             }),
         })
     }
@@ -353,6 +441,23 @@ impl Router {
     #[cfg(test)]
     pub(crate) fn routes_for_test(&self) -> usize {
         self.table.lock().unwrap().routes.len()
+    }
+
+    /// The installed run under exactly `(session, request_id)` (tests only).
+    #[cfg(test)]
+    pub(crate) fn run_for_test(
+        &self,
+        session: SessionHandle,
+        request_id: &[u8],
+    ) -> Arc<Mutex<RemoteCeremony>> {
+        let key = RoutingKey {
+            session,
+            request_id: request_id.to_vec(),
+        };
+        match self.table.lock().unwrap().routes.get(&key) {
+            Some(Route::Active(run)) => run.clone(),
+            _ => panic!("no installed run under that key"),
+        }
     }
 
     /// Inbound START on `session`. An exact duplicate or conflict for an existing key goes to
@@ -531,6 +636,146 @@ impl Router {
                 }
             }
         }
+    }
+
+    /// Bounded, cooperative idle deadline driving for `session`, for its one owner (the host
+    /// connection), with no scheduler, thread, or timer. Each Active run reached gets exactly the
+    /// existing `RemoteCeremony::poll_deadlines`, which alone decides expiry (absolute,
+    /// inactivity and its suspension, the fixed pending lifetime, timeout CANCEL, cleanup);
+    /// polling is not progress and refreshes nothing. Routes are visited after `cursor` in
+    /// request-ID order, wrapping at most once per call and never past where the call began, so
+    /// one call inspects each route at most once and at most `MAX_CEREMONY_POLLS_PER_CALL` in
+    /// all. A START claim still being admitted and a run whose lock another operation holds count
+    /// as inspected and are skipped without waiting; that run's next state-advancing operation
+    /// enforces its own deadlines. The call stops at the first run that ends (timeout, pending
+    /// expiry, or unusable clock), whose route is removed only if it still names that exact run;
+    /// the session and its other runs stay live. Only routes of `session` are visited.
+    ///
+    /// The call holds one lease: a CLOSING or CLOSED session is `UnknownSession`, and once the
+    /// session begins closing the call finishes only its current run and returns. A poisoned run
+    /// lock, uncertain cleanup, or any other run failure is `OwnershipUncertain`, never run-local.
+    pub(crate) fn poll_session_deadlines(
+        &self,
+        session: SessionHandle,
+        cursor: &mut DeadlineCursor,
+    ) -> Result<DeadlinePoll, RouteError> {
+        let lease = self.enter(&*self.table()?, session)?;
+        let mut poll = DeadlinePoll::default();
+        let start = cursor.after.clone();
+        let mut wrapped = false;
+        while poll.inspected < MAX_CEREMONY_POLLS_PER_CALL {
+            let next = self.next_route(&lease, session, cursor.after.as_deref())?;
+            #[cfg(test)]
+            {
+                poll.seeks += 1;
+            }
+            let (key, run) = match next {
+                Next::Closing => break,
+                // Every route of the session was reached by this call.
+                Next::End if wrapped || start.is_none() => break,
+                Next::End => {
+                    cursor.after = None;
+                    wrapped = true;
+                    continue;
+                }
+                Next::Route(key, _)
+                    if wrapped
+                        && start
+                            .as_deref()
+                            .is_some_and(|start| key.request_id.as_slice() > start) =>
+                {
+                    break;
+                }
+                Next::Route(key, run) => (key, run),
+            };
+            cursor.after = Some(key.request_id.clone());
+            poll.inspected += 1;
+            let Some(run) = run else {
+                #[cfg(test)]
+                poll.trace.push((key.request_id, Inspected::Admitting));
+                continue;
+            };
+            #[cfg(test)]
+            test_hook::fire(Point::DeadlineSelected);
+            let polled = self.poll_run(&key, &run)?;
+            #[cfg(test)]
+            poll.trace.push((
+                key.request_id.clone(),
+                match polled {
+                    Polled::Busy => Inspected::Busy,
+                    _ => Inspected::Polled,
+                },
+            ));
+            if let Polled::Ended(ended) = polled {
+                poll.event = Some(DeadlineEvent {
+                    request_id: key.request_id,
+                    ended,
+                });
+                break;
+            }
+        }
+        Ok(poll)
+    }
+
+    /// One selection step, in one table critical section: `Closing` once the session began
+    /// closing; otherwise the first route of `session` strictly after `after` (or its first
+    /// route), found by one ordered-map seek that clones only that key and that run's `Arc`.
+    fn next_route(
+        &self,
+        lease: &Lease,
+        session: SessionHandle,
+        after: Option<&[u8]>,
+    ) -> Result<Next, RouteError> {
+        let table = self.table()?;
+        if lease.closing()? {
+            return Ok(Next::Closing);
+        }
+        let from = RoutingKey {
+            session,
+            request_id: after.unwrap_or_default().to_vec(),
+        };
+        let lower = match after {
+            Some(_) => Bound::Excluded(&from),
+            None => Bound::Included(&from),
+        };
+        Ok(match table.routes.range((lower, Bound::Unbounded)).next() {
+            Some((key, route)) if key.session == session => Next::Route(
+                key.clone(),
+                match route {
+                    Route::Active(run) => Some(run.clone()),
+                    Route::Admitting { .. } => None,
+                },
+            ),
+            _ => Next::End,
+        })
+    }
+
+    /// Polls one selected run outside the table lock, never waiting for its lock: a busy run is
+    /// left untouched. If it ended, its own cleanup already ran under its lock; only then is the
+    /// route removed, and only if it still names this exact run.
+    fn poll_run(&self, key: &RoutingKey, run: &Run) -> Result<Polled, RouteError> {
+        let mut ceremony = match run.try_lock() {
+            Ok(ceremony) => ceremony,
+            Err(TryLockError::WouldBlock) => return Ok(Polled::Busy),
+            Err(TryLockError::Poisoned(_)) => return Err(uncertain()),
+        };
+        #[cfg(test)]
+        test_hook::fire(Point::DeadlineRunLocked);
+        let outcome = ceremony.poll_deadlines();
+        if self.remove_finished(key, run, &ceremony)?.is_some() {
+            // Deadline processing never succeeds: a routed succeeded run is a broken invariant.
+            return Err(uncertain());
+        }
+        Ok(match outcome {
+            Ok(DeadlineOutcome::Active | DeadlineOutcome::Finished) => Polled::Live,
+            Ok(DeadlineOutcome::TimedOut(timeout)) => {
+                Polled::Ended(DeadlineEnded::TimedOut(timeout))
+            }
+            Ok(DeadlineOutcome::PendingExpired) => Polled::Ended(DeadlineEnded::PendingExpired),
+            Err(CeremonyError::ClockUnavailable) => Polled::Ended(DeadlineEnded::ClockUnavailable),
+            // Uncertain guard or resource release, or anything unexpected: never run-local.
+            Err(_) => return Err(uncertain()),
+        })
     }
 
     fn route_start(
@@ -714,19 +959,32 @@ impl Router {
     ) -> Result<Routed<T>, RouteError> {
         let mut ceremony = lock(run)?;
         let outcome = op(&mut ceremony);
-        let mut result = None;
-        if ceremony.is_finished() {
-            let mut table = self.table()?;
-            if matches!(table.routes.get(key), Some(Route::Active(current)) if Arc::ptr_eq(current, run))
-            {
-                table.routes.remove(key);
-                result = ceremony.result().cloned();
-            }
-        }
+        let result = self.remove_finished(key, run, &ceremony)?;
         Ok(Routed {
             output: outcome?,
             result,
         })
+    }
+
+    /// Called under `run`'s own lock. If the run is finished, removes its route, but only while
+    /// `key` still names this exact run (never a replacement under a reused key), and returns
+    /// its result to that one remover.
+    fn remove_finished(
+        &self,
+        key: &RoutingKey,
+        run: &Run,
+        ceremony: &RemoteCeremony,
+    ) -> Result<Option<PairingResult>, RouteError> {
+        if !ceremony.is_finished() {
+            return Ok(None);
+        }
+        let mut table = self.table()?;
+        if matches!(table.routes.get(key), Some(Route::Active(current)) if Arc::ptr_eq(current, run))
+        {
+            table.routes.remove(key);
+            return Ok(ceremony.result().cloned());
+        }
+        Ok(None)
     }
 
     /// Enters an OPEN session for one operation, inside the caller's table critical section so
@@ -1904,6 +2162,12 @@ mod tests {
             Err(CLOSED)
         );
         assert_eq!(node.router.close_session(session), Err(CLOSED));
+        assert_eq!(
+            node.router
+                .poll_session_deadlines(session, &mut DeadlineCursor::default())
+                .unwrap_err(),
+            CLOSED
+        );
     }
 
     /// For this thread only: on reaching `at`, announce it on `arrived`, then wait for `resume`.
@@ -2292,6 +2556,238 @@ mod tests {
         // Other sessions are unaffected.
         assert_eq!(r.state(c, &x), "ResponderAcceptSentAwaitInitiatorKey");
         r.router.close_session(c).unwrap();
+        r.release();
+    }
+
+    const MAX: usize = MAX_CEREMONY_POLLS_PER_CALL;
+
+    /// A 16-byte request ID whose order is `n`'s.
+    fn ordered(n: u16) -> [u8; 16] {
+        let mut id = [0; 16];
+        id[..2].copy_from_slice(&n.to_be_bytes());
+        id
+    }
+
+    /// Routes an Initiator on `session` under `id`, with the ceremony clock `clock`.
+    fn initiate_as(node: &Node, clock: &Arc<ManualClock>, session: SessionHandle, id: [u8; 16]) {
+        let (routed, _) = node
+            .router
+            .start_initiator_with(
+                clock.clone(),
+                &mut script([id]),
+                session,
+                initiator_bootstrap(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(routed, id.to_vec());
+    }
+
+    /// One deadline-driver call; nothing in these tests expires, and no call inspects a route
+    /// twice or exceeds the work cap.
+    fn poll_live(node: &Node, session: SessionHandle, cursor: &mut DeadlineCursor) -> Vec<Vec<u8>> {
+        let poll = node.router.poll_session_deadlines(session, cursor).unwrap();
+        assert!(poll.event.is_none());
+        assert!(poll.inspected <= MAX);
+        assert_eq!(poll.inspected, poll.trace.len());
+        let ids: Vec<_> = poll.trace.into_iter().map(|(id, _)| id).collect();
+        let mut distinct = ids.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), ids.len(), "a route twice in one call");
+        ids
+    }
+
+    #[test]
+    fn deadline_polls_are_bounded_per_call_and_reach_every_route_in_turn() {
+        let r = Node::new("router-deadline-fair");
+        let clock = ManualClock::new();
+        let (a, b, c) = (r.session(), r.session(), r.session());
+        // More local Initiators on A than the pending Responder cap or two batches: routes are
+        // not limited to 4, so the driver cannot assume they are.
+        let n = 2 * MAX + 3;
+        let ids: Vec<Vec<u8>> = (1..=n as u16).map(|i| ordered(i).to_vec()).collect();
+        for i in 1..=n as u16 {
+            initiate_as(&r, &clock, a, ordered(i));
+        }
+        // B's routes (IDs below and above A's) must never be visited from A.
+        for i in [0, 500, 999] {
+            initiate_as(&r, &clock, b, ordered(i));
+        }
+        let mut cursor = DeadlineCursor::default();
+        let mut visited = Vec::new();
+        for _ in 0..6 {
+            let before = r.routes();
+            let batch = poll_live(&r, a, &mut cursor);
+            assert_eq!(batch.len(), MAX, "a full batch while more routes exist");
+            visited.extend(batch);
+            assert_eq!(r.routes(), before);
+        }
+        // Strict round robin: every route once before any route twice, then again in turn,
+        // wrapping safely at the end.
+        let cycle: Vec<_> = ids.iter().cycle().take(visited.len()).cloned().collect();
+        assert_eq!(visited, cycle);
+        assert_eq!(r.state(b, &ordered(0)), "InitiatorAwaitAccept");
+
+        // Per-call selection work does not grow with the route count: 200 more routes on C cost
+        // each call the same number of ordered-map seeks, and all 200 are reached in 25 calls.
+        let many: Vec<_> = (1000..1200).map(|i| ordered(i).to_vec()).collect();
+        for i in 1000..1200 {
+            initiate_as(&r, &clock, c, ordered(i));
+        }
+        let mut cursor = DeadlineCursor::default();
+        let mut visited = Vec::new();
+        for _ in 0..25 {
+            let poll = r.router.poll_session_deadlines(c, &mut cursor).unwrap();
+            assert_eq!((poll.inspected, poll.seeks), (MAX, MAX));
+            assert!(poll.trace.iter().all(|(_, how)| *how == Inspected::Polled));
+            visited.extend(poll.trace.into_iter().map(|(id, _)| id));
+        }
+        assert_eq!(visited, many);
+        // Reaching the end wraps within the same bounded call: one extra seek.
+        let poll = r.router.poll_session_deadlines(c, &mut cursor).unwrap();
+        assert_eq!((poll.inspected, poll.seeks), (MAX, MAX + 1));
+        assert_eq!(poll.trace[0].0, many[0]);
+        // Polling changed nothing: no route, reservation, or state.
+        assert_eq!(r.resources(), (n + 3 + 200, 0, 0, n + 3 + 200));
+        for session in [a, b, c] {
+            r.router.close_session(session).unwrap();
+        }
+        assert_eq!(r.resources(), (0, 0, 0, 0));
+        r.release();
+    }
+
+    #[test]
+    fn deadline_cursor_survives_route_removal_insertion_and_few_routes() {
+        let r = Node::new("router-deadline-churn");
+        let clock = ManualClock::new();
+        let a = r.session();
+        let ids =
+            |ns: &[u16]| -> Vec<Vec<u8>> { ns.iter().map(|n| ordered(*n).to_vec()).collect() };
+        for n in (10..=120).step_by(10) {
+            initiate_as(&r, &clock, a, ordered(n));
+        }
+        let mut cursor = DeadlineCursor::default();
+        assert_eq!(
+            poll_live(&r, a, &mut cursor),
+            ids(&[10, 20, 30, 40, 50, 60, 70, 80])
+        );
+        // Remove routes before (20), exactly at (80), and after (100) the cursor; insert one
+        // before (15) and one after (85) it.
+        for n in [20, 80, 100] {
+            r.local(a, &ordered(n), |run| run.terminate());
+        }
+        initiate_as(&r, &clock, a, ordered(15));
+        initiate_as(&r, &clock, a, ordered(85));
+        // Resumes after the removed cursor key, wraps, and reaches both insertions; nothing
+        // removed is ever visited and nothing restarts from the beginning.
+        assert_eq!(
+            poll_live(&r, a, &mut cursor),
+            ids(&[85, 90, 110, 120, 10, 15, 30, 40])
+        );
+        assert_eq!(
+            poll_live(&r, a, &mut cursor),
+            ids(&[50, 60, 70, 85, 90, 110, 120, 10])
+        );
+        // The map holds exactly the live routes: no index or tombstone remains for the removed.
+        assert_eq!(r.resources(), (11, 0, 0, 11));
+
+        // Fewer routes than the cap: each call reaches each route once and stops.
+        let b = r.session();
+        let mut cursor = DeadlineCursor::default();
+        assert!(poll_live(&r, b, &mut cursor).is_empty());
+        initiate_as(&r, &clock, b, ordered(7));
+        for _ in 0..3 {
+            assert_eq!(poll_live(&r, b, &mut cursor), ids(&[7]));
+        }
+        initiate_as(&r, &clock, b, ordered(3));
+        assert_eq!(poll_live(&r, b, &mut cursor), ids(&[3, 7]));
+        assert_eq!(poll_live(&r, b, &mut cursor), ids(&[3, 7]));
+        for session in [a, b] {
+            r.router.close_session(session).unwrap();
+        }
+        assert_eq!(r.resources(), (0, 0, 0, 0));
+        r.release();
+    }
+
+    #[test]
+    fn a_deadline_poll_never_removes_a_replacement_run_under_a_reused_key() {
+        let r = Node::new("router-deadline-reuse");
+        let (old_clock, new_clock) = (ManualClock::new(), ManualClock::new());
+        let a = r.session();
+        let k = ordered(5);
+        initiate_as(&r, &old_clock, a, k);
+        let (arrived, arrival) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        thread::scope(|scope| {
+            let poll = scope.spawn(|| {
+                pause_at(Point::DeadlineSelected, arrived, resumed);
+                r.router
+                    .poll_session_deadlines(a, &mut DeadlineCursor::default())
+            });
+            // The driver holds the old run's `Arc` with no lock. Meanwhile that run ends, its
+            // route and reservation go, and a fresh run is routed under the same key.
+            arrival.recv().unwrap();
+            r.local(a, &k, |run| run.terminate());
+            assert_eq!(r.resources(), (0, 0, 0, 0));
+            initiate_as(&r, &new_clock, a, k);
+            resume.send(()).unwrap();
+            let polled = poll.join().unwrap().unwrap();
+            // It polled the old, finished run: no event, and the replacement stays routed.
+            assert_eq!(polled.inspected, 1);
+            assert!(polled.event.is_none());
+        });
+        assert_eq!(r.resources(), (1, 0, 0, 1));
+        assert_eq!(r.state(a, &k), "InitiatorAwaitAccept");
+        // The replacement keeps its own deadlines: the old clock is irrelevant to it.
+        old_clock.advance(ABSOLUTE_DEADLINE);
+        let mut cursor = DeadlineCursor::default();
+        assert_eq!(poll_live(&r, a, &mut cursor), vec![k.to_vec()]);
+        new_clock.advance(INACTIVITY_DEADLINE);
+        let polled = r.router.poll_session_deadlines(a, &mut cursor).unwrap();
+        assert!(matches!(
+            polled.event,
+            Some(DeadlineEvent { ref request_id, ended: DeadlineEnded::TimedOut(ref t) })
+                if *request_id == k.to_vec() && t.expired() == Deadline::Inactivity
+        ));
+        assert_eq!(r.resources(), (0, 0, 0, 0));
+        r.release();
+    }
+
+    #[test]
+    fn closing_during_a_deadline_poll_waits_for_its_current_run_only() {
+        let r = Node::new("router-deadline-close");
+        let clock = ManualClock::new();
+        let (a, b) = (r.session(), r.session());
+        for n in 1..=3 {
+            initiate_as(&r, &clock, a, ordered(n));
+        }
+        initiate_as(&r, &clock, b, ordered(9));
+        let (arrived, arrival) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        thread::scope(|scope| {
+            let poll = scope.spawn(|| {
+                pause_at(Point::DeadlineRunLocked, arrived, resumed);
+                r.router
+                    .poll_session_deadlines(a, &mut DeadlineCursor::default())
+            });
+            arrival.recv().unwrap();
+            // The driver holds the first run's lock and its lease, but no table lock: other
+            // routing work proceeds.
+            assert_eq!(r.resources(), (4, 0, 0, 4));
+            assert_eq!(r.state(b, &ordered(9)), "InitiatorAwaitAccept");
+            let (close, waits) = close_on(scope, &r, a);
+            assert_eq!(waits.recv().unwrap(), 1);
+            assert_rejects_everything(&r, a);
+            assert!(!close.is_finished());
+            resume.send(()).unwrap();
+            // Entered before the close point: it finished its one current run and stopped.
+            let polled = poll.join().unwrap().unwrap();
+            assert_eq!(polled.inspected, 1);
+            assert_eq!(polled.trace, vec![(ordered(1).to_vec(), Inspected::Polled)]);
+            assert_eq!(close.join().unwrap(), (Ok(()), (1, 0, 0, 1)));
+        });
+        assert_eq!(r.state(b, &ordered(9)), "InitiatorAwaitAccept");
         r.release();
     }
 }
