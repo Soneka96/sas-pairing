@@ -6,6 +6,8 @@ publish = false
 
 [dependencies]
 base64 = "0.23"
+# Honest Initiator request IDs only; the version vodozemac already resolves (no new RNG stack).
+getrandom = "0.4.3"
 sha2 = "0.10"
 vodozemac = { version = "=0.11.0", default-features = false }
 

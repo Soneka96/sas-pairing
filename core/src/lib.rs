@@ -11,6 +11,7 @@ mod ceremony;
 mod crypto;
 mod deadline;
 pub mod protocol;
+mod request_id;
 
 const DOMAIN: &[u8] = b"sas-pairing-authority-v1";
 const MAX_OPPORTUNITIES: u8 = 10;
@@ -89,6 +90,28 @@ struct State {
 struct Shared {
     remaining: u8,
     active: Option<u64>,
+    /// Honestly generated request IDs of live local Initiator ceremonies of this authority.
+    /// Volatile pre-exposure routing state: never persisted, never peer IDs, never authority.
+    initiator_request_ids: HashSet<[u8; 16]>,
+}
+
+impl Shared {
+    /// Releases a ceremony's request-ID reservation, if any, exactly once.
+    fn release_request_id(&mut self, owned: &mut Option<[u8; 16]>) {
+        if let Some(request_id) = owned.take() {
+            self.initiator_request_ids.remove(&request_id);
+        }
+    }
+}
+
+/// Outcome of one atomic check-and-reserve of a generated Initiator request ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestIdReservation {
+    Reserved,
+    /// Another live local Initiator of this authority holds it; nothing changed.
+    Collision,
+    /// Only an Initiator ceremony without a reservation may reserve; nothing changed.
+    NotEligible,
 }
 
 impl Drop for State {
@@ -105,6 +128,8 @@ pub struct Ceremony {
     role: Role,
     authorization: Option<u64>,
     terminal: bool,
+    /// At most one generated request ID, owned by this ceremony until terminal cleanup or drop.
+    request_id: Option<[u8; 16]>,
 }
 
 pub struct Authorization {
@@ -145,6 +170,7 @@ impl TrustedAuthority {
             shared: Mutex::new(Shared {
                 remaining: MAX_OPPORTUNITIES,
                 active: None,
+                initiator_request_ids: HashSet::new(),
             }),
             ownership: Mutex::new(Some(lease)),
         })))
@@ -203,7 +229,37 @@ impl CeremonyExecutor {
             role,
             authorization: None,
             terminal: false,
+            request_id: None,
         })
+    }
+
+    /// Atomically checks and reserves `candidate` in this authority's active local Initiator
+    /// request-ID namespace for `ceremony`, in one critical section. It touches neither the
+    /// exposed-ceremony guard nor the opportunity budget, and authorizes nothing.
+    pub(crate) fn reserve_request_id(
+        &self,
+        ceremony: &mut Ceremony,
+        candidate: [u8; 16],
+    ) -> Result<RequestIdReservation, Error> {
+        if ceremony.terminal {
+            return Err(Error::Terminated);
+        }
+        if !Arc::ptr_eq(&self.0, &ceremony.authority.0) {
+            return Err(Error::StaleAuthorization);
+        }
+        if ceremony.role != Role::Initiator || ceremony.request_id.is_some() {
+            return Ok(RequestIdReservation::NotEligible);
+        }
+        let mut shared = self
+            .0
+            .shared
+            .lock()
+            .map_err(|_| Error::OwnershipUncertain)?;
+        if !shared.initiator_request_ids.insert(candidate) {
+            return Ok(RequestIdReservation::Collision);
+        }
+        ceremony.request_id = Some(candidate);
+        Ok(RequestIdReservation::Reserved)
     }
 
     /// Acquires the shared guard and burns one opportunity in one critical section.
@@ -254,6 +310,7 @@ impl CeremonyExecutor {
         // Make terminal state irreversible before the authority-wide slot can be reused.
         ceremony.authorization = None;
         ceremony.terminal = true;
+        shared.release_request_id(&mut ceremony.request_id);
         if shared.active == Some(ceremony.id) {
             shared.active = None;
         }
@@ -288,10 +345,12 @@ impl Drop for Ceremony {
     fn drop(&mut self) {
         self.authorization = None;
         self.terminal = true;
-        if let Ok(mut shared) = self.authority.0.shared.lock()
-            && shared.active == Some(self.id)
-        {
-            shared.active = None;
+        // A poisoned lock leaves the guard and any request-ID reservation conservatively held.
+        if let Ok(mut shared) = self.authority.0.shared.lock() {
+            shared.release_request_id(&mut self.request_id);
+            if shared.active == Some(self.id) {
+                shared.active = None;
+            }
         }
     }
 }

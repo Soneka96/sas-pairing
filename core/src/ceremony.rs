@@ -6,15 +6,18 @@
 //! The P3 11.3 five-minute absolute and 60-second inactivity deadlines are enforced before
 //! every state-advancing operation and by `poll_deadlines`; no scheduler exists, so a future
 //! host/adapter must drive the poll.
-//! Fixed request IDs are accepted only by this internal/test-scoped constructor;
-//! production request-ID generation and active routing reservation remain pending.
-//! Transport, timer scheduling, and resource admission are not implemented.
+//! The honest Initiator generates its 16-byte request ID with the OS CSPRNG and atomically
+//! reserves it in the authority's active local Initiator namespace before START can exist;
+//! fixed request IDs are accepted only by `#[cfg(test)]` constructors. Connection/session
+//! routing, transport, timer scheduling, and resource admission are not implemented.
 #![allow(dead_code)] // The protocol remains internal until later P4 work defines its complete API.
 use crate::{
-    Authorization, Ceremony, CeremonyExecutor, Error as OwnerError, Role, TrustedAuthority,
+    Authorization, Ceremony, CeremonyExecutor, Error as OwnerError, RequestIdReservation, Role,
+    TrustedAuthority,
     crypto::{self, Completion, EphemeralSas, Established},
     deadline::{CeremonyDeadlines, Clock, Deadline, Inactivity, Verdict, system_clock},
     protocol::{self, Bootstrap, CancelReason, DecodedMessage, Message},
+    request_id::{OsRequestIds, RequestIdGenerator},
 };
 use std::time::Duration;
 
@@ -33,6 +36,8 @@ pub(crate) enum CeremonyError {
     /// A bidirectional message carried a sender role other than the expected peer role.
     UnexpectedSenderRole,
     InvalidRequestId,
+    /// The OS CSPRNG produced no request ID: no START, reservation, or ceremony exists.
+    RequestIdGenerationFailed,
     RequestIdMismatch,
     SharedContextMismatch,
     ExpectedPeerMismatch,
@@ -433,9 +438,70 @@ pub(crate) struct RemoteCeremony {
 }
 
 impl RemoteCeremony {
-    /// Internal/test-scoped fixed request ID constructor, not a production initiation API.
-    /// Deadlines use a production `Instant`-backed monotonic clock.
+    /// Honest local Initiator (P3 §4). The application supplies only its executor, admission
+    /// ceremony, local canonical bootstrap, and optional expected peer; it never chooses the
+    /// request ID. The core generates 16 raw bytes with the OS CSPRNG and atomically reserves
+    /// them in the authority's active local Initiator namespace before building START, so
+    /// `start()` can only return bytes whose ID is already reserved. The reservation is owned by
+    /// `admission`, spends no opportunity, acquires no guard, and is released exactly once at
+    /// terminal cleanup or drop. Deadlines use a production `Instant`-backed monotonic clock.
     pub(crate) fn initiator(
+        executor: CeremonyExecutor,
+        admission: Ceremony,
+        local: Bootstrap,
+        expected: Option<Bootstrap>,
+    ) -> Result<Self, CeremonyError> {
+        let clock = system_clock();
+        Self::initiator_with(
+            clock,
+            &mut OsRequestIds,
+            executor,
+            admission,
+            local,
+            expected,
+        )
+    }
+
+    /// `initiator` with an injected clock and request-ID source. A collision with another live
+    /// local Initiator is an internal retry, never an error; only generator failure, uncertain
+    /// shared state, or construction failure escapes. The shared lock is held only for each
+    /// check-and-insert, never while generating. Any failure after reservation drops
+    /// `admission`, whose cleanup releases the ID.
+    fn initiator_with(
+        clock: Clock,
+        ids: &mut dyn RequestIdGenerator,
+        executor: CeremonyExecutor,
+        mut admission: Ceremony,
+        local: Bootstrap,
+        expected: Option<Bootstrap>,
+    ) -> Result<Self, CeremonyError> {
+        if admission.role() != Role::Initiator {
+            return Err(CeremonyError::InvalidState);
+        }
+        let request_id = loop {
+            let candidate = ids
+                .generate()
+                .ok_or(CeremonyError::RequestIdGenerationFailed)?;
+            match executor.reserve_request_id(&mut admission, candidate)? {
+                RequestIdReservation::Reserved => break candidate,
+                RequestIdReservation::Collision => continue,
+                RequestIdReservation::NotEligible => return Err(CeremonyError::InvalidState),
+            }
+        };
+        let start = protocol::decode(
+            &Message::Start {
+                request_id: request_id.to_vec(),
+                bootstrap: local.clone(),
+            }
+            .encode()?,
+        )?;
+        Self::initiator_from_start(clock, executor, admission, start, local, expected)
+    }
+
+    /// Test-only fixed-request-ID Initiator for deterministic vectors. It reserves nothing in
+    /// the active namespace, so equal IDs may coexist under test control.
+    #[cfg(test)]
+    fn initiator_with_fixed_start_for_test(
         executor: CeremonyExecutor,
         admission: Ceremony,
         start_bytes: &[u8],
@@ -443,11 +509,19 @@ impl RemoteCeremony {
         expected: Option<Bootstrap>,
     ) -> Result<Self, CeremonyError> {
         let clock = system_clock();
-        Self::initiator_with_clock(clock, executor, admission, start_bytes, local, expected)
+        Self::initiator_with_fixed_start_and_clock_for_test(
+            clock,
+            executor,
+            admission,
+            start_bytes,
+            local,
+            expected,
+        )
     }
 
-    /// `initiator` with an injected monotonic clock used for this run's whole lifetime.
-    pub(crate) fn initiator_with_clock(
+    /// `initiator_with_fixed_start_for_test` with an injected monotonic clock.
+    #[cfg(test)]
+    fn initiator_with_fixed_start_and_clock_for_test(
         clock: Clock,
         executor: CeremonyExecutor,
         admission: Ceremony,
@@ -456,6 +530,17 @@ impl RemoteCeremony {
         expected: Option<Bootstrap>,
     ) -> Result<Self, CeremonyError> {
         let start = protocol::decode(start_bytes)?;
+        Self::initiator_from_start(clock, executor, admission, start, local, expected)
+    }
+
+    fn initiator_from_start(
+        clock: Clock,
+        executor: CeremonyExecutor,
+        admission: Ceremony,
+        start: DecodedMessage,
+        local: Bootstrap,
+        expected: Option<Bootstrap>,
+    ) -> Result<Self, CeremonyError> {
         validate_initiator_request_id(&start)?;
         let peer = match &start.message {
             Message::Start { bootstrap, .. } => bootstrap,
@@ -1683,7 +1768,7 @@ mod tests {
         protocol,
     };
     use serde_json::Value;
-    use std::sync::Arc;
+    use std::{collections::HashSet, sync::Arc};
 
     fn hex(value: &str) -> Vec<u8> {
         value
@@ -1740,7 +1825,7 @@ mod tests {
         let local_r = bootstrap(&decoded("ACCEPT"), false);
         let (authority_i, executor_i) = executor(b"ceremony-positive-i");
         let (authority_r, executor_r) = executor(b"ceremony-positive-r");
-        let mut initiator = RemoteCeremony::initiator(
+        let mut initiator = RemoteCeremony::initiator_with_fixed_start_for_test(
             executor_i.clone(),
             executor_i.begin(Role::Initiator).unwrap(),
             &start,
@@ -1843,12 +1928,16 @@ mod tests {
                 matches!(protocol::decode(&accept).unwrap().message, Message::Accept { request_id, .. } if request_id.len() == len)
             );
             assert_eq!(exec.status().unwrap(), Status::Ready { remaining: 10 });
+            assert!(
+                reserved_ids(&exec).is_empty(),
+                "peer IDs are never reserved"
+            );
             drop(responder);
             drop(exec);
             authority.release().unwrap();
 
             let (authority, exec) = executor(format!("initiator-request-id-{len}").as_bytes());
-            let result = RemoteCeremony::initiator(
+            let result = RemoteCeremony::initiator_with_fixed_start_for_test(
                 exec.clone(),
                 exec.begin(Role::Initiator).unwrap(),
                 &start,
@@ -1871,7 +1960,7 @@ mod tests {
         let local_i = bootstrap(&decoded("START"), true);
         let local_r = bootstrap(&decoded("ACCEPT"), false);
         let (authority_i, exec_i) = executor(b"ceremony-no-auth-i");
-        let mut i = RemoteCeremony::initiator(
+        let mut i = RemoteCeremony::initiator_with_fixed_start_for_test(
             exec_i.clone(),
             exec_i.begin(Role::Initiator).unwrap(),
             &vector("START"),
@@ -1937,7 +2026,7 @@ mod tests {
         .unwrap();
         let (authority_ctx_i, exec_ctx_i) = executor(b"ceremony-context-i");
         assert_eq!(
-            RemoteCeremony::initiator(
+            RemoteCeremony::initiator_with_fixed_start_for_test(
                 exec_ctx_i.clone(),
                 exec_ctx_i.begin(Role::Initiator).unwrap(),
                 &start,
@@ -1983,7 +2072,7 @@ mod tests {
         )
         .unwrap();
         let (authority_peer_i, exec_peer_i) = executor(b"ceremony-expected-peer-i");
-        let mut peer_i = RemoteCeremony::initiator(
+        let mut peer_i = RemoteCeremony::initiator_with_fixed_start_for_test(
             exec_peer_i.clone(),
             exec_peer_i.begin(Role::Initiator).unwrap(),
             &start,
@@ -2032,7 +2121,7 @@ mod tests {
         .unwrap();
         let (authority_id, exec_id) = executor(b"ceremony-invalid-request-id");
         assert_eq!(
-            RemoteCeremony::initiator(
+            RemoteCeremony::initiator_with_fixed_start_for_test(
                 exec_id.clone(),
                 exec_id.begin(Role::Initiator).unwrap(),
                 &short_start,
@@ -2078,7 +2167,7 @@ mod tests {
 
         let (authority_busy, exec_busy) = executor(b"ceremony-busy");
         let local_i = bootstrap(&decoded("START"), true);
-        let mut first = RemoteCeremony::initiator(
+        let mut first = RemoteCeremony::initiator_with_fixed_start_for_test(
             exec_busy.clone(),
             exec_busy.begin(Role::Initiator).unwrap(),
             &start,
@@ -2090,7 +2179,7 @@ mod tests {
         first.receive_accept(&vector("ACCEPT")).unwrap();
         first.authorize(&authority_busy).unwrap();
         first.expose_key().unwrap();
-        let mut second = RemoteCeremony::initiator(
+        let mut second = RemoteCeremony::initiator_with_fixed_start_for_test(
             exec_busy.clone(),
             exec_busy.begin(Role::Initiator).unwrap(),
             &start,
@@ -2119,7 +2208,7 @@ mod tests {
         let start = vector("START");
         let local_i = bootstrap(&decoded("START"), true);
         let (authority, exec) = executor(b"ceremony-irreversible");
-        let mut run = RemoteCeremony::initiator(
+        let mut run = RemoteCeremony::initiator_with_fixed_start_for_test(
             exec.clone(),
             exec.begin(Role::Initiator).unwrap(),
             &start,
@@ -2137,7 +2226,7 @@ mod tests {
         assert!(run.receive_accept(&vector("ACCEPT")).is_err());
         drop(run);
 
-        let mut run = RemoteCeremony::initiator(
+        let mut run = RemoteCeremony::initiator_with_fixed_start_for_test(
             exec.clone(),
             exec.begin(Role::Initiator).unwrap(),
             &start,
@@ -2167,7 +2256,7 @@ mod tests {
         assert!(run.receive_responder_key(&vector("RESPONDER_KEY")).is_err());
         drop(run);
 
-        let mut run = RemoteCeremony::initiator(
+        let mut run = RemoteCeremony::initiator_with_fixed_start_for_test(
             exec.clone(),
             exec.begin(Role::Initiator).unwrap(),
             &start,
@@ -2205,7 +2294,7 @@ mod tests {
         assert_eq!(exec.status().unwrap(), Status::Ready { remaining: 8 });
         drop(run);
 
-        let mut run = RemoteCeremony::initiator(
+        let mut run = RemoteCeremony::initiator_with_fixed_start_for_test(
             exec.clone(),
             exec.begin(Role::Initiator).unwrap(),
             &start,
@@ -2225,7 +2314,7 @@ mod tests {
     fn prepared_responder_never_auto_reveals_after_busy_reservation() {
         let start = vector("START");
         let (authority, executor) = executor(b"ceremony-prepared-busy");
-        let mut initiator = RemoteCeremony::initiator(
+        let mut initiator = RemoteCeremony::initiator_with_fixed_start_for_test(
             executor.clone(),
             executor.begin(Role::Initiator).unwrap(),
             &start,
@@ -2322,18 +2411,22 @@ mod tests {
 
     /// `establish` with injected per-endpoint clocks.
     fn establish_with(a: &Authorities, clock_i: Clock, clock_r: Clock) -> Pair {
-        let start = vector("START");
-        let mut i = RemoteCeremony::initiator_with_clock(
+        let i = RemoteCeremony::initiator_with_fixed_start_and_clock_for_test(
             clock_i,
             a.ei.clone(),
             a.ei.begin(Role::Initiator).unwrap(),
-            &start,
+            &vector("START"),
             bootstrap(&decoded("START"), true),
             None,
         )
         .unwrap();
+        establish_from(a, i, clock_r)
+    }
+
+    /// Runs one legal key exchange from a created, not yet started Initiator.
+    fn establish_from(a: &Authorities, mut i: RemoteCeremony, clock_r: Clock) -> Pair {
         assert_no_live_sas(&i);
-        i.start().unwrap();
+        let start = i.start().unwrap();
         let (mut r, accept) = RemoteCeremony::responder_with_clock(
             clock_r,
             a.er.clone(),
@@ -2864,7 +2957,7 @@ mod tests {
     fn own_bootstrap_mac_requires_live_local_approval() {
         let a = Authorities::new("mac-no-approval");
         let start = vector("START");
-        let mut pre = RemoteCeremony::initiator(
+        let mut pre = RemoteCeremony::initiator_with_fixed_start_for_test(
             a.ei.clone(),
             a.ei.begin(Role::Initiator).unwrap(),
             &start,
@@ -3827,7 +3920,7 @@ mod tests {
     #[test]
     fn initiator_finish_requires_authenticated_approvals_and_the_initiator_role() {
         let a = Authorities::new("finish-preconditions");
-        let mut pre = RemoteCeremony::initiator(
+        let mut pre = RemoteCeremony::initiator_with_fixed_start_for_test(
             a.ei.clone(),
             a.ei.begin(Role::Initiator).unwrap(),
             &vector("START"),
@@ -4896,7 +4989,7 @@ mod tests {
         let ops = crypto::mac_operations();
 
         // I before exposure, awaiting ACCEPT: terminal, nothing spent.
-        let mut i = RemoteCeremony::initiator(
+        let mut i = RemoteCeremony::initiator_with_fixed_start_for_test(
             a.ei.clone(),
             a.ei.begin(Role::Initiator).unwrap(),
             &vector("START"),
@@ -4933,7 +5026,7 @@ mod tests {
 
         // B. I exposed INITIATOR_KEY (opportunity consumed); R did DH but has not exposed.
         let start = vector("START");
-        let mut i = RemoteCeremony::initiator(
+        let mut i = RemoteCeremony::initiator_with_fixed_start_for_test(
             a.ei.clone(),
             a.ei.begin(Role::Initiator).unwrap(),
             &start,
@@ -5220,7 +5313,7 @@ mod tests {
 
     /// A started Initiator awaiting ACCEPT, created at the clock's current value.
     fn timed_initiator(a: &Authorities, clock: &Arc<ManualClock>) -> RemoteCeremony {
-        let mut run = RemoteCeremony::initiator_with_clock(
+        let mut run = RemoteCeremony::initiator_with_fixed_start_and_clock_for_test(
             clock.clone(),
             a.ei.clone(),
             a.ei.begin(Role::Initiator).unwrap(),
@@ -5367,7 +5460,7 @@ mod tests {
             table.push((state_name(&run.state), run.state.inactivity()));
         };
         let start = vector("START");
-        let mut i = RemoteCeremony::initiator(
+        let mut i = RemoteCeremony::initiator_with_fixed_start_for_test(
             a.ei.clone(),
             a.ei.begin(Role::Initiator).unwrap(),
             &start,
@@ -5466,7 +5559,7 @@ mod tests {
         ci.set(secs(1_000));
         cr.set(secs(5_000));
         let start = vector("START");
-        let mut i = RemoteCeremony::initiator_with_clock(
+        let mut i = RemoteCeremony::initiator_with_fixed_start_and_clock_for_test(
             ci.clone(),
             a.ei.clone(),
             a.ei.begin(Role::Initiator).unwrap(),
@@ -6162,7 +6255,7 @@ mod tests {
 
         // A run cannot even be created without a usable clock.
         assert!(matches!(
-            RemoteCeremony::initiator_with_clock(
+            RemoteCeremony::initiator_with_fixed_start_and_clock_for_test(
                 clock.clone(),
                 a.ei.clone(),
                 a.ei.begin(Role::Initiator).unwrap(),
@@ -6208,6 +6301,559 @@ mod tests {
         assert_failed(&mut pair.i, &a.ei, &id);
         deliver_timeout(&mut pair.r, &a.er, &cancel, &id);
         drop(pair);
+        a.release();
+    }
+
+    // Honest Initiator request IDs (P3 §4): OS CSPRNG generation, the authority-wide active
+    // local Initiator reservation, and its lifecycle. The ID is routing/correlation data only.
+
+    /// Scripted request-ID source: each entry is one candidate, or `None` for entropy failure.
+    struct ScriptedIds(std::collections::VecDeque<Option<[u8; 16]>>);
+    impl RequestIdGenerator for ScriptedIds {
+        fn generate(&mut self) -> Option<[u8; 16]> {
+            self.0.pop_front().expect("request-ID script exhausted")
+        }
+    }
+    fn script(ids: &[Option<[u8; 16]>]) -> ScriptedIds {
+        ScriptedIds(ids.iter().copied().collect())
+    }
+
+    /// Snapshot of the authority's active local Initiator request IDs.
+    fn reserved_ids(executor: &CeremonyExecutor) -> HashSet<[u8; 16]> {
+        executor
+            .0
+            .shared
+            .lock()
+            .unwrap()
+            .initiator_request_ids
+            .clone()
+    }
+
+    /// An honest Initiator on `a.ei` drawing its candidates from `ids`.
+    fn honest(
+        a: &Authorities,
+        clock: Clock,
+        ids: &mut ScriptedIds,
+    ) -> Result<RemoteCeremony, CeremonyError> {
+        RemoteCeremony::initiator_with(
+            clock,
+            ids,
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+    }
+
+    fn wire_request_id(bytes: &[u8]) -> Vec<u8> {
+        match protocol::decode(bytes).unwrap().message {
+            Message::Start { request_id, .. }
+            | Message::Accept { request_id, .. }
+            | Message::InitiatorKey { request_id, .. }
+            | Message::ResponderKey { request_id, .. }
+            | Message::BootstrapMac { request_id, .. }
+            | Message::InitiatorFinish { request_id, .. }
+            | Message::ResponderFinishAck { request_id, .. }
+            | Message::InitiatorFinishAck { request_id, .. }
+            | Message::Cancel { request_id, .. } => request_id,
+        }
+    }
+
+    /// The request ID inside a created, not yet started Initiator's retained START.
+    fn created_request_id(run: &RemoteCeremony) -> [u8; 16] {
+        match &run.state {
+            State::InitiatorCreated { start, .. } => {
+                request_id_of(start).unwrap().try_into().unwrap()
+            }
+            _ => panic!("expected InitiatorCreated"),
+        }
+    }
+
+    #[test]
+    fn honest_initiator_reserves_its_csprng_id_before_start_can_exist() {
+        let a = Authorities::new("request-id-honest");
+        let local = bootstrap(&decoded("START"), true);
+        let mut runs: Vec<_> = (0..8)
+            .map(|_| {
+                RemoteCeremony::initiator(
+                    a.ei.clone(),
+                    a.ei.begin(Role::Initiator).unwrap(),
+                    local.clone(),
+                    None,
+                )
+                .unwrap()
+            })
+            .collect();
+        // Before `start()` can return anything, each exact ID is already reserved by its run.
+        for run in &runs {
+            let id = created_request_id(run);
+            assert_eq!(run.admission.request_id, Some(id));
+            assert!(reserved_ids(&a.ei).contains(&id));
+        }
+        assert_eq!(
+            reserved_ids(&a.ei).len(),
+            runs.len(),
+            "one live owner per ID"
+        );
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+        for run in &mut runs {
+            let start = run.start().unwrap();
+            let id = wire_request_id(&start);
+            assert_eq!(id.len(), 16);
+            assert_eq!(run.admission.request_id.map(Vec::from), Some(id.clone()));
+            assert!(reserved_ids(&a.ei).contains(id.as_slice()));
+            match protocol::decode(&start).unwrap().message {
+                Message::Start { bootstrap, .. } => {
+                    assert_eq!(bootstrap.canonical_bytes(), local.canonical_bytes());
+                }
+                _ => unreachable!(),
+            }
+        }
+        // Reservation is routing state only: no opportunity, no exposed-ceremony guard.
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+        runs[0].terminate().unwrap();
+        assert_eq!(runs[0].admission.request_id, None);
+        assert_eq!(reserved_ids(&a.ei).len(), runs.len() - 1);
+        assert_eq!(
+            runs[0].terminate(),
+            Ok(()),
+            "a repeat releases nothing twice"
+        );
+        drop(runs);
+        assert!(reserved_ids(&a.ei).is_empty());
+        a.release();
+    }
+
+    #[test]
+    fn an_active_collision_regenerates_before_start_and_spends_nothing() {
+        let a = Authorities::new("request-id-collision");
+        let (id_a, id_b) = ([0xA1; 16], [0xB2; 16]);
+        let mut ids = script(&[Some(id_a), Some(id_a), Some(id_b)]);
+        let mut first = honest(&a, system_clock(), &mut ids).unwrap();
+        let mut second = honest(&a, system_clock(), &mut ids).unwrap();
+        assert!(
+            ids.0.is_empty(),
+            "the colliding candidate was discarded, not used"
+        );
+        assert_eq!(created_request_id(&second), id_b);
+        assert_eq!(reserved_ids(&a.ei), HashSet::from([id_a, id_b]));
+        assert_eq!(
+            (first.admission.request_id, second.admission.request_id),
+            (Some(id_a), Some(id_b))
+        );
+        assert_eq!(wire_request_id(&first.start().unwrap()), id_a);
+        assert_eq!(wire_request_id(&second.start().unwrap()), id_b);
+        assert!(matches!(second.state, State::InitiatorAwaitAccept { .. }));
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+        first.terminate().unwrap();
+        assert_eq!(reserved_ids(&a.ei), HashSet::from([id_b]));
+        second.terminate().unwrap();
+        assert!(reserved_ids(&a.ei).is_empty());
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+        drop((first, second));
+        a.release();
+    }
+
+    #[test]
+    fn concurrent_reservation_of_one_candidate_has_exactly_one_owner() {
+        const CONTENDERS: usize = 8;
+        let a = Authorities::new("request-id-concurrent");
+        let candidate = [0x5A; 16];
+        for _ in 0..25 {
+            let barrier = Arc::new(std::sync::Barrier::new(CONTENDERS));
+            let contenders: Vec<_> = (0..CONTENDERS)
+                .map(|_| {
+                    let (executor, barrier) = (a.ei.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        let mut ceremony = executor.begin(Role::Initiator).unwrap();
+                        barrier.wait();
+                        let outcome = executor.reserve_request_id(&mut ceremony, candidate);
+                        (outcome.unwrap(), ceremony)
+                    })
+                })
+                .collect();
+            let (owners, losers): (Vec<_>, Vec<_>) = contenders
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .partition(|(outcome, _)| *outcome == RequestIdReservation::Reserved);
+            assert_eq!(owners.len(), 1, "never two owners of one active ID");
+            assert_eq!(owners[0].1.request_id, Some(candidate));
+            assert!(losers.iter().all(|(outcome, ceremony)| {
+                *outcome == RequestIdReservation::Collision && ceremony.request_id.is_none()
+            }));
+            drop(losers);
+            assert_eq!(reserved_ids(&a.ei), HashSet::from([candidate]));
+            drop(owners);
+            assert!(reserved_ids(&a.ei).is_empty());
+        }
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+        a.release();
+    }
+
+    #[test]
+    fn request_id_reservation_is_initiator_only_single_and_authority_bound() {
+        let (a, b) = (
+            Authorities::new("request-id-eligibility-a"),
+            Authorities::new("request-id-eligibility-b"),
+        );
+        let candidate = [0xE1; 16];
+        let mut responder = a.ei.begin(Role::Responder).unwrap();
+        assert_eq!(
+            a.ei.reserve_request_id(&mut responder, candidate),
+            Ok(RequestIdReservation::NotEligible)
+        );
+        let mut initiator = a.ei.begin(Role::Initiator).unwrap();
+        assert_eq!(
+            b.ei.reserve_request_id(&mut initiator, candidate),
+            Err(OwnerError::StaleAuthorization)
+        );
+        assert_eq!(
+            a.ei.reserve_request_id(&mut initiator, candidate),
+            Ok(RequestIdReservation::Reserved)
+        );
+        assert_eq!(
+            a.ei.reserve_request_id(&mut initiator, [0xE2; 16]),
+            Ok(RequestIdReservation::NotEligible),
+            "one reservation per ceremony"
+        );
+        assert_eq!(reserved_ids(&a.ei), HashSet::from([candidate]));
+        assert!(reserved_ids(&b.ei).is_empty());
+        a.ei.terminate(&mut initiator).unwrap();
+        assert!(reserved_ids(&a.ei).is_empty());
+        assert_eq!(
+            a.ei.reserve_request_id(&mut initiator, candidate),
+            Err(OwnerError::Terminated)
+        );
+        assert!(matches!(
+            RemoteCeremony::initiator_with(
+                system_clock(),
+                &mut script(&[]),
+                a.ei.clone(),
+                a.ei.begin(Role::Responder).unwrap(),
+                bootstrap(&decoded("START"), true),
+                None,
+            ),
+            Err(CeremonyError::InvalidState)
+        ));
+        // Holding a reserved ID authorizes nothing: exposure still needs local authorization.
+        let mut run = honest(&a, system_clock(), &mut script(&[Some(candidate)])).unwrap();
+        run.start().unwrap();
+        assert_eq!(
+            a.ei.reserve(&mut run.admission, None),
+            Err(OwnerError::MissingAuthorization)
+        );
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+        drop((responder, initiator, run));
+        assert!(reserved_ids(&a.ei).is_empty());
+        a.release();
+        b.release();
+    }
+
+    #[test]
+    fn different_authorities_may_hold_the_same_id_without_sharing_ceremony_identity() {
+        let (first, second) = (
+            Authorities::new("request-id-authority-a"),
+            Authorities::new("request-id-authority-b"),
+        );
+        let same = [0xAA; 16];
+        let i_a = honest(&first, system_clock(), &mut script(&[Some(same)])).unwrap();
+        let i_b = honest(&second, system_clock(), &mut script(&[Some(same)])).unwrap();
+        assert_eq!(reserved_ids(&first.ei), HashSet::from([same]));
+        assert_eq!(reserved_ids(&second.ei), HashSet::from([same]));
+        let mut a = establish_from(&first, i_a, system_clock());
+        let mut b = establish_from(&second, i_b, system_clock());
+        assert_eq!(wire_request_id(&a.wire[0]), wire_request_id(&b.wire[0]));
+        assert!(reserved_ids(&first.er).is_empty() && reserved_ids(&second.er).is_empty());
+        let (id_a, id_b) = (a.identity(), b.identity());
+        assert_ne!(id_a, id_b, "equal request IDs are not equal ceremonies");
+        for run in [&mut b.i, &mut b.r] {
+            assert_eq!(
+                run.approve_sas(&id_a),
+                Err(CeremonyError::CeremonyIdentityMismatch)
+            );
+            assert!(run.is_awaiting_approval());
+        }
+        a.i.terminate().unwrap();
+        assert!(reserved_ids(&first.ei).is_empty());
+        assert_eq!(reserved_ids(&second.ei), HashSet::from([same]));
+        assert_eq!(b.i.approve_sas(&id_b), Ok(SasApproval::Recorded));
+        drop((a, b));
+        assert!(reserved_ids(&second.ei).is_empty());
+        first.release();
+        second.release();
+    }
+
+    #[test]
+    fn pre_sas_failure_releases_the_reservation() {
+        let a = Authorities::new("request-id-pre-sas-failure");
+        let id = [0x0E; 16];
+        // An ACCEPT for another request ID (the vector's) is terminal before exposure.
+        let mut run = honest(&a, system_clock(), &mut script(&[Some(id)])).unwrap();
+        run.start().unwrap();
+        assert_eq!(
+            run.receive_accept(&vector("ACCEPT")),
+            Err(CeremonyError::RequestIdMismatch)
+        );
+        assert_failed_pre_sas(&run, &a.ei, 10);
+        assert!(reserved_ids(&a.ei).is_empty());
+        drop(run);
+
+        // Malformed input after exposure but before SAS: released, the opportunity stays spent.
+        let mut run = honest(&a, system_clock(), &mut script(&[Some(id)])).unwrap();
+        let start = run.start().unwrap();
+        let (r, accept) = RemoteCeremony::responder(
+            a.er.clone(),
+            a.er.begin(Role::Responder).unwrap(),
+            &start,
+            bootstrap(&decoded("ACCEPT"), false),
+            None,
+        )
+        .unwrap();
+        assert_eq!(wire_request_id(&accept), id);
+        run.receive_accept(&accept).unwrap();
+        run.authorize(&a.i).unwrap();
+        assert_eq!(wire_request_id(&run.expose_key().unwrap()), id);
+        assert_eq!(a.ei.status().unwrap(), Status::Busy);
+        assert_eq!(reserved_ids(&a.ei), HashSet::from([id]));
+        assert!(run.receive_responder_key(&[0xFF; 3]).is_err());
+        assert_failed_pre_sas(&run, &a.ei, 9);
+        assert!(reserved_ids(&a.ei).is_empty());
+        assert!(reserved_ids(&a.er).is_empty());
+        drop((run, r));
+        a.release();
+    }
+
+    #[test]
+    fn pre_sas_timeout_releases_the_reservation_and_the_id_may_return() {
+        let a = Authorities::new("request-id-pre-sas-timeout");
+        let id = [0x7E; 16];
+        let clock = ManualClock::new();
+        let mut old = honest(&a, clock.clone(), &mut script(&[Some(id)])).unwrap();
+        assert_eq!(reserved_ids(&a.ei), HashSet::from([id]));
+        clock.advance(INACTIVITY_DEADLINE);
+        assert_eq!(
+            timed_out(old.poll_deadlines(), Deadline::Inactivity),
+            None,
+            "no authenticated CANCEL exists before SAS"
+        );
+        assert_failed_pre_sas(&old, &a.ei, 10);
+        // Released at terminal cleanup, while the dead run object still exists.
+        assert!(reserved_ids(&a.ei).is_empty());
+        let mut fresh = honest(&a, clock.clone(), &mut script(&[Some(id)])).unwrap();
+        assert_eq!(wire_request_id(&fresh.start().unwrap()), id);
+        assert_eq!(reserved_ids(&a.ei), HashSet::from([id]));
+        assert!(old.start().is_err());
+        drop((old, fresh));
+        assert!(reserved_ids(&a.ei).is_empty());
+        a.release();
+    }
+
+    #[test]
+    fn post_sas_timeout_releases_the_reservation_and_its_cancel_keeps_the_id() {
+        let a = Authorities::new("request-id-post-sas-timeout");
+        let id = [0x5E; 16];
+        let (ci, cr) = (ManualClock::new(), ManualClock::new());
+        let i = honest(&a, ci.clone(), &mut script(&[Some(id)])).unwrap();
+        let mut pair = establish_from(&a, i, cr.clone());
+        let ceremony = pair.identity();
+        assert_eq!(reserved_ids(&a.ei), HashSet::from([id]));
+        ci.advance(ABSOLUTE_DEADLINE);
+        let cancel = timed_out(pair.i.poll_deadlines(), Deadline::Absolute).unwrap();
+        let (request_id, sender, reason, _) = cancel_parts(&cancel);
+        assert_eq!(
+            (request_id, sender, reason),
+            (
+                id.to_vec(),
+                protocol::Role::Initiator,
+                CancelReason::Timeout
+            )
+        );
+        assert_failed(&mut pair.i, &a.ei, &ceremony);
+        assert!(
+            reserved_ids(&a.ei).is_empty(),
+            "historical output holds nothing"
+        );
+        deliver_timeout(&mut pair.r, &a.er, &cancel, &ceremony);
+        drop(pair);
+        a.release();
+    }
+
+    #[test]
+    fn local_reject_or_cancel_releases_the_reservation() {
+        let a = Authorities::new("request-id-local-cancel");
+        let id = [0xCA; 16];
+        for reason in [CancelReason::UserRejection, CancelReason::UserCancellation] {
+            let i = honest(&a, system_clock(), &mut script(&[Some(id)])).unwrap();
+            let mut pair = establish_from(&a, i, system_clock());
+            let ceremony = pair.identity();
+            let before = remaining(&a.ei);
+            let outcome = match reason {
+                CancelReason::UserRejection => pair.i.reject_sas(&ceremony),
+                _ => pair.i.cancel_sas(&ceremony),
+            };
+            let cancel = emitted_cancel(outcome);
+            let (request_id, sender, sent, _) = cancel_parts(&cancel);
+            assert_eq!(
+                (request_id, sender, sent),
+                (id.to_vec(), protocol::Role::Initiator, reason)
+            );
+            assert!(pair.i.admission.terminal && pair.i.result().is_none());
+            assert!(reserved_ids(&a.ei).is_empty());
+            assert_eq!(remaining(&a.ei), before, "nothing refunded");
+            assert_eq!(
+                pair.r.receive_cancel(&cancel).map(|c| c.reason()),
+                Ok(reason)
+            );
+            assert!(pair.r.admission.terminal && pair.r.result().is_none());
+            drop(pair);
+        }
+        a.release();
+    }
+
+    #[test]
+    fn success_releases_the_reservation_only_after_the_final_ack_send_boundary() {
+        let a = Authorities::new("request-id-success");
+        let id = [0x5C; 16];
+        let i = honest(&a, system_clock(), &mut script(&[Some(id)])).unwrap();
+        let mut pair = establish_from(&a, i, system_clock());
+        let ceremony = pair.identity();
+        let r_mac = approve_and_emit(&mut pair.r, &ceremony);
+        let i_mac = approve_and_emit(&mut pair.i, &ceremony);
+        pair.i.receive_bootstrap_mac(&r_mac).unwrap();
+        pair.r.receive_bootstrap_mac(&i_mac).unwrap();
+        let initiator_finish = finish(&mut pair.i);
+        let responder_finish_ack = responder_ack(&mut pair.r, &initiator_finish);
+        let final_ack = initiator_ack(&mut pair.i, &responder_finish_ack);
+        let frames = [
+            &r_mac,
+            &i_mac,
+            &initiator_finish,
+            &responder_finish_ack,
+            &final_ack,
+        ];
+        for frame in pair.wire.iter().chain(frames) {
+            assert_eq!(
+                wire_request_id(frame),
+                id,
+                "the generated ID flows unchanged"
+            );
+        }
+        assert_final_ack_pending(&pair.i, &a.ei, &final_ack);
+        assert_eq!(reserved_ids(&a.ei), HashSet::from([id]));
+        confirm_sent(&mut pair.i, &final_ack);
+        assert_succeeded(&mut pair.i, &a.ei, &ceremony);
+        assert!(reserved_ids(&a.ei).is_empty());
+        let result = pair.i.result().unwrap().clone();
+        assert_eq!(result.request_id(), &id[..]);
+        assert_eq!(result.ceremony_identity(), &ceremony);
+        assert_eq!(
+            pair.r.receive_completion(&final_ack),
+            Ok(CompletionReceipt::Succeeded)
+        );
+        assert_succeeded(&mut pair.r, &a.er, &ceremony);
+        assert_eq!(pair.r.result().unwrap().request_id(), &id[..]);
+        assert!(reserved_ids(&a.er).is_empty());
+        // The ID may be generated again while the old result keeps it as historical data.
+        let mut again = honest(&a, system_clock(), &mut script(&[Some(id)])).unwrap();
+        assert_eq!(wire_request_id(&again.start().unwrap()), id);
+        assert_eq!(pair.i.result(), Some(&result));
+        drop((again, pair));
+        a.release();
+    }
+
+    #[test]
+    fn dropping_a_live_initiator_releases_its_reservation() {
+        let a = Authorities::new("request-id-drop");
+        let id = [0xD0; 16];
+        let mut run = honest(&a, system_clock(), &mut script(&[Some(id)])).unwrap();
+        run.start().unwrap();
+        assert_eq!(reserved_ids(&a.ei), HashSet::from([id]));
+        drop(run);
+        assert!(reserved_ids(&a.ei).is_empty());
+
+        let i = honest(&a, system_clock(), &mut script(&[Some(id)])).unwrap();
+        let pair = establish_from(&a, i, system_clock());
+        assert_eq!(reserved_ids(&a.ei), HashSet::from([id]));
+        drop(pair);
+        assert!(reserved_ids(&a.ei).is_empty());
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 9 });
+        let reused = honest(&a, system_clock(), &mut script(&[Some(id)])).unwrap();
+        assert_eq!(created_request_id(&reused), id);
+        drop(reused);
+        a.release();
+    }
+
+    #[test]
+    fn generator_failure_emits_nothing_and_holds_nothing() {
+        let a = Authorities::new("request-id-entropy-failure");
+        assert!(matches!(
+            honest(&a, system_clock(), &mut script(&[None])),
+            Err(CeremonyError::RequestIdGenerationFailed)
+        ));
+        assert!(reserved_ids(&a.ei).is_empty());
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+
+        // Failure while regenerating after a collision fails at once; the owner keeps its ID.
+        let held = [0x4E; 16];
+        let owner = honest(&a, system_clock(), &mut script(&[Some(held)])).unwrap();
+        let mut ids = script(&[Some(held), None]);
+        assert!(matches!(
+            honest(&a, system_clock(), &mut ids),
+            Err(CeremonyError::RequestIdGenerationFailed)
+        ));
+        assert!(ids.0.is_empty());
+        assert_eq!(reserved_ids(&a.ei), HashSet::from([held]));
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+        drop(owner);
+        assert!(reserved_ids(&a.ei).is_empty());
+        a.release();
+    }
+
+    #[test]
+    fn construction_failure_after_reservation_releases_the_id() {
+        let a = Authorities::new("request-id-post-reservation-failure");
+        let id = [0x33; 16];
+        let clock = ManualClock::new();
+        clock.fail();
+        assert!(matches!(
+            honest(&a, clock.clone(), &mut script(&[Some(id)])),
+            Err(CeremonyError::ClockUnavailable)
+        ));
+        assert!(reserved_ids(&a.ei).is_empty());
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+        let run = honest(&a, system_clock(), &mut script(&[Some(id)])).unwrap();
+        assert_eq!(created_request_id(&run), id);
+        drop(run);
+        a.release();
+    }
+
+    #[test]
+    fn uncertain_shared_state_fails_closed_for_request_id_reservation() {
+        let a = Authorities::new("request-id-uncertain");
+        let id = [0x0C; 16];
+        let mut live = honest(&a, system_clock(), &mut script(&[Some(id)])).unwrap();
+        poison(&a.ei);
+        // Acquisition cannot be determined: no run, so no START can exist.
+        let mut ids = script(&[Some([0x0D; 16])]);
+        assert!(matches!(
+            honest(&a, system_clock(), &mut ids),
+            Err(CeremonyError::Owner(OwnerError::OwnershipUncertain))
+        ));
+        // Release cannot be confirmed: the reservation stays conservatively held.
+        assert_eq!(
+            live.terminate(),
+            Err(CeremonyError::Owner(OwnerError::OwnershipUncertain))
+        );
+        drop(live);
+        match a.ei.0.shared.lock() {
+            Err(poisoned) => {
+                assert_eq!(
+                    poisoned.into_inner().initiator_request_ids,
+                    HashSet::from([id])
+                )
+            }
+            Ok(_) => panic!("shared state unexpectedly recovered"),
+        }
         a.release();
     }
 }
