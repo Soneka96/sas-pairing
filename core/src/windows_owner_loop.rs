@@ -665,9 +665,13 @@ impl<'r, L: Listen> WindowsOwnerLoop<'r, L> {
         }
     }
 
+    /// Fails the loop closed for `error`; an uncertain cleanup during that shutdown dominates
+    /// any trigger, so the surfaced failure is then `OwnershipUncertain`.
     fn fail(&mut self, step: &mut OwnerStep, error: OwnerLoopError) {
-        let _ = self.shut_all();
-        step.failure = Some(error);
+        step.failure = Some(match self.shut_all() {
+            Ok(()) => error,
+            Err(uncertain) => uncertain,
+        });
     }
 
     /// Closed for good: listener dropped, then every live connection's close attempted.
@@ -1676,6 +1680,56 @@ mod tests {
             (1, 0, (0, 0, 0, 0), 0)
         );
         assert_eq!(try_drive(&mut owner, &net), Err(OwnerLoopError::Closed));
+        drop(owner);
+        r.release();
+    }
+
+    #[test]
+    fn an_uncertain_cleanup_after_a_failed_readiness_wait_surfaces_as_ownership_uncertain() {
+        let r = Node::new("loop-poll-failure-uncertain");
+        let (tc, cc, _) = clocks();
+        let (mut owner, net) = hosting(&r, &tc, &cc);
+        let (a, sa) = accept(&mut owner, &net);
+        admit(&mut owner, &net, a, &sa, [1; 16]);
+        let (b, sb) = accept(&mut owner, &net);
+        let rb = admit(&mut owner, &net, b, &sb, [2; 16]);
+        assert_eq!((r.counts(), r.sessions(), r.routes()), ((0, 2, 0, 2), 2, 2));
+        let queued = net.connect();
+        let (accepts, writes) = (net.accepts(), (sa.writes(), sb.writes()));
+        // The deadline sweep passes; A's run turns uncertain only while the loop waits, and the
+        // wait then fails for good: the fail-closed shutdown is what finds A uncertain.
+        *net.fail.borrow_mut() = Some(NET_DOWN);
+        let step = owner
+            .drive_with(|fds, wait| {
+                poison(&r.router, a, &[1; 16]);
+                net.ready(fds, wait)
+            })
+            .unwrap();
+        assert_eq!(net.last_wait(), (3, 250));
+        // Cleanup uncertainty dominates the readiness failure that triggered the shutdown.
+        assert_eq!(
+            (step.events, step.failure),
+            (vec![], Some(OwnerLoopError::OwnershipUncertain))
+        );
+        assert!(owner.is_closed() && !owner.is_listening());
+        assert_eq!(owner.live_connections(), 0);
+        // A's uncertain close did not stop B's: both were attempted, neither wrote anything.
+        assert_eq!((sa.shutdowns(), sb.shutdowns()), (1, 1));
+        assert_eq!((sa.writes(), sb.writes()), writes);
+        // Only A's live count and session (CLOSING for good) stay held; B's are released and
+        // every route is gone.
+        assert_eq!((r.counts(), r.sessions(), r.routes()), ((0, 1, 0, 0), 1, 0));
+        assert_eq!(
+            r.router.with_run(b.0, &[2; 16], |_| Ok(())).err(),
+            Some(RouteError::UnknownSession)
+        );
+        // Nothing is admitted again and every call refuses.
+        assert_eq!((net.accepts(), queued.reads()), (accepts, 0));
+        net.connect();
+        assert_eq!(try_drive(&mut owner, &net), Err(OwnerLoopError::Closed));
+        assert_eq!(owner.presentation(b, &rb), Err(OwnerLoopError::Closed));
+        assert_eq!(owner.close(), Err(OwnerLoopError::Closed));
+        assert_eq!(net.accepts(), accepts);
         drop(owner);
         r.release();
     }
