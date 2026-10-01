@@ -4,6 +4,11 @@
 //! or wakes anything. The owning ceremony enforces deadlines before every state-advancing
 //! operation, and a future host/adapter must drive `RemoteCeremony::poll_deadlines`; expiry is
 //! never delivered on its own.
+//!
+//! Separately, P3 §11.1.1 gives every accepted, unexposed Responder a fixed pending
+//! pre-exposure RESOURCE lifetime. It shares the 60-second value with the inactivity deadline
+//! but nothing else: it is measured from pending-capacity admission, is never refreshed or
+//! suspended, and ends when the Responder crosses exposure or terminates.
 #![allow(dead_code)] // Used only by the internal ceremony until later P4 work defines its API.
 use std::{
     sync::Arc,
@@ -14,6 +19,17 @@ use std::{
 pub(crate) const ABSOLUTE_DEADLINE: Duration = Duration::from_secs(5 * 60);
 /// Machine/protocol inactivity deadline, suspended only during the human SAS comparison.
 pub(crate) const INACTIVITY_DEADLINE: Duration = Duration::from_secs(60);
+/// Fixed pending pre-exposure resource lifetime from admission. Not `INACTIVITY_DEADLINE`:
+/// no message, duplicate, DH, authorization, poll, or UI activity extends or pauses it.
+pub(crate) const PENDING_PRE_EXPOSURE_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Whether a pending Responder admitted at `admitted` has outlived its fixed resource lifetime
+/// at `now` (`elapsed >= PENDING_PRE_EXPOSURE_DEADLINE`). `None` if `now` precedes admission.
+/// There is no progress input: the admission instant is the only reference point.
+pub(crate) fn pending_expired(admitted: Duration, now: Duration) -> Option<bool> {
+    now.checked_sub(admitted)
+        .map(|held| held >= PENDING_PRE_EXPOSURE_DEADLINE)
+}
 
 /// Monotonic elapsed time since a clock-specific origin. Never wall-clock or calendar time.
 pub(crate) trait MonotonicClock: Send + Sync {
@@ -168,6 +184,17 @@ mod tests {
     fn frozen_values_are_exact() {
         assert_eq!(ABSOLUTE_DEADLINE, Duration::from_secs(300));
         assert_eq!(INACTIVITY_DEADLINE, Duration::from_secs(60));
+        assert_eq!(PENDING_PRE_EXPOSURE_DEADLINE, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn pending_lifetime_is_fixed_from_admission() {
+        let limit = PENDING_PRE_EXPOSURE_DEADLINE;
+        assert_eq!(pending_expired(T0, T0), Some(false));
+        assert_eq!(pending_expired(T0, T0 + limit - NS), Some(false));
+        assert_eq!(pending_expired(T0, T0 + limit), Some(true));
+        assert_eq!(pending_expired(T0, T0 + 10 * limit), Some(true));
+        assert_eq!(pending_expired(T0, T0 - NS), None);
     }
 
     #[test]

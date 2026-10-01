@@ -5,6 +5,7 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 mod ceremony;
@@ -15,6 +16,10 @@ mod request_id;
 
 const DOMAIN: &[u8] = b"sas-pairing-authority-v1";
 const MAX_OPPORTUNITIES: u8 = 10;
+/// P3 §11.1.1: accepted but unexposed Responder runs per authority.
+const MAX_PENDING_RESPONDERS: usize = 4;
+/// P3 §11.1.1: concurrent expensive preliminary operations per authority.
+const MAX_PRELIMINARY_OPERATIONS: usize = 2;
 static REGISTRY: OnceLock<Mutex<HashSet<Vec<u8>>>> = OnceLock::new();
 static NEXT_CEREMONY: AtomicU64 = AtomicU64::new(1);
 static NEXT_AUTHORIZATION: AtomicU64 = AtomicU64::new(1);
@@ -31,6 +36,9 @@ pub enum Error {
     StaleAuthorization,
     Exhausted,
     Terminated,
+    /// Generic pre-exposure resource/admission refusal. It says nothing about authentication,
+    /// SAS mismatch, compromise, or the opportunity budget, and never spends or refunds one.
+    ResourceLimited,
 }
 
 impl fmt::Display for Error {
@@ -93,6 +101,11 @@ struct Shared {
     /// Honestly generated request IDs of live local Initiator ceremonies of this authority.
     /// Volatile pre-exposure routing state: never persisted, never peer IDs, never authority.
     initiator_request_ids: HashSet<[u8; 16]>,
+    /// Accepted but unexposed Responder runs; each slot is owned by exactly one `Ceremony`.
+    /// Separate from `active`, which remains exclusively the exposed-ceremony guard.
+    pending_responders: usize,
+    /// Expensive preliminary operations in progress, each held by one `PreliminaryPermit`.
+    preliminary_operations: usize,
 }
 
 impl Shared {
@@ -100,6 +113,13 @@ impl Shared {
     fn release_request_id(&mut self, owned: &mut Option<[u8; 16]>) {
         if let Some(request_id) = owned.take() {
             self.initiator_request_ids.remove(&request_id);
+        }
+    }
+
+    /// Releases a ceremony's pending Responder slot, if any, exactly once.
+    fn release_pending_responder(&mut self, owned: &mut Option<Duration>) {
+        if owned.take().is_some() {
+            self.pending_responders -= 1;
         }
     }
 }
@@ -112,6 +132,27 @@ pub(crate) enum RequestIdReservation {
     Collision,
     /// Only an Initiator ceremony without a reservation may reserve; nothing changed.
     NotEligible,
+}
+
+/// Outcome of one atomic check-and-acquire of a pending Responder slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingAdmission {
+    Admitted,
+    /// Only a Responder ceremony without a slot may acquire one; nothing changed.
+    NotEligible,
+}
+
+/// One of the authority's bounded expensive preliminary operations (P3 §11.1.1). Hold it only
+/// around the operation itself; dropping it releases the count exactly once. With poisoned
+/// shared state the count stays conservatively held.
+pub(crate) struct PreliminaryPermit(Arc<State>);
+
+impl Drop for PreliminaryPermit {
+    fn drop(&mut self) {
+        if let Ok(mut shared) = self.0.shared.lock() {
+            shared.preliminary_operations -= 1;
+        }
+    }
 }
 
 impl Drop for State {
@@ -130,6 +171,9 @@ pub struct Ceremony {
     terminal: bool,
     /// At most one generated request ID, owned by this ceremony until terminal cleanup or drop.
     request_id: Option<[u8; 16]>,
+    /// At most one pending Responder slot, holding its monotonic admission instant. Owned by
+    /// this ceremony until it crosses exposure, terminal cleanup, or drop; never transferred.
+    pending_responder: Option<Duration>,
 }
 
 pub struct Authorization {
@@ -171,6 +215,8 @@ impl TrustedAuthority {
                 remaining: MAX_OPPORTUNITIES,
                 active: None,
                 initiator_request_ids: HashSet::new(),
+                pending_responders: 0,
+                preliminary_operations: 0,
             }),
             ownership: Mutex::new(Some(lease)),
         })))
@@ -230,6 +276,7 @@ impl CeremonyExecutor {
             authorization: None,
             terminal: false,
             request_id: None,
+            pending_responder: None,
         })
     }
 
@@ -260,6 +307,65 @@ impl CeremonyExecutor {
         }
         ceremony.request_id = Some(candidate);
         Ok(RequestIdReservation::Reserved)
+    }
+
+    /// Atomically acquires one of this authority's pending Responder slots for `ceremony`,
+    /// recording `admitted` (an already-read monotonic instant) as its admission time. It
+    /// touches neither the exposed-ceremony guard nor the opportunity budget.
+    pub(crate) fn admit_pending_responder(
+        &self,
+        ceremony: &mut Ceremony,
+        admitted: Duration,
+    ) -> Result<PendingAdmission, Error> {
+        if ceremony.terminal {
+            return Err(Error::Terminated);
+        }
+        if !Arc::ptr_eq(&self.0, &ceremony.authority.0) {
+            return Err(Error::StaleAuthorization);
+        }
+        if ceremony.role != Role::Responder || ceremony.pending_responder.is_some() {
+            return Ok(PendingAdmission::NotEligible);
+        }
+        let mut shared = self
+            .0
+            .shared
+            .lock()
+            .map_err(|_| Error::OwnershipUncertain)?;
+        if shared.pending_responders >= MAX_PENDING_RESPONDERS {
+            return Err(Error::ResourceLimited);
+        }
+        shared.pending_responders += 1;
+        ceremony.pending_responder = Some(admitted);
+        Ok(PendingAdmission::Admitted)
+    }
+
+    /// The Responder crossed its exposure boundary: it is no longer pending pre-exposure state.
+    pub(crate) fn release_pending_responder(&self, ceremony: &mut Ceremony) -> Result<(), Error> {
+        if !Arc::ptr_eq(&self.0, &ceremony.authority.0) {
+            return Err(Error::StaleAuthorization);
+        }
+        let mut shared = self
+            .0
+            .shared
+            .lock()
+            .map_err(|_| Error::OwnershipUncertain)?;
+        shared.release_pending_responder(&mut ceremony.pending_responder);
+        Ok(())
+    }
+
+    /// Immediately takes one of this authority's expensive-operation permits, or refuses with
+    /// `ResourceLimited`; it never waits or queues. The lock covers only the accounting.
+    pub(crate) fn preliminary_permit(&self) -> Result<PreliminaryPermit, Error> {
+        let mut shared = self
+            .0
+            .shared
+            .lock()
+            .map_err(|_| Error::OwnershipUncertain)?;
+        if shared.preliminary_operations >= MAX_PRELIMINARY_OPERATIONS {
+            return Err(Error::ResourceLimited);
+        }
+        shared.preliminary_operations += 1;
+        Ok(PreliminaryPermit(self.0.clone()))
     }
 
     /// Acquires the shared guard and burns one opportunity in one critical section.
@@ -311,6 +417,7 @@ impl CeremonyExecutor {
         ceremony.authorization = None;
         ceremony.terminal = true;
         shared.release_request_id(&mut ceremony.request_id);
+        shared.release_pending_responder(&mut ceremony.pending_responder);
         if shared.active == Some(ceremony.id) {
             shared.active = None;
         }
@@ -345,9 +452,11 @@ impl Drop for Ceremony {
     fn drop(&mut self) {
         self.authorization = None;
         self.terminal = true;
-        // A poisoned lock leaves the guard and any request-ID reservation conservatively held.
+        // A poisoned lock leaves the guard, any request-ID reservation, and any pending
+        // Responder slot conservatively held.
         if let Ok(mut shared) = self.authority.0.shared.lock() {
             shared.release_request_id(&mut self.request_id);
+            shared.release_pending_responder(&mut self.pending_responder);
             if shared.active == Some(self.id) {
                 shared.active = None;
             }

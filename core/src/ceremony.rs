@@ -8,14 +8,19 @@
 //! host/adapter must drive the poll.
 //! The honest Initiator generates its 16-byte request ID with the OS CSPRNG and atomically
 //! reserves it in the authority's active local Initiator namespace before START can exist;
-//! fixed request IDs are accepted only by `#[cfg(test)]` constructors. Connection/session
-//! routing, transport, timer scheduling, and resource admission are not implemented.
+//! fixed request IDs are accepted only by `#[cfg(test)]` constructors.
+//! P3 11.1.1 core pre-exposure controls: at most 4 pending (accepted, unexposed) Responders and
+//! 2 concurrent expensive preliminary operations per authority, and a fixed 60-second pending
+//! resource lifetime from admission. The START admission limiter, connection/session routing,
+//! transport controls, and timer scheduling are not implemented.
 #![allow(dead_code)] // The protocol remains internal until later P4 work defines its complete API.
 use crate::{
-    Authorization, Ceremony, CeremonyExecutor, Error as OwnerError, RequestIdReservation, Role,
-    TrustedAuthority,
+    Authorization, Ceremony, CeremonyExecutor, Error as OwnerError, PendingAdmission,
+    RequestIdReservation, Role, TrustedAuthority,
     crypto::{self, Completion, EphemeralSas, Established},
-    deadline::{CeremonyDeadlines, Clock, Deadline, Inactivity, Verdict, system_clock},
+    deadline::{
+        CeremonyDeadlines, Clock, Deadline, Inactivity, Verdict, pending_expired, system_clock,
+    },
     protocol::{self, Bootstrap, CancelReason, DecodedMessage, Message},
     request_id::{OsRequestIds, RequestIdGenerator},
 };
@@ -59,6 +64,10 @@ pub(crate) enum CeremonyError {
     /// The monotonic clock gave no value, went backwards, or elapsed time was not computable.
     /// The run failed closed (terminal, no result) without claiming an authenticated timeout.
     ClockUnavailable,
+    /// The fixed 60-second pending pre-exposure resource lifetime ended before this Responder
+    /// crossed exposure; the input was not applied and the run is ALREADY terminal. A generic
+    /// local resource outcome: no CANCEL, no timeout claim about the peer, nothing spent.
+    PendingExpired,
 }
 impl From<OwnerError> for CeremonyError {
     fn from(e: OwnerError) -> Self {
@@ -340,6 +349,8 @@ pub(crate) enum DeadlineOutcome {
     Active,
     /// A deadline expired; the run is ALREADY terminal.
     TimedOut(Timeout),
+    /// The pending pre-exposure resource lifetime ended; the run is ALREADY terminal.
+    PendingExpired,
     /// Already terminal or succeeded: no deadline applies and nothing changed.
     Finished,
 }
@@ -585,10 +596,18 @@ impl RemoteCeremony {
     }
 
     /// `responder` with an injected monotonic clock used for this run's whole lifetime.
+    ///
+    /// P3 10 order, minus the START limiter (not implemented): canonical decode (the codec
+    /// also checks bootstrap grammar) -> one preliminary-work permit -> semantic bootstrap,
+    /// context, and expected-peer validation -> read the clock, then immediately acquire a
+    /// pending Responder slot recording that instant -> fresh ephemeral state, commitment, and
+    /// ACCEPT -> release the permit. Permit or slot refusal is `Owner(ResourceLimited)` with no
+    /// ACCEPT. Neither spends an opportunity nor touches the exposed-ceremony guard. Any
+    /// failure after admission drops `admission`, whose cleanup releases the slot.
     pub(crate) fn responder_with_clock(
         clock: Clock,
         executor: CeremonyExecutor,
-        admission: Ceremony,
+        mut admission: Ceremony,
         start_bytes: &[u8],
         local: Bootstrap,
         expected: Option<Bootstrap>,
@@ -604,11 +623,16 @@ impl RemoteCeremony {
         if admission.role() != Role::Responder {
             return Err(CeremonyError::InvalidState);
         }
+        let permit = executor.preliminary_permit()?;
         validate_bootstraps(&local, peer, expected.as_ref())?;
-        // P3 11.3 starts the Responder's absolute deadline when a bounded START passes local
-        // admission into active state. No resource-admission layer exists yet, so this is the
-        // earliest point where this constructor has accepted the START and creates that state.
+        // Read first, then admit: the fixed pending lifetime may start marginally early under
+        // contention but never late. P3 11.3 starts the absolute deadline at the same instant,
+        // when the START passes local admission into active state.
         let now = clock.now().ok_or(CeremonyError::ClockUnavailable)?;
+        match executor.admit_pending_responder(&mut admission, now)? {
+            PendingAdmission::Admitted => {}
+            PendingAdmission::NotEligible => return Err(CeremonyError::InvalidState),
+        }
         let ephemeral = EphemeralSas::new();
         let rpub = ephemeral.public_key();
         let commitment = crypto::commitment(&start, &rpub)?;
@@ -619,6 +643,7 @@ impl RemoteCeremony {
         }
         .encode()?;
         let accept = protocol::decode(&accept_bytes)?;
+        drop(permit);
         let run = Self {
             executor,
             admission,
@@ -639,12 +664,14 @@ impl RemoteCeremony {
     /// scheduler, thread, or timer exists. It reads the injected clock and, if a deadline has
     /// expired, times the run out (see `time_out`). A clock that gives no value or goes
     /// backwards fails the run closed with `ClockUnavailable` and no CANCEL. Uncertain guard
-    /// release is `Owner(OwnershipUncertain)` with any built CANCEL withheld.
+    /// release is `Owner(OwnershipUncertain)` with any built CANCEL withheld. It equally
+    /// expires a pending Responder whose fixed resource lifetime ended (`PendingExpired`).
     pub(crate) fn poll_deadlines(&mut self) -> Result<DeadlineOutcome, CeremonyError> {
         match self.enforce_deadlines() {
             Ok(Some(_)) => Ok(DeadlineOutcome::Active),
             Ok(None) => Ok(DeadlineOutcome::Finished),
             Err(CeremonyError::TimedOut(timeout)) => Ok(DeadlineOutcome::TimedOut(timeout)),
+            Err(CeremonyError::PendingExpired) => Ok(DeadlineOutcome::PendingExpired),
             Err(error) => Err(error),
         }
     }
@@ -671,16 +698,37 @@ impl RemoteCeremony {
 
     /// `Ok(Some(now))` while live and unexpired; `Ok(None)` once terminal or succeeded, where
     /// deadlines no longer apply and the clock is not read. Otherwise the run is already
-    /// terminal: `TimedOut`, or `ClockUnavailable` for an unusable clock.
+    /// terminal: `TimedOut`, `PendingExpired`, or `ClockUnavailable` for an unusable clock.
+    ///
+    /// The ceremony deadlines are evaluated first, then, only while this Responder still holds
+    /// its pending slot, the separate fixed resource lifetime from its admission instant. When
+    /// both have expired the ceremony diagnostic is reported; that order is a local choice, not
+    /// P3 precedence, and before exposure both outcomes have identical effects.
     fn enforce_deadlines(&mut self) -> Result<Option<Duration>, CeremonyError> {
         let Some(inactivity) = self.state.inactivity() else {
             return Ok(None);
         };
         let now = self.clock.now();
-        match self.deadlines.check(now, inactivity) {
-            Verdict::Live => Ok(now),
-            Verdict::Expired(deadline) => Err(CeremonyError::TimedOut(self.time_out(deadline)?)),
-            Verdict::UnsafeClock => {
+        let now = match self.deadlines.check(now, inactivity) {
+            Verdict::Live => now,
+            Verdict::Expired(deadline) => {
+                return Err(CeremonyError::TimedOut(self.time_out(deadline)?));
+            }
+            Verdict::UnsafeClock => None,
+        };
+        let pending = match (now, self.admission.pending_responder) {
+            (Some(now), Some(admitted)) => pending_expired(admitted, now),
+            (Some(_), None) => Some(false),
+            (None, _) => None,
+        };
+        match pending {
+            Some(false) => Ok(now),
+            Some(true) => {
+                // Pre-exposure resource expiry: no shared SAS exists, so there is no CANCEL.
+                self.terminate()?;
+                Err(CeremonyError::PendingExpired)
+            }
+            None => {
                 // An unusable clock is not evidence of a timeout: fail closed, claim nothing.
                 self.terminate()?;
                 Err(CeremonyError::ClockUnavailable)
@@ -1352,7 +1400,16 @@ impl RemoteCeremony {
         if request_id != request_id_of(&start)? {
             return self.fail(CeremonyError::RequestIdMismatch);
         }
-        let established = match ephemeral.establish(public_key) {
+        // Pre-exposure DH/contributory validation is bounded preliminary work: without an
+        // immediately available permit the run ends unexposed rather than waiting. The consuming
+        // DH runs at most once; the permit is released when it ends either way.
+        let permit = match self.executor.preliminary_permit() {
+            Ok(permit) => permit,
+            Err(error) => return self.fail(error.into()),
+        };
+        let established = ephemeral.establish(public_key);
+        drop(permit);
+        let established = match established {
             Ok(value) => value,
             Err(error) => return self.fail(error.into()),
         };
@@ -1465,7 +1522,15 @@ impl RemoteCeremony {
                 accept,
                 authorization: Some(token),
             } => {
+                // Ephemeral generation is bounded preliminary work. Take the permit before the
+                // reservation so a refusal ends the run unexposed with nothing spent; it is held
+                // only until INITIATOR_KEY is built, never across waits.
+                let permit = match self.executor.preliminary_permit() {
+                    Ok(permit) => permit,
+                    Err(error) => return self.fail(error.into()),
+                };
                 if let Err(error) = self.executor.reserve(&mut self.admission, Some(token)) {
+                    drop(permit);
                     self.state = State::InitiatorAwaitAuthorization {
                         start,
                         accept,
@@ -1492,6 +1557,7 @@ impl RemoteCeremony {
                     Ok(value) => value,
                     Err(error) => return self.fail(error.into()),
                 };
+                drop(permit);
                 self.state = State::InitiatorAwaitResponderKey {
                     start,
                     accept,
@@ -1547,6 +1613,12 @@ impl RemoteCeremony {
                     Ok(value) => value,
                     Err(error) => return self.fail(error),
                 };
+                // RESPONDER_KEY now exists for release: R has crossed its exposure boundary and
+                // is no longer pending pre-exposure state, so its slot and the fixed resource
+                // lifetime end here. Uncertain release fails closed and withholds the bytes.
+                if let Err(error) = self.executor.release_pending_responder(&mut self.admission) {
+                    return self.fail(error.into());
+                }
                 self.state = State::AwaitLocalApproval {
                     session,
                     peer: PeerMac::Pending,
@@ -1764,11 +1836,16 @@ mod tests {
     use super::*;
     use crate::{
         Status,
-        deadline::{ABSOLUTE_DEADLINE, INACTIVITY_DEADLINE, ManualClock},
+        deadline::{
+            ABSOLUTE_DEADLINE, INACTIVITY_DEADLINE, ManualClock, PENDING_PRE_EXPOSURE_DEADLINE,
+        },
         protocol,
     };
     use serde_json::Value;
-    use std::{collections::HashSet, sync::Arc};
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Barrier, mpsc},
+    };
 
     fn hex(value: &str) -> Vec<u8> {
         value
@@ -5587,18 +5664,19 @@ mod tests {
         i.authorize(&a.i).unwrap();
         ci.advance(secs(50));
         let ikey = i.expose_key().unwrap();
-        cr.advance(secs(50));
+        // R must cross exposure within its fixed 60-second pending resource lifetime.
+        cr.advance(secs(20));
         r.receive_initiator_key(&ikey).unwrap();
-        cr.advance(secs(50));
+        cr.advance(secs(20));
         r.authorize(&a.r).unwrap();
-        cr.advance(secs(50));
-        let rkey = r.expose_key().unwrap();
+        cr.advance(secs(15));
+        let rkey = r.expose_key().unwrap(); // Exposed at 5_075.
         ci.advance(secs(50));
         i.receive_responder_key(&rkey).unwrap();
         let id = pair_identity(&i);
         ci.advance(secs(40));
         let i_mac = approve_and_emit(&mut i, &id);
-        cr.advance(secs(130));
+        cr.advance(secs(225));
         let r_mac = approve_and_emit(&mut r, &id);
         ci.advance(secs(5));
         i.receive_bootstrap_mac(&r_mac).unwrap();
@@ -6851,6 +6929,723 @@ mod tests {
                     poisoned.into_inner().initiator_request_ids,
                     HashSet::from([id])
                 )
+            }
+            Ok(_) => panic!("shared state unexpectedly recovered"),
+        }
+        a.release();
+    }
+
+    // P3 11.1.1 core pre-exposure resource controls: at most 4 pending Responders and 2
+    // expensive preliminary operations per authority, and the fixed 60-second pending resource
+    // lifetime from admission. The START limiter and transport controls are not implemented.
+
+    /// Accepted but unexposed Responder runs currently counted by the authority.
+    fn pending(executor: &CeremonyExecutor) -> usize {
+        executor.0.shared.lock().unwrap().pending_responders
+    }
+
+    /// Expensive preliminary operations currently counted by the authority.
+    fn operations(executor: &CeremonyExecutor) -> usize {
+        executor.0.shared.lock().unwrap().preliminary_operations
+    }
+
+    /// A Responder on `a.er` for the vector START, admitted at `clock`'s current value.
+    fn admit(a: &Authorities, clock: Clock) -> Result<(RemoteCeremony, Vec<u8>), CeremonyError> {
+        RemoteCeremony::responder_with_clock(
+            clock,
+            a.er.clone(),
+            a.er.begin(Role::Responder).unwrap(),
+            &vector("START"),
+            bootstrap(&decoded("ACCEPT"), false),
+            None,
+        )
+    }
+
+    const RESOURCE_LIMITED: CeremonyError = CeremonyError::Owner(OwnerError::ResourceLimited);
+
+    /// Pending expiry: terminal, no result, SAS, CANCEL, or authorization; nothing spent.
+    fn assert_pending_expired(run: &RemoteCeremony, executor: &CeremonyExecutor) {
+        assert_failed_pre_sas(run, executor, 10);
+        assert_eq!(run.admission.pending_responder, None);
+        assert!(run.admission.authorization.is_none());
+    }
+
+    #[test]
+    fn four_pending_responders_hold_slots_but_no_guard_or_opportunity() {
+        let (a, b) = (
+            Authorities::new("resource-pending-cap-a"),
+            Authorities::new("resource-pending-cap-b"),
+        );
+        let mut runs: Vec<_> = (0..4)
+            .map(|_| admit(&a, system_clock()).unwrap().0)
+            .collect();
+        assert_eq!(pending(&a.er), 4);
+        assert!(
+            runs.iter()
+                .all(|run| run.admission.pending_responder.is_some())
+        );
+        // Pending admission is not exposure: no guard, no opportunity, no request-ID entry.
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        assert_eq!(
+            operations(&a.er),
+            0,
+            "no permit outlives ACCEPT preparation"
+        );
+        assert!(
+            reserved_ids(&a.er).is_empty(),
+            "peer IDs are never reserved"
+        );
+
+        // A fifth otherwise-valid START is refused generically, with no ACCEPT or state.
+        assert_eq!(admit(&a, system_clock()).err(), Some(RESOURCE_LIMITED));
+        assert_eq!(pending(&a.er), 4);
+        assert_eq!(operations(&a.er), 0);
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        for run in &mut runs {
+            active(run);
+        }
+
+        // Another authority's capacity is independent.
+        let others: Vec<_> = (0..4)
+            .map(|_| admit(&b, system_clock()).unwrap().0)
+            .collect();
+        assert_eq!((pending(&a.er), pending(&b.er)), (4, 4));
+
+        // Explicit termination releases at once, exactly once; the dead object still exists.
+        runs[0].terminate().unwrap();
+        assert_eq!(runs[0].admission.pending_responder, None);
+        assert_eq!(pending(&a.er), 3);
+        runs[0].terminate().unwrap();
+        assert_eq!(pending(&a.er), 3, "a repeat releases nothing twice");
+        let (replacement, _) = admit(&a, system_clock()).unwrap();
+        assert_eq!(pending(&a.er), 4);
+
+        // Dropping a live pending Responder releases its slot.
+        drop(runs.pop());
+        assert_eq!(pending(&a.er), 3);
+        drop((runs, replacement, others));
+        assert_eq!((pending(&a.er), pending(&b.er)), (0, 0));
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        a.release();
+        b.release();
+    }
+
+    #[test]
+    fn semantic_mismatch_and_clock_failure_take_no_pending_slot() {
+        let a = Authorities::new("resource-pending-mismatch");
+        let other_context = Bootstrap::new(
+            bootstrap(&decoded("ACCEPT"), false)
+                .application_identity()
+                .to_vec(),
+            bootstrap(&decoded("ACCEPT"), false)
+                .key_algorithm()
+                .to_vec(),
+            bootstrap(&decoded("ACCEPT"), false).public_key().to_vec(),
+            b"different context".to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            RemoteCeremony::responder(
+                a.er.clone(),
+                a.er.begin(Role::Responder).unwrap(),
+                &vector("START"),
+                other_context,
+                None,
+            )
+            .err(),
+            Some(CeremonyError::SharedContextMismatch)
+        );
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+
+        // The clock is read before admission: without a value nothing is acquired.
+        let clock = ManualClock::new();
+        clock.fail();
+        assert_eq!(
+            admit(&a, clock).err(),
+            Some(CeremonyError::ClockUnavailable)
+        );
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+
+        // An unusable clock while pending fails closed and releases the slot.
+        let clock = ManualClock::new();
+        let (mut run, _) = admit(&a, clock.clone()).unwrap();
+        clock.fail();
+        assert_eq!(run.poll_deadlines(), Err(CeremonyError::ClockUnavailable));
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        drop(run);
+        a.release();
+    }
+
+    #[test]
+    fn pending_slot_is_single_responder_owned_and_authority_bound() {
+        let (a, b) = (
+            Authorities::new("resource-slot-owner-a"),
+            Authorities::new("resource-slot-owner-b"),
+        );
+        let now = Duration::ZERO;
+        let mut initiator = a.er.begin(Role::Initiator).unwrap();
+        assert_eq!(
+            a.er.admit_pending_responder(&mut initiator, now),
+            Ok(PendingAdmission::NotEligible)
+        );
+        let mut responder = a.er.begin(Role::Responder).unwrap();
+        assert_eq!(
+            b.er.admit_pending_responder(&mut responder, now),
+            Err(OwnerError::StaleAuthorization)
+        );
+        assert_eq!(
+            a.er.admit_pending_responder(&mut responder, now),
+            Ok(PendingAdmission::Admitted)
+        );
+        assert_eq!(
+            a.er.admit_pending_responder(&mut responder, now),
+            Ok(PendingAdmission::NotEligible),
+            "one slot per ceremony"
+        );
+        assert_eq!((pending(&a.er), pending(&b.er)), (1, 0));
+        assert_eq!(initiator.pending_responder, None);
+        // Crossing exposure releases exactly once.
+        a.er.release_pending_responder(&mut responder).unwrap();
+        a.er.release_pending_responder(&mut responder).unwrap();
+        assert_eq!(pending(&a.er), 0);
+
+        // A constructor that fails after admission just drops its `Ceremony`: RAII releases.
+        let mut constructing = a.er.begin(Role::Responder).unwrap();
+        a.er.admit_pending_responder(&mut constructing, now)
+            .unwrap();
+        assert_eq!(pending(&a.er), 1);
+        drop(constructing);
+        assert_eq!(pending(&a.er), 0);
+
+        // A terminal ceremony can never acquire one.
+        a.er.terminate(&mut responder).unwrap();
+        assert_eq!(
+            a.er.admit_pending_responder(&mut responder, now),
+            Err(OwnerError::Terminated)
+        );
+        assert_eq!(pending(&a.er), 0);
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        drop((initiator, responder));
+        a.release();
+        b.release();
+    }
+
+    #[test]
+    fn pending_deadline_is_fixed_from_admission_and_progress_does_not_extend_it() {
+        let a = Authorities::new("resource-pending-fixed");
+        let clock = ManualClock::new();
+        let (mut r, _) = admit(&a, clock.clone()).unwrap();
+        assert_eq!(r.admission.pending_responder, Some(Duration::ZERO));
+        // Valid progress at 30 s restarts ceremony inactivity (until 90 s) but not this.
+        clock.advance(secs(30));
+        r.receive_initiator_key(&vector("INITIATOR_KEY")).unwrap();
+        assert!(matches!(r.state, State::ResponderAwaitAuthorization { .. }));
+        r.receive_initiator_key(&vector("INITIATOR_KEY")).unwrap();
+        clock.advance(PENDING_PRE_EXPOSURE_DEADLINE - secs(30) - NS);
+        active(&mut r);
+        clock.advance(NS);
+        // At 60 s from admission the ceremony deadlines alone would still be live.
+        assert_eq!(
+            r.deadlines
+                .evaluate(Some(PENDING_PRE_EXPOSURE_DEADLINE), Inactivity::Running),
+            Verdict::Live
+        );
+        let macs = crypto::mac_operations();
+        assert_eq!(r.poll_deadlines(), Ok(DeadlineOutcome::PendingExpired));
+        assert_eq!(
+            crypto::mac_operations(),
+            macs,
+            "no CANCEL exists before exposure"
+        );
+        assert_pending_expired(&r, &a.er);
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+
+        // Nothing revives it.
+        assert!(r.receive_initiator_key(&vector("INITIATOR_KEY")).is_err());
+        assert!(r.authorize(&a.r).is_err());
+        assert!(r.expose_key().is_err());
+        assert_eq!(r.poll_deadlines(), Ok(DeadlineOutcome::Finished));
+        assert_pending_expired(&r, &a.er);
+        drop(r);
+        a.release();
+    }
+
+    #[test]
+    fn authorization_and_dh_success_do_not_extend_the_pending_deadline() {
+        let a = Authorities::new("resource-pending-authorized");
+        let clock = ManualClock::new();
+        let (mut r, _) = admit(&a, clock.clone()).unwrap();
+        clock.advance(secs(20));
+        r.receive_initiator_key(&vector("INITIATOR_KEY")).unwrap();
+        clock.advance(secs(20));
+        r.authorize(&a.r).unwrap();
+        assert!(r.admission.authorization.is_some());
+        // Inactivity restarted at 40 s; the pending lifetime still ends at 60 s.
+        clock.advance(secs(20) - NS);
+        active(&mut r);
+        assert!(r.session().is_none(), "DH success alone presents no SAS");
+        clock.advance(NS);
+        assert_eq!(r.expose_key(), Err(CeremonyError::PendingExpired));
+        assert_pending_expired(&r, &a.er);
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+        drop(r);
+        a.release();
+    }
+
+    #[test]
+    fn exposure_ends_the_pending_slot_and_its_deadline() {
+        let a = Authorities::new("resource-pending-exposed");
+        let clock = ManualClock::new();
+        let (mut r, _) = admit(&a, clock.clone()).unwrap();
+        r.receive_initiator_key(&vector("INITIATOR_KEY")).unwrap();
+        r.authorize(&a.r).unwrap();
+        assert_eq!(pending(&a.er), 1, "authorization alone is not exposure");
+        clock.advance(PENDING_PRE_EXPOSURE_DEADLINE - NS);
+        let rkey = r.expose_key().unwrap();
+        assert!(matches!(
+            protocol::decode(&rkey).unwrap().message,
+            Message::ResponderKey { .. }
+        ));
+        assert_eq!(r.admission.pending_responder, None);
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+        assert_eq!(a.er.status().unwrap(), Status::Busy);
+        assert_eq!(remaining(&a.er), 9);
+
+        // Long past the old pending lifetime, only the ceremony deadlines apply.
+        clock.advance(secs(120));
+        active(&mut r);
+        assert!(r.presentation().is_some());
+        clock.set(ABSOLUTE_DEADLINE);
+        let cancel = timed_out(r.poll_deadlines(), Deadline::Absolute).unwrap();
+        assert_timeout_cancel(&cancel, protocol::Role::Responder);
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
+        assert_eq!(pending(&a.er), 0);
+        drop(r);
+        a.release();
+    }
+
+    #[test]
+    fn a_fifth_responder_may_enter_after_one_pending_run_expires() {
+        let a = Authorities::new("resource-pending-refill");
+        let clocks: Vec<_> = (0..4).map(|_| ManualClock::new()).collect();
+        let mut runs: Vec<_> = clocks
+            .iter()
+            .map(|clock| admit(&a, clock.clone()).unwrap().0)
+            .collect();
+        assert_eq!(admit(&a, system_clock()).err(), Some(RESOURCE_LIMITED));
+        // Progress at 30 s keeps ceremony inactivity live, isolating the pending lifetime.
+        clocks[0].advance(secs(30));
+        runs[0]
+            .receive_initiator_key(&vector("INITIATOR_KEY"))
+            .unwrap();
+        clocks[0].advance(PENDING_PRE_EXPOSURE_DEADLINE - secs(30));
+        assert_eq!(
+            runs[0].poll_deadlines(),
+            Ok(DeadlineOutcome::PendingExpired)
+        );
+        assert_eq!(pending(&a.er), 3);
+        for run in &mut runs[1..] {
+            active(run);
+        }
+        let (fresh, _) = admit(&a, system_clock()).unwrap();
+        assert_eq!(pending(&a.er), 4);
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        drop((runs, fresh));
+        assert_eq!(pending(&a.er), 0);
+        a.release();
+    }
+
+    #[test]
+    fn malformed_or_misrouted_initiator_key_releases_the_slot() {
+        let a = Authorities::new("resource-pending-malformed");
+        let (mut r, _) = admit(&a, system_clock()).unwrap();
+        assert!(r.receive_initiator_key(&[0xFF; 3]).is_err());
+        assert_failed_pre_sas(&r, &a.er, 10);
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+        drop(r);
+
+        let (mut r, _) = admit(&a, system_clock()).unwrap();
+        let misrouted = Message::InitiatorKey {
+            request_id: vec![0x43; 16],
+            public_key: [9; 32],
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(
+            r.receive_initiator_key(&misrouted),
+            Err(CeremonyError::RequestIdMismatch)
+        );
+        assert_failed_pre_sas(&r, &a.er, 10);
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+        // The freed slot is usable again.
+        let (again, _) = admit(&a, system_clock()).unwrap();
+        assert_eq!(pending(&a.er), 1);
+        drop((r, again));
+        a.release();
+    }
+
+    #[test]
+    fn noncontributory_dh_releases_the_slot_and_the_permit() {
+        let a = Authorities::new("resource-pending-noncontributory");
+        let (mut r, _) = admit(&a, system_clock()).unwrap();
+        let zero = Message::InitiatorKey {
+            request_id: vector_request_id(),
+            public_key: [0; 32],
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(
+            r.receive_initiator_key(&zero),
+            Err(CeremonyError::Crypto(crypto::Error::NonContributory))
+        );
+        assert_failed_pre_sas(&r, &a.er, 10);
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+        assert!(r.authorize(&a.r).is_err() && r.expose_key().is_err());
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        drop(r);
+        a.release();
+    }
+
+    #[test]
+    fn busy_exposure_ends_the_pending_run_without_later_reveal() {
+        let a = Authorities::new("resource-pending-busy");
+        // Another ceremony of the same authority holds the exposed guard.
+        let mut holder = RemoteCeremony::initiator_with_fixed_start_for_test(
+            a.er.clone(),
+            a.er.begin(Role::Initiator).unwrap(),
+            &vector("START"),
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap();
+        holder.start().unwrap();
+        holder.receive_accept(&vector("ACCEPT")).unwrap();
+        holder.authorize(&a.r).unwrap();
+        holder.expose_key().unwrap();
+        assert_eq!(a.er.status().unwrap(), Status::Busy);
+
+        let (mut r, _) = admit(&a, system_clock()).unwrap();
+        r.receive_initiator_key(&vector("INITIATOR_KEY")).unwrap();
+        r.authorize(&a.r).unwrap();
+        assert_eq!(r.expose_key(), Err(CeremonyError::Owner(OwnerError::Busy)));
+        assert!(matches!(r.state, State::Terminal) && r.admission.terminal);
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+        assert_eq!(
+            remaining(&a.er),
+            9,
+            "only the holder's exposure was charged"
+        );
+
+        holder.terminate().unwrap();
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
+        assert!(r.authorize(&a.r).is_err() && r.expose_key().is_err());
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 9 });
+        drop((holder, r));
+        a.release();
+    }
+
+    #[test]
+    fn permits_are_never_held_across_waits() {
+        let a = Authorities::new("resource-permit-transient");
+        let mut i = RemoteCeremony::initiator_with_fixed_start_for_test(
+            a.ei.clone(),
+            a.ei.begin(Role::Initiator).unwrap(),
+            &vector("START"),
+            bootstrap(&decoded("START"), true),
+            None,
+        )
+        .unwrap();
+        let start = i.start().unwrap();
+        let (mut r, accept) = RemoteCeremony::responder(
+            a.er.clone(),
+            a.er.begin(Role::Responder).unwrap(),
+            &start,
+            bootstrap(&decoded("ACCEPT"), false),
+            None,
+        )
+        .unwrap();
+        let idle = |a: &Authorities| (operations(&a.ei), operations(&a.er));
+        assert_eq!((idle(&a), pending(&a.er)), ((0, 0), 1));
+        i.receive_accept(&accept).unwrap();
+        i.authorize(&a.i).unwrap();
+        let ikey = i.expose_key().unwrap();
+        assert_eq!(idle(&a), (0, 0));
+        r.receive_initiator_key(&ikey).unwrap();
+        assert_eq!((idle(&a), pending(&a.er)), ((0, 0), 1));
+        r.authorize(&a.r).unwrap();
+        let rkey = r.expose_key().unwrap();
+        i.receive_responder_key(&rkey).unwrap();
+        assert_eq!((idle(&a), pending(&a.er)), ((0, 0), 0));
+        assert!(i.is_awaiting_approval() && r.is_awaiting_approval());
+        drop((i, r));
+        a.release();
+    }
+
+    #[test]
+    fn preliminary_permits_are_bounded_immediate_and_authority_wide() {
+        let (a, b) = (
+            Authorities::new("resource-permit-cap-a"),
+            Authorities::new("resource-permit-cap-b"),
+        );
+        // Two holders on other threads, coordinated explicitly: no reliance on slow work.
+        let (held_tx, held_rx) = mpsc::channel();
+        let holders: Vec<_> = (0..2)
+            .map(|_| {
+                let (executor, held) = (a.er.clone(), held_tx.clone());
+                let (release_tx, release_rx) = mpsc::channel::<()>();
+                let thread = std::thread::spawn(move || {
+                    let permit = executor.preliminary_permit().unwrap();
+                    held.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    drop(permit);
+                });
+                (release_tx, thread)
+            })
+            .collect();
+        held_rx.recv().unwrap();
+        held_rx.recv().unwrap();
+        assert_eq!(operations(&a.er), 2);
+        // The third is refused at once: no wait, no queue, nothing spent or guarded.
+        assert!(matches!(
+            a.er.preliminary_permit(),
+            Err(OwnerError::ResourceLimited)
+        ));
+        assert_eq!(operations(&a.er), 2);
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        // Another authority has its own two.
+        let other = [
+            b.er.preliminary_permit().unwrap(),
+            b.er.preliminary_permit().unwrap(),
+        ];
+        assert!(b.er.preliminary_permit().is_err());
+        assert_eq!((operations(&a.er), operations(&b.er)), (2, 2));
+        // Releasing one makes exactly one available again.
+        let mut holders = holders.into_iter();
+        let (release, thread) = holders.next().unwrap();
+        release.send(()).unwrap();
+        thread.join().unwrap();
+        assert_eq!(operations(&a.er), 1);
+        let permit = a.er.preliminary_permit().unwrap();
+        assert!(a.er.preliminary_permit().is_err());
+        drop(permit);
+        for (release, thread) in holders {
+            release.send(()).unwrap();
+            thread.join().unwrap();
+        }
+        drop(other);
+        assert_eq!((operations(&a.er), operations(&b.er)), (0, 0));
+        a.release();
+        b.release();
+    }
+
+    #[test]
+    fn simultaneous_permit_requests_admit_exactly_two() {
+        const CONTENDERS: usize = 8;
+        let a = Authorities::new("resource-permit-race");
+        for _ in 0..50 {
+            let (attempt, hold) = (
+                Arc::new(Barrier::new(CONTENDERS)),
+                Arc::new(Barrier::new(CONTENDERS)),
+            );
+            let granted = (0..CONTENDERS)
+                .map(|_| {
+                    let (executor, attempt, hold) = (a.ei.clone(), attempt.clone(), hold.clone());
+                    std::thread::spawn(move || {
+                        attempt.wait();
+                        let permit = executor.preliminary_permit();
+                        // Every request is made before any granted permit can be released.
+                        hold.wait();
+                        match permit {
+                            Ok(_) => true,
+                            Err(error) => {
+                                assert_eq!(error, OwnerError::ResourceLimited);
+                                false
+                            }
+                        }
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .filter(|granted| *granted)
+                .count();
+            assert_eq!(granted, 2);
+            assert_eq!(operations(&a.ei), 0);
+        }
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+        a.release();
+    }
+
+    #[test]
+    fn concurrent_starts_never_exceed_the_pending_cap() {
+        const CONTENDERS: usize = 8;
+        let a = Arc::new(Authorities::new("resource-pending-race"));
+        for _ in 0..25 {
+            let (attempt, hold) = (
+                Arc::new(Barrier::new(CONTENDERS)),
+                Arc::new(Barrier::new(CONTENDERS + 1)),
+            );
+            let threads: Vec<_> = (0..CONTENDERS)
+                .map(|_| {
+                    let (a, attempt, hold) = (a.clone(), attempt.clone(), hold.clone());
+                    std::thread::spawn(move || {
+                        attempt.wait();
+                        let outcome = admit(&a, system_clock()).map(|(run, _)| run);
+                        hold.wait();
+                        outcome
+                    })
+                })
+                .collect();
+            hold.wait();
+            let admitted = pending(&a.er);
+            let outcomes: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+            let runs: Vec<_> = outcomes.iter().filter(|outcome| outcome.is_ok()).collect();
+            assert!((1..=4).contains(&runs.len()));
+            assert_eq!(admitted, runs.len());
+            assert!(
+                outcomes
+                    .iter()
+                    .filter_map(|outcome| outcome.as_ref().err())
+                    .all(|error| *error == RESOURCE_LIMITED)
+            );
+            drop(outcomes);
+            assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+        }
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        Arc::into_inner(a).unwrap().release();
+    }
+
+    #[test]
+    fn unavailable_permits_refuse_responder_admission_without_state() {
+        let a = Authorities::new("resource-permit-start");
+        let busy = [
+            a.er.preliminary_permit().unwrap(),
+            a.er.preliminary_permit().unwrap(),
+        ];
+        assert_eq!(admit(&a, system_clock()).err(), Some(RESOURCE_LIMITED));
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 2));
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        drop(busy);
+        let (run, _) = admit(&a, system_clock()).unwrap();
+        assert_eq!((pending(&a.er), operations(&a.er)), (1, 0));
+        drop(run);
+        a.release();
+    }
+
+    #[test]
+    fn unavailable_permits_end_responder_dh_without_exposure() {
+        let a = Authorities::new("resource-permit-dh");
+        let (mut r, _) = admit(&a, system_clock()).unwrap();
+        let busy = [
+            a.er.preliminary_permit().unwrap(),
+            a.er.preliminary_permit().unwrap(),
+        ];
+        assert_eq!(
+            r.receive_initiator_key(&vector("INITIATOR_KEY")),
+            Err(RESOURCE_LIMITED)
+        );
+        // Refused, not queued: the run is over unexposed and its slot is free.
+        assert_failed_pre_sas(&r, &a.er, 10);
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 2));
+        drop(busy);
+        assert!(r.receive_initiator_key(&vector("INITIATOR_KEY")).is_err());
+        assert!(r.authorize(&a.r).is_err() && r.expose_key().is_err());
+        assert_eq!((pending(&a.er), operations(&a.er)), (0, 0));
+        assert_eq!(a.er.status().unwrap(), Status::Ready { remaining: 10 });
+        drop(r);
+        a.release();
+    }
+
+    #[test]
+    fn unavailable_permits_end_initiator_exposure_with_nothing_spent() {
+        let a = Authorities::new("resource-permit-initiator");
+        let id = [0x1A; 16];
+        let mut i = honest(&a, system_clock(), &mut script(&[Some(id)])).unwrap();
+        let start = i.start().unwrap();
+        let (r, accept) = RemoteCeremony::responder(
+            a.er.clone(),
+            a.er.begin(Role::Responder).unwrap(),
+            &start,
+            bootstrap(&decoded("ACCEPT"), false),
+            None,
+        )
+        .unwrap();
+        i.receive_accept(&accept).unwrap();
+        i.authorize(&a.i).unwrap();
+        let busy = [
+            a.ei.preliminary_permit().unwrap(),
+            a.ei.preliminary_permit().unwrap(),
+        ];
+        assert_eq!(i.expose_key(), Err(RESOURCE_LIMITED));
+        assert_failed_pre_sas(&i, &a.ei, 10);
+        assert!(i.admission.authorization.is_none());
+        assert!(
+            reserved_ids(&a.ei).is_empty(),
+            "terminal cleanup released the ID"
+        );
+        assert_eq!(operations(&a.ei), 2);
+        drop(busy);
+        assert!(i.expose_key().is_err());
+        assert_eq!(a.ei.status().unwrap(), Status::Ready { remaining: 10 });
+        drop((i, r));
+
+        // A Busy reservation after the permit was granted returns the permit.
+        let fixed = |a: &Authorities| {
+            let mut run = RemoteCeremony::initiator_with_fixed_start_for_test(
+                a.ei.clone(),
+                a.ei.begin(Role::Initiator).unwrap(),
+                &vector("START"),
+                bootstrap(&decoded("START"), true),
+                None,
+            )
+            .unwrap();
+            run.start().unwrap();
+            run.receive_accept(&vector("ACCEPT")).unwrap();
+            run.authorize(&a.i).unwrap();
+            run
+        };
+        let mut holder = fixed(&a);
+        let mut second = fixed(&a);
+        holder.expose_key().unwrap();
+        assert_eq!(
+            second.expose_key(),
+            Err(CeremonyError::Owner(OwnerError::Busy))
+        );
+        assert_eq!(operations(&a.ei), 0);
+        assert_eq!(remaining(&a.ei), 9);
+        drop((holder, second));
+        a.release();
+    }
+
+    #[test]
+    fn poisoned_shared_state_fails_closed_for_resources() {
+        let a = Authorities::new("resource-uncertain");
+        let (mut live, _) = admit(&a, system_clock()).unwrap();
+        let permit = a.er.preliminary_permit().unwrap();
+        poison(&a.er);
+        assert_eq!(
+            admit(&a, system_clock()).err(),
+            Some(CeremonyError::Owner(OwnerError::OwnershipUncertain))
+        );
+        assert!(matches!(
+            a.er.preliminary_permit(),
+            Err(OwnerError::OwnershipUncertain)
+        ));
+        // Release cannot be confirmed: both stay conservatively counted.
+        assert_eq!(
+            live.terminate(),
+            Err(CeremonyError::Owner(OwnerError::OwnershipUncertain))
+        );
+        drop((live, permit));
+        match a.er.0.shared.lock() {
+            Err(poisoned) => {
+                let shared = poisoned.into_inner();
+                assert_eq!(shared.pending_responders, 1);
+                assert_eq!(shared.preliminary_operations, 1);
+                assert_eq!(shared.remaining, 10);
+                assert!(shared.active.is_none());
             }
             Ok(_) => panic!("shared state unexpectedly recovered"),
         }
