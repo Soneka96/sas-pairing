@@ -2938,4 +2938,8 @@ mod tests {
         assert_eq!(r.state(b, &ordered(9)), "InitiatorAwaitAccept");
         r.release();
     }
+
+    /// P5.2 review-only concurrency stress evidence (not part of the product); see
+    /// `docs/p5-security-review/adversarial-sequences.md`.
+    mod p5_concurrency_review;
 }

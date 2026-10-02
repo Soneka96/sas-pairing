@@ -1,0 +1,79 @@
+diff --git a/core/src/transport.rs b/core/src/transport.rs
+index 155353b..31a0c7f 100644
+--- a/core/src/transport.rs
++++ b/core/src/transport.rs
+@@ -1681,4 +1681,32 @@ mod tests {
+         drop(router);
+         a.release();
+     }
++
++    /// P5-F-002 reproducer (review-only; NOT part of the product). Sixteen connections that never
++    /// send a byte hold the authority-wide live cap however much transport time passes: with no
++    /// incomplete frame no transport deadline exists, so a seventeenth peer stays refused.
++    #[test]
++    #[ignore = "P5-F-002 reproducer: fails until P6 bounds idle connection lifetime"]
++    fn p5_f_002_frameless_connections_do_not_hold_the_live_cap_forever() {
++        let a = Authority::new("p5-f-002-idle-cap");
++        let router = a.router();
++        let clock = ManualClock::new();
++        let mut conns: Vec<_> = (0..16).map(|_| connect(&router, &clock)).collect();
++        clock.advance(Duration::from_secs(24 * 60 * 60));
++        for conn in &mut conns {
++            // Every deadline the transport has is polled after one day of silence.
++            assert_eq!(conn.poll_frame_deadlines(), Ok(()));
++            assert!(!conn.is_closed());
++        }
++        eprintln!("P5-F-002 counts after 24 h idle: {:?}", a.counts());
++        let refused = AcceptPermit::begin(&router)
++            .unwrap()
++            .activate_with_clock(clock.clone())
++            .err();
++        eprintln!("P5-F-002 seventeenth activation after 24 h: {refused:?}");
++        assert_eq!(refused, None, "idle connections still hold all 16 live slots");
++        drop(conns);
++        drop(router);
++        a.release();
++    }
+ }
+diff --git a/core/src/windows_owner_loop.rs b/core/src/windows_owner_loop.rs
+index 16c8012..5b6f726 100644
+--- a/core/src/windows_owner_loop.rs
++++ b/core/src/windows_owner_loop.rs
+@@ -2674,4 +2674,37 @@ mod tests {
+     /// P5.3 review-only entropy-panic unwind evidence (not part of the product); see
+     /// `docs/p5-security-review/dependency-unsafe-deep-review.md`.
+     mod p5_entropy_panic_loop;
++
++    /// P5-F-001 reproducer (review-only; NOT part of the product). A peer writes one complete
++    /// canonical START and then closes gracefully. Windows WSAPoll reports POLLHUP together with
++    /// POLLRDNORM while the START bytes are still readable. Expected (P3 delivery of received
++    /// bytes): the START is dispatched (StartAccepted). Observed at e21ff0b: the loop closes the
++    /// connection on hang-up readiness without reading, so the START never reaches the Router.
++    #[test]
++    #[ignore = "P5-F-001 reproducer: fails until P6 handles hang-up with readable data"]
++    fn p5_f_001_a_complete_frame_before_a_graceful_close_is_dispatched() {
++        let r = Node::new("p5-f-001-hang-up-with-data");
++        let (listener, address) = real_listener();
++        let mut owner =
++            WindowsOwnerLoop::from_bound_listener(listener, &r.router, responder_bootstrap(), None)
++                .unwrap();
++        let mut peer = TcpStream::connect(address).unwrap();
++        let a = until_accepted(&mut owner).unwrap();
++        peer.write_all(&start(&[7; 16])).unwrap();
++        drop(peer);
++        // Review-only pause so the FIN reaches the loop's socket before its next readiness wait.
++        thread::sleep(std::time::Duration::from_millis(200));
++        let step = until(|| {
++            let step = owner.drive_once().unwrap();
++            (!step.events.is_empty()).then_some(step)
++        });
++        eprintln!("P5-F-001 observed events: {:?}", step.events);
++        eprintln!("P5-F-001 limiter after: {:?}", r.executor.start_limiter_snapshot());
++        assert!(
++            matches!(step.events.as_slice(), [OwnerEvent::Step(c, _)] if *c == a),
++            "the START that arrived before the FIN was discarded unread"
++        );
++        drop(owner);
++        r.release();
++    }
+ }

@@ -2666,4 +2666,12 @@ mod tests {
         drop(owner);
         r.release();
     }
+
+    /// P5.2 review-only owner-loop evidence (not part of the product); see
+    /// `docs/p5-security-review/adversarial-sequences.md`.
+    mod p5_owner_loop_review;
+
+    /// P5.3 review-only entropy-panic unwind evidence (not part of the product); see
+    /// `docs/p5-security-review/dependency-unsafe-deep-review.md`.
+    mod p5_entropy_panic_loop;
 }
