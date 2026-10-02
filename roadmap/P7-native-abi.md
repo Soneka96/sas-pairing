@@ -2,11 +2,11 @@
 
 ## Status
 
-🔵 **IN PROGRESS.** Started 2026-10-02 from `main` at `5becd09` (the merge of the P6 pull request #12) on the one P7 branch `feature/p7-native-abi`; there is one P7 pull request, opened only at P7 closure. The prerequisites held: the P6 protocol candidate is frozen ([P6 final closure](../docs/p6-remediation/final-closure.md): `sas-pairing-vodozemac-profile-draft-01`, version 1, with owner decisions P6-D-001 to P6-D-005), and the P6 pull request is merged. Package: [docs/p7-native-abi](../docs/p7-native-abi/README.md) ([ABI contract](../docs/p7-native-abi/abi-contract.md), [decisions](../docs/p7-native-abi/decisions.md)).
+🔵 **IN PROGRESS — P7.1 ABI FOUNDATION COMPLETE.** Started 2026-10-02 from `main` at `5becd09` (the merge of the P6 pull request #12) on the one P7 branch `feature/p7-native-abi`; there is one P7 pull request, opened only at P7 closure. The prerequisites held: the P6 protocol candidate is frozen ([P6 final closure](../docs/p6-remediation/final-closure.md): `sas-pairing-vodozemac-profile-draft-01`, version 1, with owner decisions P6-D-001 to P6-D-005), and the P6 pull request is merged. Package: [docs/p7-native-abi](../docs/p7-native-abi/README.md) ([ABI contract](../docs/p7-native-abi/abi-contract.md), [decisions](../docs/p7-native-abi/decisions.md)).
 
 | Increment | Scope | State |
 |---|---|---|
-| P7.1 | Native ABI foundation + runtime/panic containment ([P7-D-001](../docs/p7-native-abi/decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit)) | In progress |
+| P7.1 | Native ABI foundation + runtime/panic containment ([P7-D-001](../docs/p7-native-abi/decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit)) | **Complete** (`b0aaee1`, `6b1b602`, `3dade72`, and the closure commit; [evidence](../docs/p7-native-abi/README.md#p71-evidence)). The P6-D-004 handoff is PARTIAL / FOUNDATION COMPLETE: the end-to-end exit test below still needs a core-entering export |
 | P7.2 | Authority lifecycle + core error mapping | Next |
 
 ## Goal
