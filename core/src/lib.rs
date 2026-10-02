@@ -685,16 +685,12 @@ mod os_lock {
         {
             return Err(Error::OwnershipUnavailable);
         }
-        let user = unsafe { &*info.as_ptr().cast::<TOKEN_USER>() };
-        let sid = user.User.Sid;
-        if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
+        // The second call's returned size is the number of bytes written.
+        if size as usize > info.len() {
             return Err(Error::OwnershipUnavailable);
         }
-        let sid_len = unsafe { GetLengthSid(sid) } as usize;
-        if !(8..=68).contains(&sid_len) {
-            return Err(Error::OwnershipUnavailable);
-        }
-        let sid = unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), sid_len) }.to_vec();
+        info.truncate(size as usize);
+        let sid = token_user_sid(&info)?;
 
         let mut chars = 0;
         unsafe { GetUserProfileDirectoryW(token.0, std::ptr::null_mut(), &mut chars) };
@@ -708,6 +704,34 @@ mod os_lock {
         profile.truncate(chars.saturating_sub(1) as usize);
         let profile = String::from_utf16(&profile).map_err(|_| Error::OwnershipUnavailable)?;
         Ok((sid, PathBuf::from(profile)))
+    }
+
+    /// Copies the SID out of `TokenUser` bytes written by `GetTokenInformation`.
+    /// `info` is byte storage with no alignment guarantee for `TOKEN_USER`.
+    pub(super) fn token_user_sid(info: &[u8]) -> Result<Vec<u8>, Error> {
+        if info.len() < std::mem::size_of::<TOKEN_USER>() {
+            return Err(Error::OwnershipUnavailable);
+        }
+        // SAFETY: `info` holds at least `size_of::<TOKEN_USER>()` initialized bytes, and
+        // `read_unaligned` copies the header out without requiring `TOKEN_USER` alignment,
+        // so no reference to `TOKEN_USER` is formed over the byte buffer. The copied header
+        // is plain data whose `User.Sid` points into `info`, which stays borrowed (alive)
+        // until the SID bytes below have been copied.
+        let user = unsafe { std::ptr::read_unaligned(info.as_ptr().cast::<TOKEN_USER>()) };
+        let sid = user.User.Sid;
+        // SAFETY: `sid` is non-null and points into the still-borrowed `info`, as written by
+        // Windows; `IsValidSid` validates the structure before its length is trusted.
+        if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
+            return Err(Error::OwnershipUnavailable);
+        }
+        // SAFETY: `sid` passed `IsValidSid` above.
+        let sid_len = unsafe { GetLengthSid(sid) } as usize;
+        if !(8..=68).contains(&sid_len) {
+            return Err(Error::OwnershipUnavailable);
+        }
+        // SAFETY: a valid SID of `sid_len` bytes at `sid`, inside `info`, which outlives this
+        // owned copy. `u8` has alignment 1.
+        Ok(unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), sid_len) }.to_vec())
     }
 
     pub(super) fn ensure_plain_directories(path: &Path) -> Result<(), Error> {
@@ -844,6 +868,58 @@ mod windows_tests {
         assert_eq!(first, second);
         assert!(!first.0.is_empty());
         assert!(first.1.is_absolute());
+    }
+
+    #[test]
+    fn token_user_parsing_does_not_assume_buffer_alignment() {
+        use std::mem::{align_of, size_of};
+        use windows_sys::Win32::Security::{SID_AND_ATTRIBUTES, TOKEN_USER};
+
+        // S-1-5-32-544: revision 1, two subauthorities, NT authority, 32, 544.
+        let sid = [1u8, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x20, 0x02, 0, 0];
+        let header = size_of::<TOKEN_USER>();
+        let total = header + sid.len();
+        let mut storage = vec![0u8; total + align_of::<TOKEN_USER>()];
+        let mut misaligned = 0;
+        for offset in 0..align_of::<TOKEN_USER>() {
+            let buffer = &mut storage[offset..offset + total];
+            buffer.fill(0);
+            buffer[header..].copy_from_slice(&sid);
+            let base = buffer.as_mut_ptr();
+            if base.align_offset(align_of::<TOKEN_USER>()) != 0 {
+                misaligned += 1;
+            }
+            // Same layout as Windows: the header's SID pointer refers to bytes after it.
+            let info = unsafe {
+                std::ptr::write_unaligned(
+                    base.cast::<TOKEN_USER>(),
+                    TOKEN_USER {
+                        User: SID_AND_ATTRIBUTES {
+                            Sid: base.add(header).cast(),
+                            Attributes: 0,
+                        },
+                    },
+                );
+                std::slice::from_raw_parts(base, total)
+            };
+            assert_eq!(os_lock::token_user_sid(info).as_deref(), Ok(&sid[..]));
+            assert_eq!(
+                os_lock::token_user_sid(&info[..header - 1]),
+                Err(Error::OwnershipUnavailable)
+            );
+        }
+        assert_eq!(misaligned, align_of::<TOKEN_USER>() - 1);
+
+        let mut storage = vec![0u8; header + 1];
+        assert_eq!(
+            os_lock::token_user_sid(&storage[1..]),
+            Err(Error::OwnershipUnavailable)
+        );
+        storage.truncate(header);
+        assert_eq!(
+            os_lock::token_user_sid(&storage),
+            Err(Error::OwnershipUnavailable)
+        );
     }
 
     #[test]

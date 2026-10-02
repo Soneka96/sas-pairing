@@ -122,7 +122,11 @@ fn windows_identity() -> (String, u32) {
             GetTokenInformation(token, TokenUser, info.as_mut_ptr().cast(), size, &mut size),
             0
         );
-        let sid = (*info.as_ptr().cast::<TOKEN_USER>()).User.Sid;
+        // The byte buffer has no TOKEN_USER alignment guarantee; copy the header out unaligned.
+        assert!(size as usize >= std::mem::size_of::<TOKEN_USER>() && size as usize <= info.len());
+        let sid = ptr::read_unaligned(info.as_ptr().cast::<TOKEN_USER>())
+            .User
+            .Sid;
         let bytes = std::slice::from_raw_parts(sid.cast::<u8>(), GetLengthSid(sid) as usize);
         let authority = bytes[2..8]
             .iter()
