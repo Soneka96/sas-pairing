@@ -4,7 +4,7 @@ Review infrastructure only. Nothing here changes production behavior, and nothin
 
 | Finding | Reproducer | Where it runs | Expected today |
 |---|---|---|---|
-| [P5-F-001](../findings.md#p5-f-001) | `core/tests/p5_review_evidence.rs::p5_f_001_wsapoll_reports_hang_up_while_written_bytes_remain_readable` | In the repository; runs in CI on `windows-latest` | **Passes.** It pins the OS precondition: after a graceful close, `WSAPoll` reports `POLLHUP | POLLRDNORM` and the written bytes are still readable. |
+| [P5-F-001](../findings.md#p5-f-001) | `core/tests/p5_review_evidence.rs::p5_f_001_wsapoll_reports_hang_up_while_written_bytes_remain_readable` | In the repository; runs in CI on `windows-latest` | **Passes.** It pins the OS precondition: after a graceful close, `WSAPoll` reports `POLLHUP \| POLLRDNORM` and the written bytes are still readable. |
 | [P5-F-001](../findings.md#p5-f-001) | `p5-f-001-f-002-reproducers.patch` → `windows_owner_loop::tests::p5_f_001_a_complete_frame_before_a_graceful_close_is_dispatched` | Disposable worktree only | **Fails** (demonstrates the defect) |
 | [P5-F-002](../findings.md#p5-f-002) | `p5-f-001-f-002-reproducers.patch` → `transport::tests::p5_f_002_frameless_connections_do_not_hold_the_live_cap_forever` | Disposable worktree only | **Fails** (demonstrates the defect) |
 
