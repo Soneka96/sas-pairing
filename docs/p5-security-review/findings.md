@@ -32,7 +32,7 @@ For `FALSE-POSITIVE` entries, severity is the severity the candidate **would hav
 
 ## Summary
 
-**P6 status update (P6.2, 2026-10-02):** [P5-F-002](#p5-f-002) is **REMEDIATED-IN-P6** under owner decision P6-D-001 ([remediation record](../p6-remediation/p5-f-002.md)), and [P5-F-001](#p5-f-001) is **REMEDIATED-IN-P6** under owner decision P6-D-003 ([remediation record](../p6-remediation/p5-f-001.md)). Three findings stay OPEN: P5-F-003 (owner decision P6-D-002 taken; implementation later), P5-F-005, and P5-F-007. Current remediation status lives in the [P6 remediation package](../p6-remediation/README.md); the summary table and closure note below are the P5 closure snapshot and are left as P5 recorded them.
+**P6 status update (P6.3, 2026-10-02):** [P5-F-002](#p5-f-002) is **REMEDIATED-IN-P6** under owner decision P6-D-001 ([remediation record](../p6-remediation/p5-f-002.md)), [P5-F-001](#p5-f-001) is **REMEDIATED-IN-P6** under owner decision P6-D-003 ([remediation record](../p6-remediation/p5-f-001.md)), and [P5-F-003](#p5-f-003) is **REMEDIATED-IN-P6** under owner decision P6-D-002 ([remediation record](../p6-remediation/p5-f-003.md)). Two findings stay OPEN: P5-F-005 and P5-F-007. Current remediation status lives in the [P6 remediation package](../p6-remediation/README.md); the summary table and closure note below are the P5 closure snapshot and are left as P5 recorded them.
 
 | Severity | Open | False Positive | Accepted Limitation | Out of Scope |
 |---|---|---|---|---|
@@ -149,7 +149,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 <a id="p5-f-003"></a>
 ### P5-F-003 — In-process re-registration starts a fresh opportunity budget without process replacement
 
-- **Status:** OPEN
+- **Status:** REMEDIATED-IN-P6 (P6.3). OPEN at P5 closure; the P5 record below is unchanged and the P6 note is appended at the end of this entry.
 - **Severity:** LOW
 - **Confidence:** HIGH
 - **Classification:** Confirmed mismatch with the current P3 owner-session reset policy.
@@ -165,6 +165,16 @@ Not every OPEN finding needs a production change. The INFO findings may close as
   - **Alternative: change the policy.** The owner explicitly decides to revise P3 so that the owner session is the `TrustedAuthority` registration lifetime. This is a policy change, not a documentation clarification of the current baseline. It requires re-analyzing exposure accounting, updating P3, the conformance cases, and the security argument, and then aligning the implementation and the P7 binding rules.
 - **P6 disposition:** Remediate under the default path unless the owner explicitly chooses the policy revision.
 - **Evidence:** as above; [ownership and FFI §2, §5](ownership-and-ffi.md#2-lease-lifecycle).
+- **P6 remediation (appended in P6.3; the P5 record above is unchanged):**
+  - **Decision:** [P6-D-002](../p6-remediation/decisions.md#p6-d-002--f-003-owner-session-policy) (P6.1): keep the current P3 process/session semantics, the default path above. The owner session is not the registration lifetime; P3 is not revised.
+  - **Remediation commit:** `5aa1b1580672304afe74d65f3270f8b1da333901` (`fix: preserve process-session accounting`) on `feature/p6-review-remediation-protocol-freeze`.
+  - **Architecture:** the process-wide registry maps each canonical identity this process has successfully owned to one process session that holds the shared accounting (budget, START limiter, runtime counts, in the one mutex that keeps guard and opportunity reservation atomic) and the limiter clock, strongly, until the process exits; registrations are `Inactive`, `Active`, or `Uncertain` on top of it. Release and the final drop release the OS lease and leave the accounting; every reactivation acquires the lease anew and continues the same accounting; a failed first acquisition creates nothing; an uncertain release, poisoned accounting, or runtime resources left held fail closed with `OwnershipUncertain` until process replacement. No eviction, no persistence, no reset API.
+  - **Budget regressions:** partial spend kept across explicit release (7) and the final drop (9); `Exhausted` survives re-registration; registration cycles grant exactly 10 in total; a day of monotonic time refills nothing. The two P4 assertions cited above are inverted (`Exhausted`, and `remaining: 9`) with comments recording the correction.
+  - **Limiter regressions:** an emptied burst stays empty across immediate re-registration and gains exactly one token at 5 s; the R-OWNER-035 rolling schedule run with a re-registration before every decision still refuses at 45 s and 59.999 s and recovers at exactly 60 s by age; long idle restores capacity only at the next evaluation; a later registration cannot replace the session clock; P4's same-process fresh-limiter test is rewritten to the process-session meaning.
+  - **Cross-process evidence:** a real foreign owner process between two registrations makes reactivation fail with `OwnershipUnavailable` and leaves 8, which continues after it exits; eight threads racing re-registration produce one winner per round over one budget; each new `ownership_probe --session` process starts at 10 while its own release and re-registration keeps 9; existing cross-process exclusion tests unchanged.
+  - **Normative sync:** no P3 change needed; `R-OWNER-006`, `R-OWNER-017`, `R-OWNER-022`, `R-OWNER-031`, and `R-OWNER-038` amended in place (still 92 normative rows).
+  - **CI:** Repository consistency, `windows-core`, and `unsupported-platform-fails-closed` SUCCESS at `5aa1b15`.
+  - **P6 review evidence:** process-session model, state table, follow-up adversarial review, mutation checks, and verification in the [remediation record](../p6-remediation/p5-f-003.md).
 
 <a id="p5-f-004"></a>
 ### P5-F-004 — `token_user_sid` does not bound the OS-written SID to the returned buffer

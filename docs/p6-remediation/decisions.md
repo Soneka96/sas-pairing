@@ -34,6 +34,7 @@ Stable owner decisions taken during P6. IDs `P6-D-NNN` are never reused. A decis
 - **Consequence:** P6 will change the implementation so that release and re-registration inside the same native process does not silently create a fresh ten-opportunity budget or START limiter for the same authority. A fresh budget stays tied to the previous owning process having terminated and exclusive ownership having been safely established (P3 §11.1, §11.1.2(5); `R-OWNER-006`, `R-OWNER-022`, `R-OWNER-038(c)`).
 - **Implementation:** a later P6 increment. P6.1 records the decision only and changes no F-003 behavior; the existing re-registration assertions in `core/tests/security_core.rs` stay as they are until then.
 - **Status:** decided by the owner, 2026-10-02 (taken early, as P5 requested, because the alternative would have revised P3 policy before the protocol freeze).
+- **Implementation status (P6.3):** implemented in P6.3 without revising the decision above; remediation record [p5-f-003.md](p5-f-003.md); commit `5aa1b1580672304afe74d65f3270f8b1da333901` (`fix: preserve process-session accounting`). P5-F-003 is REMEDIATED-IN-P6.
 
 ## P6-D-003 — Graceful TCP hang-up handling
 
