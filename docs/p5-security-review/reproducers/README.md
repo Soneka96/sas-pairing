@@ -2,6 +2,8 @@
 
 Review infrastructure only. Nothing here changes production behavior, and nothing here runs in CI unless stated.
 
+**Frozen at P5 closure (P5.4).** The inventory below is final for P5. The four EXPECTED-FAIL reproducers (three for P5-F-001, one for P5-F-002) and the P5.1 throwaway patch stay failing and unapplied until P6 remediates; their expectations must not be changed to make them pass. The per-finding P6 action for each test is in the [final synthesis](../final-synthesis.md#reproducer-inventory-frozen).
+
 Every entry is exactly one of three kinds:
 
 - **PASSING EVIDENCE TEST:** runs in CI and passes. It pins an OS fact, characterizes current behavior, or asserts only properties that must stay true after P6 too. It never asserts a known bug as desired behavior.

@@ -1,6 +1,6 @@
 # sas-pairing current manager context
 
-**Current status (2026-10-02):** **P4 experimental native Rust security core COMPLETE. P5 review IN PROGRESS (P5.1: method and first broad pass; P5.2: generated state-machine/transport sequence review, no new finding; P5.3: dependency, unsafe/FFI, and secret-lifetime deep review, no new finding, F-004 accepted limitation, F-006 false positive, no partial coverage left; next is P5.4 final synthesis and closure; recorded in `docs/p5-security-review/`; no confirmed CRITICAL or HIGH finding). No production-security approval, formal verification, or professional audit.** Owner decision [0002](../../docs/decisions/0002-experimental-vodozemac-selection.md) selects the corrected vodozemac remote profile and owner policy for experimental implementation, pinned to vodozemac 0.11.0; the P4 core implements it and its current normative conformance cases are closed. The qualified-human-review gate was waived for experimental development, not completed; no professional audit or formal verification is claimed. F-02 is a false positive under the stated idealized assumptions: an attacker need not remain ignorant of its own DH shared secret after an honest public contribution is revealed; target SAS must be unpredictable before the attacker fixes its contribution. The complete per-pair argument remains conditional. Pair counting remains `n_A + n_B - 1`; 19 applies only to a joint 10/10 window within both process sessions, not arbitrary restarts. CR-01 retains residual assumptions and implementation verification limits. Older multi-ceremony/eight-slot/`5,497`-epoch material is historical and non-normative.
+**Current status (2026-10-02):** **P4 experimental native Rust security core COMPLETE. P5 implementation + protocol security review COMPLETE (P5.1 broad pass, P5.1.1 classification correction, P5.2 generated sequences, P5.3 dependency/unsafe deep review, P5.4 final synthesis; [final synthesis](../../docs/p5-security-review/final-synthesis.md)). P6 review remediation + protocol freeze is NEXT (not started). No production-security approval, formal verification, or professional audit.** Owner decision [0002](../../docs/decisions/0002-experimental-vodozemac-selection.md) selects the corrected vodozemac remote profile and owner policy for experimental implementation, pinned to vodozemac 0.11.0; the P4 core implements it and its current normative conformance cases are closed. The qualified-human-review gate was waived for experimental development, not completed; no professional audit or formal verification is claimed. F-02 is a false positive under the stated idealized assumptions: an attacker need not remain ignorant of its own DH shared secret after an honest public contribution is revealed; target SAS must be unpredictable before the attacker fixes its contribution. The complete per-pair argument remains conditional. Pair counting remains `n_A + n_B - 1`; 19 applies only to a joint 10/10 window within both process sessions, not arbitrary restarts. CR-01 retains residual assumptions and implementation verification limits. Older multi-ceremony/eight-slot/`5,497`-epoch material is historical and non-normative.
 
 ## Project purpose
 
@@ -8,7 +8,7 @@ Language-neutral human-authenticated pairing for exchanging bootstrap data. The 
 
 ## Current repository phase
 
-**PRE-ALPHA. P3 REMOTE EXPERIMENTAL SPECIFICATION FINALIZED; P4 COMPLETE — EXPERIMENTAL NATIVE SECURITY CORE.** The crate-private Rust core in `core/` implements, for the selected remote profile:
+**PRE-ALPHA. P3 REMOTE EXPERIMENTAL SPECIFICATION FINALIZED; P4 COMPLETE — EXPERIMENTAL NATIVE SECURITY CORE; P5 SECURITY REVIEW COMPLETE; P6 NEXT.** The crate-private Rust core in `core/` implements, for the selected remote profile:
 
 - OS-backed Windows authority ownership (account-scoped, decision 0003), failing closed on uncertainty; other platforms fail closed;
 - one exposed-ceremony guard, the volatile 10-opportunity budget, and ceremony-specific local authorization;
@@ -65,11 +65,21 @@ Two fixture sets exist: remote vodozemac and authenticated-local. They demonstra
 
 ## Current phase boundary
 
-The remote experimental selection, baseline acceptance, and P4 experimental native core are complete. This does not complete the P5 review or separate local-profile/adapter work, formally verify the argument, or meet production-readiness gates.
+The remote experimental selection, baseline acceptance, the P4 experimental native core, and the internal P5 review are complete. This does not remediate the P5 findings, complete the separate local-profile/adapter work, formally verify the argument, or meet production-readiness gates.
+
+## P5 final result (frozen)
+
+Internal, AI-assisted review of the frozen P4 core; not a professional audit, formal verification, or production approval. 34 / 34 planned review surfaces COMPLETE; no PARTIAL or NOT-STARTED coverage remains. No confirmed CRITICAL or HIGH finding. No finding was remediated in P5.
+
+- **OPEN (handed to P6):** P5-F-001 LOW (owner loop discards readable/pending data on `POLLHUP`); P5-F-002 MEDIUM (no finite connection-level/pre-frame lifetime; 16 idle connections hold the live cap); P5-F-003 LOW (same-process re-registration resets the budget and START limiter, contrary to current P3); P5-F-005 INFO (entropy-panic policy across Router, adapter, owner loop, and future ABI); P5-F-007 INFO (reverse asymmetric completion at the deadline boundary; documentation).
+- **ACCEPTED-LIMITATION:** P5-F-004, P5-F-008 to P5-F-012.
+- **FALSE-POSITIVE:** P5-F-006, P5-F-013 to P5-F-022.
+
+Finding IDs are stable; the next free ID is P5-F-023. The P6 disposition table and order are in [final synthesis §10](../../docs/p5-security-review/final-synthesis.md#10-p6-handoff).
 
 ## Next action
 
-P4 is frozen as the completed experimental native security core. Do not add new P4 behavior unless review finds a real defect. The [P5 implementation/security review](../../roadmap/P5-security-review.md) is in progress on the single branch `feature/p5-security-review` and its one pull request; its package is [docs/p5-security-review](../../docs/p5-security-review/README.md). P5 records findings and does not change production behavior; remediation belongs to P6.
+P4 is frozen as the completed experimental native security core, and P5 is complete; do not re-run P5. The next action is **[P6 — Review Remediation + Protocol Freeze](../../roadmap/P6-review-remediation-and-protocol-freeze.md)**: obtain the owner decisions (P5-F-002 timer model and values; P5-F-003 default fix or policy revision; P5-F-005 panic policy; optional P5-F-007 boundary rule), then remediate in the recommended order, turning the P5 expected-fail reproducers into regression tests. The P5 package is [docs/p5-security-review](../../docs/p5-security-review/README.md). P6 has not started, and no P5 finding is remediated yet.
 
 ## Decisions that must not be silently changed
 

@@ -4,7 +4,14 @@
 
 ## Status
 
-**P5 REVIEW IN PROGRESS — P5.3 ACCEPTED.** Increment P5.1 set up the review method and completed one broad adversarial pass over every major P4 surface. Increment P5.1.1 reclassified P5-F-002 and P5-F-003 from NEEDS-DECISION to OPEN against the current P3 text. Increment P5.2 completed the [state-machine and transport adversarial sequence review](adversarial-sequences.md). Increment P5.3 completed the [dependency, unsafe/FFI, and secret-lifetime deep review](dependency-unsafe-deep-review.md). Both are summarized below. P5 is not complete: final synthesis and closure remain. Remediation belongs to [P6](../../roadmap/P6-review-remediation-and-protocol-freeze.md); P5 changes no production behavior.
+**P5 REVIEW COMPLETE — FINAL SYNTHESIS RECORDED.** The authoritative closure summary is the **[P5 final review synthesis](final-synthesis.md)**.
+
+All five increments are complete. P5.1 set up the review method and completed one broad adversarial pass over every major P4 surface. P5.1.1 reclassified P5-F-002 and P5-F-003 from NEEDS-DECISION to OPEN against the current P3 text. P5.2 completed the [state-machine and transport adversarial sequence review](adversarial-sequences.md). P5.3 completed the [dependency, unsafe/FFI, and secret-lifetime deep review](dependency-unsafe-deep-review.md). P5.4 reconciled the finding set, coverage, reproducers, and status documents and recorded the [final synthesis](final-synthesis.md) and P6 handoff.
+
+- **Coverage:** 34 / 34 planned review surfaces COMPLETE, 0 PARTIAL, 0 NOT-STARTED ([coverage](coverage.md)). COMPLETE means the planned method was carried out, not that the absence of defects was proven.
+- **Findings:** 22 in total: 5 OPEN, 11 FALSE-POSITIVE, 6 ACCEPTED-LIMITATION. No confirmed CRITICAL or HIGH finding.
+- **Remediation:** none. P5 changed no production behavior; the five OPEN findings are handed to [P6](../../roadmap/P6-review-remediation-and-protocol-freeze.md).
+- **Next phase:** P6 — Review Remediation + Protocol Freeze.
 
 ## Review target
 
@@ -14,7 +21,15 @@
 | Reviewed commit | `main` at `e21ff0bab97009cc771bfc90a6019496721baf78` (merge of PR #10). Its tree is byte-identical to the P4 final-freeze commit `5bf0a0b8ab3de0c371568bc05b6bd8a16be8d474`. Production code is that of the final P4 implementation commit `86e77ea` |
 | Review branch | `feature/p5-security-review` (single branch and single PR for all of P5) |
 | Toolchain | `rustc 1.99.0 (b940084d7 2026-09-28)`, Windows 11 Pro 10.0.26200 |
-| Date | 2026-10-02 |
+| Date | 2026-10-02 (P5.1 through P5.4) |
+
+## P5.4 summary
+
+- **Synthesis and closure only:** no new technical review, no new test, and no new finding. Every finding ID P5-F-001 to P5-F-022 was re-checked for severity, confidence, status, evidence links, reproduction references, recommendation, and P6 disposition. Counts are unchanged.
+- **Coverage frozen:** 34 / 34 COMPLETE.
+- **Reproducer inventory frozen:** four EXPECTED-FAIL known-bug reproducers (three for P5-F-001, one for P5-F-002) and the P5.1 throwaway patch stay failing until P6 ([final synthesis §10](final-synthesis.md#reproducer-inventory-frozen)).
+- **P6 handoff:** disposition table and recommended order in [final synthesis §10](final-synthesis.md#10-p6-handoff).
+- **Production behavior, dependencies, vectors, and normative P3:** unchanged.
 
 ## P5.3 summary
 
@@ -33,7 +48,7 @@
 - **Concurrency review:** nine Router race scenarios. Every linearization point is forced in both orders and repeated 25–100 times, plus barrier races. No deadlock, leak, double result, double guard release, or refund.
 - **New findings:** none.
 - **Changed findings:** P5-F-001 strengthened (real end-to-end final-ACK loss; buffered-suffix and pending-output subcases); P5-F-002 strengthened (subcases A first header, B idle after its run, C owner-less retained output, kept as one finding); P5-F-007 reproduced end to end and its description corrected. No severity, status, or count changed.
-- **Coverage:** state machine (#16) and Router concurrency (#19) are now `COMPLETE`. Side channels (#32) and dependency assumptions (#33) remain `PARTIAL`.
+- **Coverage:** state machine (#16) and Router concurrency (#19) are now `COMPLETE`. Side channels (#32) and dependency assumptions (#33) remained `PARTIAL` after P5.2 (completed in P5.3).
 - **Production behavior:** unchanged. The review tests sit inside existing `#[cfg(test)]` modules (one declaration each in `ceremony.rs`, `router.rs`, `windows_tcp.rs`, `windows_owner_loop.rs`); a non-test build never compiles them.
 
 ## Normative baseline
@@ -52,11 +67,12 @@ Specification-to-code tracing; adversarial reasoning across 34 axes and 12 attac
 
 - AI-assisted reading can miss defects. Absence of a finding is not proof of absence.
 - The state machine and Router concurrency were deepened by P5.2's bounded generated sequences and forced interleavings, which are not exhaustive. P5.3 traced side channels to their primitives but did not measure them or prove them constant-time.
+- Not a professional penetration test, cryptographic audit, formal verification, certification, or production-security approval.
 - No fuzzing, randomized property testing, formal model, loom-style interleaving exploration, timing measurement, Miri, or sanitizer run was performed.
 - Windows only. Linux results come from CI (`unsupported-platform-fails-closed`). NEON code was never executed (it is also unreachable).
 - Upstream crates are trusted beyond the security-relevant paths P5.3 inspected in locked source ([deep review §12](dependency-unsafe-deep-review.md#12-dependencies-33)).
 
-## Current finding counts
+## Final finding counts
 
 | Severity | Open | False positive | Accepted limitation | Out of scope |
 |---|---|---|---|---|
@@ -65,6 +81,7 @@ Specification-to-code tracing; adversarial reasoning across 34 axes and 12 attac
 | MEDIUM | 1 | 3 | 0 | 0 |
 | LOW | 2 | 1 | 0 | 0 |
 | INFO | 2 | 1 | 6 | 0 |
+| **Total** | **5** | **11** | **6** | **0** |
 
 There is no confirmed CRITICAL or HIGH finding. Confirmed OPEN findings, in order of severity:
 
@@ -72,12 +89,13 @@ There is no confirmed CRITICAL or HIGH finding. Confirmed OPEN findings, in orde
 - **LOW:** P5-F-001, the owner loop discards readable bytes on hang-up. P5-F-003, in-process re-registration starts a fresh budget, a mismatch with the current P3 process/session policy.
 - **INFO:** P5-F-005 (entropy-panic policy across the Router, adapter, and a future ABI) and P5-F-007 (reverse asymmetric completion at the deadline boundary). These may close as owner, hardening, or documentation decisions rather than production changes. P5.3 moved P5-F-004 to ACCEPTED-LIMITATION and P5-F-006 to FALSE-POSITIVE.
 
-No finding is currently NEEDS-DECISION. False-positive severities are what each candidate would have been if real. Details: [findings.md](findings.md).
+No finding is NEEDS-DECISION, and no finding was remediated in P5. False-positive severities are what each candidate would have been if real. Details: [findings.md](findings.md).
 
 ## Package contents
 
 | Document | Purpose |
 |---|---|
+| **[final-synthesis.md](final-synthesis.md)** | **Authoritative P5 closure: coverage, final counts, security conclusions, assurance limits, P6 handoff, reproducer inventory** |
 | [review-method.md](review-method.md) | Method, attacker models, finding format, false-positive discipline, phase boundary |
 | [assumptions-and-boundaries.md](assumptions-and-boundaries.md) | Core guarantees versus consumer and deployment responsibilities |
 | [findings.md](findings.md) | Finding index and every finding, including disproved candidates |
@@ -91,6 +109,6 @@ No finding is currently NEEDS-DECISION. False-positive severities are what each 
 | [dependency-unsafe-deep-review.md](dependency-unsafe-deep-review.md) | P5.3 locked graph and provenance, crypto call graph, reachable upstream and project `unsafe`, F-004/005/006 dispositions, side channels, secret lifetime, RNG, advisories |
 | [reproducers/](reproducers/README.md) | Passing evidence tests, expected-fail known-bug reproducers, and the throwaway patch, each classified |
 
-## Next increment
+## Next phase
 
-Recommended P5.4 (not yet started): **Final review synthesis and P5 closure.** No `PARTIAL` coverage surface remains after P5.3. P5.4 would reconcile the finding set and dispositions for P6, confirm every reproducer's classification, freeze the package, and only then open the single P5 pull request. (P5.3 was the dependency, unsafe/FFI, and secret-lifetime deep review.)
+P5 is complete. The next phase is **P6 — Review Remediation + Protocol Freeze** ([roadmap](../../roadmap/P6-review-remediation-and-protocol-freeze.md)), starting from the disposition table and recommended order in [final synthesis §10](final-synthesis.md#10-p6-handoff). Do not re-run P5; new review work after remediation belongs to P6's follow-up review.

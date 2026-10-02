@@ -1,6 +1,10 @@
 # P5 Review Coverage
 
-Status of the P5.1 first broad pass over the frozen P4 core (`e21ff0b`), as deepened by P5.2 ([adversarial sequences](adversarial-sequences.md)) and P5.3 ([dependency, unsafe, and secret-lifetime deep review](dependency-unsafe-deep-review.md)).
+> **FINAL P5 COVERAGE (P5.4): 34 / 34 COMPLETE · 0 PARTIAL · 0 NOT-STARTED.**
+>
+> COMPLETE means the planned P5 review method was carried out end to end for that surface. It does not mean that the absence of defects was proven. The limits recorded below stay in force: bounded generated sequences (no exhaustive model of unbounded sequences), no loom-style interleaving exploration, no fuzzing or property testing, no formal proof, side channels not measured, and upstream crates trusted beyond the inspected paths. Closure summary: [final synthesis](final-synthesis.md#3-coverage).
+
+Status of the P5.1 first broad pass over the frozen P4 core (`e21ff0b`), as deepened by P5.2 ([adversarial sequences](adversarial-sequences.md)) and P5.3 ([dependency, unsafe, and secret-lifetime deep review](dependency-unsafe-deep-review.md)), and frozen in P5.4.
 
 - **COMPLETE:** the surface was reviewed end to end against production source with the stated method, and no first-pass work on it is outstanding. Deeper techniques may still be worthwhile; see "Open questions".
 - **PARTIAL:** reviewed, but part of the surface was covered by reasoning over representative cases, or relies on unexamined upstream code.

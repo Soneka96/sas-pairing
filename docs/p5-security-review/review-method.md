@@ -99,4 +99,4 @@ A confirmed CRITICAL finding stops deeper review after reproduction, documentati
 
 ## 9. Assurance limits of this method
 
-This is an **internal, AI-assisted implementation security review**. It is not a professional audit, formal verification, certification, or production-security approval. Manual reading can miss defects. The first pass is broad, so some surfaces are reviewed by reasoning over representative sequences rather than exhaustive exploration, and [coverage](coverage.md) marks those surfaces `PARTIAL`. Test count is not evidence of security.
+This is an **internal, AI-assisted implementation security review**. It is not a professional audit, formal verification, certification, or production-security approval. Manual reading can miss defects. The first pass is broad, so some surfaces are reviewed by reasoning over representative sequences rather than exhaustive exploration, and [coverage](coverage.md) marks those surfaces `PARTIAL`. (P5.2 and P5.3 completed every surface P5.1 left `PARTIAL`; at closure all 34 are `COMPLETE` under this method, which is still not exhaustive.) Test count is not evidence of security.
