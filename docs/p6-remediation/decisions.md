@@ -35,4 +35,21 @@ Stable owner decisions taken during P6. IDs `P6-D-NNN` are never reused. A decis
 - **Implementation:** a later P6 increment. P6.1 records the decision only and changes no F-003 behavior; the existing re-registration assertions in `core/tests/security_core.rs` stay as they are until then.
 - **Status:** decided by the owner, 2026-10-02 (taken early, as P5 requested, because the alternative would have revised P3 policy before the protocol freeze).
 
+## P6-D-003 — Graceful TCP hang-up handling
+
+- **Finding:** [P5-F-001](../p5-security-review/findings.md#p5-f-001) (LOW): the experimental Windows owner loop treated `POLLHUP` like an error and closed the connection before any read or write, discarding complete frames the peer sent before its graceful close (including a delivered final `INITIATOR_FINISH_ACK`), input already retained in the adapter, and the loop's own pending output to a peer that had only half-closed.
+- **Requirement:** existing P3 semantics, unchanged: received stream input is assembled into frames (§3.1, `R-WIRE-025`); the Responder's result follows verification of `INITIATOR_FINISH_ACK` (§9, `R-MAC-012`); a disconnect yields no result only when it comes *before* a participant's local condition is met. This decision records how the adapter's readiness handling meets them; it adds no protocol rule.
+- **Decision (established connections):**
+  - `POLLERR` and `POLLNVAL` stay **hard failures**: the connection closes immediately, before any further read or write, whatever else is reported with them (`POLLIN`, `POLLOUT`, `POLLHUP`, or input already retained in the adapter).
+  - `POLLHUP` alone is **not** a failure. A graceful peer FIN or send-half-close ends only the peer's sending direction: the peer's earlier bytes may still be readable by us, and the peer may still receive our bytes. `POLLHUP` therefore never discards readable or retained input and never discards pending output.
+  - With an outbound frame retained: writable readiness (also together with `POLLHUP`) makes one write; `POLLHUP` without writable readiness makes no socket I/O and closes nothing; readable readiness never reads past the retained frame (write backpressure is unchanged).
+  - With no outbound frame retained: readable readiness, `POLLHUP` alone, or input already retained in the adapter makes one read step through the adapter (retained input first, then at most one OS read). A pure `POLLHUP` is enough for that read.
+  - The connection closes only when a read returns EOF (`0`, the existing `PeerClosed` path, which is the graceful-close boundary), on an actual socket I/O error, on `POLLERR`/`POLLNVAL`, or by the existing deadline and teardown policy. EOF never completes a partial frame.
+  - At most one adapter socket operation per connection per owner-loop drive, as before: no drain-to-EOF, read-until-WouldBlock, or write-all loop. A persistent hang-up is drained across later drives.
+  - Deadlines keep their precedence: the deadline sweep runs before any socket I/O, so an expired connection, frame, or ceremony deadline wins over hang-up and readable data in the same drive. No hang-up-specific timer is added. A half-closed peer that never reaches EOF, or never accepts our output, stays bounded by the existing P6-D-001 first-frame, quiescent, incomplete-frame, and owner-less-output deadlines and by the ceremony deadlines.
+  - A graceful close is transport information only. It never creates a `PairingResult`, confirms an unread final ACK, approves an SAS, refunds an opportunity, or implies peer rejection, compromise, or identity. A result still arises only from verifying an actually received frame.
+- **Listener:** unchanged. `POLLERR`, `POLLHUP`, or `POLLNVAL` on the listener still drops it.
+- **Wire, cryptography, ceremony authentication, and accounting:** unchanged.
+- **Status:** decided by the owner for P6.2, 2026-10-02.
+
 No decision is recorded yet for P5-F-005 or P5-F-007; both stay OPEN (INFO).

@@ -20,7 +20,7 @@ P5 closed with five OPEN findings ([P5 findings](../p5-security-review/findings.
 | Finding | Severity | P6 state | Owner decision | Record |
 |---|---|---|---|---|
 | [P5-F-002](../p5-security-review/findings.md#p5-f-002) | MEDIUM | **REMEDIATED-IN-P6** (P6.1, `1ce0753`) | [P6-D-001](decisions.md#p6-d-001--f-002-connection-lifetime) | [p5-f-002.md](p5-f-002.md) |
-| [P5-F-001](../p5-security-review/findings.md#p5-f-001) | LOW | OPEN; planned for P6.2, which depends on the P6-D-001 lifetime bound | None needed | — |
+| [P5-F-001](../p5-security-review/findings.md#p5-f-001) | LOW | OPEN; remediation in progress in P6.2, bounded by the P6-D-001 lifetime | [P6-D-003](decisions.md#p6-d-003--graceful-tcp-hang-up-handling) | — |
 | [P5-F-003](../p5-security-review/findings.md#p5-f-003) | LOW | OPEN; disposition decided, implementation in a later increment | [P6-D-002](decisions.md#p6-d-002--f-003-owner-session-policy) | — |
 | [P5-F-005](../p5-security-review/findings.md#p5-f-005) | INFO | OPEN; no decision yet (with P7 planning) | — | — |
 | [P5-F-007](../p5-security-review/findings.md#p5-f-007) | INFO | OPEN; no decision yet | — | — |
@@ -32,7 +32,7 @@ The six accepted limitations (P5-F-004, P5-F-008 to P5-F-012) and eleven false p
 | Increment | Scope | State |
 |---|---|---|
 | P6.1 | Establish this package and the owner decisions; remediate P5-F-002; record the P5-F-003 decision without implementing it | **Complete:** P5-F-002 remediated ([record](p5-f-002.md)); P6-D-002 recorded, P5-F-003 not implemented |
-| P6.2 | Remediate P5-F-001 graceful hang-up handling, bounded by the P6-D-001 lifetime | Next |
+| P6.2 | Remediate P5-F-001 graceful hang-up handling under owner decision P6-D-003, bounded by the P6-D-001 lifetime | In progress |
 
 ## Remediation rule
 
