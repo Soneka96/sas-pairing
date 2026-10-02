@@ -28,9 +28,11 @@ For `FALSE-POSITIVE` entries, severity is the severity the candidate **would hav
 
 ### Status
 
-`OPEN` (confirmed defect, or confirmed mismatch with the current normative baseline; remediation recommended, even where the remedy's design or values still need an owner decision) · `NEEDS-DECISION` (confirmed behavior where whether the current normative baseline is violated depends on an unresolved owner interpretation; no finding currently has this status) · `FALSE-POSITIVE` (disproved) · `ACCEPTED-LIMITATION` (already accepted by an owner decision or the normative profile; re-confirmed here) · `OUT-OF-SCOPE` · `DUPLICATE` · `REMEDIATED-IN-P6` (not used in P5).
+`OPEN` (confirmed defect, or confirmed mismatch with the current normative baseline; remediation recommended, even where the remedy's design or values still need an owner decision) · `NEEDS-DECISION` (confirmed behavior where whether the current normative baseline is violated depends on an unresolved owner interpretation; no finding currently has this status) · `FALSE-POSITIVE` (disproved) · `ACCEPTED-LIMITATION` (already accepted by an owner decision or the normative profile; re-confirmed here) · `OUT-OF-SCOPE` · `DUPLICATE` · `REMEDIATED-IN-P6` (not used in P5; set by P6 only after its closure bar is met, with the P5 entry otherwise preserved).
 
 ## Summary
+
+**P6 status update (P6.1, 2026-10-02):** [P5-F-002](#p5-f-002) is **REMEDIATED-IN-P6** under owner decision P6-D-001 ([remediation record](../p6-remediation/p5-f-002.md)). Four findings stay OPEN: P5-F-001, P5-F-003 (owner decision P6-D-002 taken; implementation later), P5-F-005, and P5-F-007. Current remediation status lives in the [P6 remediation package](../p6-remediation/README.md); the summary table and closure note below are the P5 closure snapshot and are left as P5 recorded them.
 
 | Severity | Open | False Positive | Accepted Limitation | Out of Scope |
 |---|---|---|---|---|
@@ -55,7 +57,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 | ID | Title | Severity | Confidence | Status |
 |---|---|---|---|---|
 | [P5-F-001](#p5-f-001) | Owner loop discards bytes received before a graceful peer close | LOW | HIGH | OPEN |
-| [P5-F-002](#p5-f-002) | Connections with no frame in progress never expire, so 16 idle peers hold the live-connection cap indefinitely | MEDIUM | HIGH | OPEN |
+| [P5-F-002](#p5-f-002) | Connections with no frame in progress never expire, so 16 idle peers hold the live-connection cap indefinitely | MEDIUM | HIGH | REMEDIATED-IN-P6 (P6.1; OPEN at P5 closure) |
 | [P5-F-003](#p5-f-003) | In-process re-registration starts a fresh opportunity budget without process replacement | LOW | HIGH | OPEN |
 | [P5-F-004](#p5-f-004) | `token_user_sid` does not bound the OS-written SID to the returned buffer | INFO | HIGH | ACCEPTED-LIMITATION (P5.3) |
 | [P5-F-005](#p5-f-005) | `Sas::new()` entropy panic leaves Router and adapter state conservatively stuck and escapes owner-loop calls | INFO | HIGH | OPEN |
@@ -106,7 +108,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 <a id="p5-f-002"></a>
 ### P5-F-002 — Connections with no frame in progress never expire, so 16 idle peers hold the live-connection cap indefinitely
 
-- **Status:** OPEN
+- **Status:** REMEDIATED-IN-P6 (P6.1). OPEN at P5 closure; everything below the P6 remediation note is P5's original record.
 - **Severity:** MEDIUM
 - **Confidence:** HIGH
 - **Classification:** Confirmed implementation gap against P3 §11.1.1. P3 already requires the transport to bound header waiting with finite deadlines; P4 implements no such bound before a frame's first byte.
@@ -130,6 +132,12 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 - **Recommended remediation:** In P6, after the owner selects the timer model and values: add a finite, never-refreshed first-header (pre-frame) deadline from activation; decide whether a separate idle deadline is needed for a connection with no live run; and decide a finite bound on a retained owner-less outbound frame where one applies. Each should close through the existing generic teardown, with no limiter, budget, or guard change. Optionally enable TCP keepalive in the adapter. Every chosen value must stay finite and must never reset an authority control.
 - **P6 disposition:** Remediate. The owner selects the narrow finite timer model and values, then P6 changes the transport and adapter and enables the reproducers (the P5.1 patch test and the P5.2 `#[ignore]` test covering subcases A–C) as regression tests.
 - **Evidence:** as above; [resources, deadlines, and transport §1, §3, §4, §6](resources-deadlines-transport.md); [adversarial sequences §8](adversarial-sequences.md#8-p5-f-002-evidence-f002-001-tcp-out-001).
+- **P6 remediation (appended in P6.1; the P5 record above is unchanged):**
+  - **Decision:** [P6-D-001](../p6-remediation/decisions.md#p6-d-001--f-002-connection-lifetime): 10 s from admission to the first frame; 10 s quiescent with no live run, no frame, and no pending output; 10 s absolute and 2 s no-progress for owner-less retained output; the existing 10 s / 2 s incomplete-frame deadlines unchanged; live ceremonies governed only by their ceremony deadlines.
+  - **Remediation commit:** `1ce07537e9552ea5963fb563d83883dc96db2ebe` (`fix: bound connection lifetime`) on `feature/p6-review-remediation-protocol-freeze`. One transport-owned connection-lifetime state, checked by the owner-loop sweep before socket I/O and by the adapter before each write; expiry uses the existing teardown and releases the live slot exactly once. No wire, crypto, budget, guard, or limiter change.
+  - **Regressions:** `p5_f_002_idle_connections_eventually_release_their_live_slot` now passes as a normal test (its `#[ignore]` removed); new permanent tests in `transport::tests::connection_lifetime`, `windows_tcp::tests::connection_lifetime`, and `windows_owner_loop::tests::connection_lifetime`, including the 16-idle / 17th-admission regression at exact boundaries. The P5.1 patch test is superseded by them.
+  - **Normative sync:** P3 §11.1.1 "Connection lifetime" row; `R-OWNER-023` amended in place.
+  - **P6 review evidence:** follow-up adversarial review, rebuilt resource table, and CI in the [remediation record](../p6-remediation/p5-f-002.md).
 
 <a id="p5-f-003"></a>
 ### P5-F-003 — In-process re-registration starts a fresh opportunity budget without process replacement

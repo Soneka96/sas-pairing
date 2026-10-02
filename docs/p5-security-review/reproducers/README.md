@@ -4,6 +4,8 @@ Review infrastructure only. Nothing here changes production behavior, and nothin
 
 **Frozen at P5 closure (P5.4).** The inventory below is final for P5. The four EXPECTED-FAIL reproducers (three for P5-F-001, one for P5-F-002) and the P5.1 throwaway patch stay failing and unapplied until P6 remediates; their expectations must not be changed to make them pass. The per-finding P6 action for each test is in the [final synthesis](../final-synthesis.md#reproducer-inventory-frozen).
 
+> **P6 update (P6.1):** P5-F-002 was remediated ([record](../../p6-remediation/p5-f-002.md)). `p5_f_002_idle_connections_eventually_release_their_live_slot` now passes and runs as a normal regression test (its `#[ignore]` was removed). The patch test `p5_f_002_frameless_connections_do_not_hold_the_live_cap_forever` is superseded by permanent regressions and is not applied; its transport hunk no longer applies to P6 heads, while the patch's P5-F-001 hunk still applies to `core/src/windows_owner_loop.rs`. The three P5-F-001 reproducers still fail as recorded below until P6.2. The table and outputs below are the P5 closure record.
+
 Every entry is exactly one of three kinds:
 
 - **PASSING EVIDENCE TEST:** runs in CI and passes. It pins an OS fact, characterizes current behavior, or asserts only properties that must stay true after P6 too. It never asserts a known bug as desired behavior.

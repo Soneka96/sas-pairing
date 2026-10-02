@@ -2,11 +2,12 @@
 
 ## Status
 
-🟠 **IN PROGRESS.** Current increment: **P6.1 — F-002 remediation** (P5-F-002 connection lifetime; owner decisions P6-D-001 and P6-D-002 recorded). All P6 work happens on the one branch `feature/p6-review-remediation-protocol-freeze`, with one pull request at P6 closure. Tracking package: [docs/p6-remediation](../docs/p6-remediation/README.md).
+🟠 **IN PROGRESS.** Latest increment: **P6.1 — F-002 remediation**, complete: P5-F-002 is REMEDIATED-IN-P6 under owner decision P6-D-001, and owner decision P6-D-002 (P5-F-003) is recorded. Next: P6.2 — P5-F-001 graceful hang-up handling. All P6 work happens on the one branch `feature/p6-review-remediation-protocol-freeze`, with one pull request at P6 closure. Tracking package: [docs/p6-remediation](../docs/p6-remediation/README.md).
 
 | Increment | Scope | State |
 |---|---|---|
-| P6.1 | P6 package and owner decisions; remediate P5-F-002; record the P5-F-003 decision (implementation later) | In progress |
+| P6.1 | P6 package and owner decisions; remediate P5-F-002; record the P5-F-003 decision (implementation later) | Complete ([P5-F-002 record](../docs/p6-remediation/p5-f-002.md)) |
+| P6.2 | Remediate P5-F-001 graceful hang-up handling | Next |
 
 ## P5 handoff
 

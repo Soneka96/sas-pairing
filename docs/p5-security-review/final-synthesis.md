@@ -2,7 +2,7 @@
 
 > **Internal, AI-assisted implementation and protocol security review.** This is not a professional penetration test, a professional cryptographic audit, formal verification, model checking, exhaustive fuzzing, certification, a proof of constant-time behavior, or production-security approval.
 
-This is the authoritative closure summary of P5. Detailed evidence stays in the documents it links to; this page does not repeat it.
+This is the authoritative closure summary of P5, kept as the P5 closure snapshot. For the current status of the findings it hands over (P5-F-002 has since been remediated in P6.1), see the [P6 remediation package](../p6-remediation/README.md). Detailed evidence stays in the documents it links to; this page does not repeat it.
 
 ## 1. Review target
 
