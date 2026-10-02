@@ -1615,4 +1615,8 @@ mod tests {
             Err(Error::Oversized)
         ));
     }
+
+    /// P5.3 review-only dependency evidence (not part of the product); see
+    /// `docs/p5-security-review/dependency-unsafe-deep-review.md`.
+    mod p5_dependency_review;
 }

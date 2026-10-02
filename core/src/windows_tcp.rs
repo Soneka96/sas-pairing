@@ -2765,4 +2765,8 @@ pub(crate) mod tests {
     /// P5.2 review-only transport sequence evidence (not part of the product); see
     /// `docs/p5-security-review/adversarial-sequences.md`.
     mod p5_transport_review;
+
+    /// P5.3 review-only entropy-panic unwind evidence (not part of the product); see
+    /// `docs/p5-security-review/dependency-unsafe-deep-review.md`.
+    mod p5_entropy_panic_review;
 }
