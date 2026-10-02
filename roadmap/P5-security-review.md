@@ -2,7 +2,7 @@
 
 ## Status
 
-🟡 Planned; gated on a reviewable P4 implementation and profile.
+🔵 Next; not started. The P4 experimental native security core is complete and frozen for review.
 
 ## Goal
 

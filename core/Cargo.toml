@@ -1,0 +1,18 @@
+[package]
+name = "sas-pairing-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+base64 = "0.23"
+# Honest Initiator request IDs only; the version vodozemac already resolves (no new RNG stack).
+getrandom = "0.4.3"
+sha2 = "0.10"
+vodozemac = { version = "=0.11.0", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_UI_Shell"] }
+
+[dev-dependencies]
+serde_json = "1"

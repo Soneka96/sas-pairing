@@ -1,6 +1,6 @@
 # sas-pairing
 
-**Pre-alpha · experimental implementation authorized · not production-ready**
+**Pre-alpha · experimental P4 native security core complete · not production-ready**
 
 `sas-pairing` is a language-neutral project for human-authenticated pairing between two devices. The intended experience is that each device displays the same short authentication string (SAS), and the user compares the values:
 
@@ -11,7 +11,7 @@ Device B:  4442 5768 1708
 If the values match, approve pairing.
 ```
 
-The value is compared on both devices. It is not typed and is not a password. The owner selected the vodozemac-based remote profile for experimental implementation; it has not been implemented or approved for production. No qualified professional audit or formal verification is claimed. **Do not use this project to protect production systems.**
+The value is compared on both devices. It is not typed and is not a password. The owner selected the vodozemac-based remote profile for experimental implementation, and that profile now has an implemented experimental native Rust security core, including the pairing ceremony and its P4 resource and lifecycle controls. Its current conformance evidence is closed in [P4 conformance closure](docs/p4-conformance-closure.md). The P5 implementation/security review remains, and nothing is approved for production. No qualified professional audit or formal verification is claimed. **Do not use this project to protect production systems.**
 
 ## Intended properties
 
@@ -21,11 +21,11 @@ These are design goals, not current capabilities or security claims. The example
 
 ## Project status
 
-This repository is in pre-alpha. The owner selected the vodozemac-based remote pairing profile for experimental Rust implementation. Its security argument remains conditional, review was AI-assisted, and no qualified professional audit or formal verification is claimed. This selection does not establish production security or approve production use. Experimental P4 is authorized but not complete; production use and release are not approved. See [protocol status](docs/protocol-status.md) for current decisions and required gates.
+This repository is in pre-alpha. The owner selected the vodozemac-based remote pairing profile for experimental Rust implementation. Its security argument remains conditional, review was AI-assisted, and no qualified professional audit or formal verification is claimed. This selection does not establish production security or approve production use. The P4 experimental native security core implementation is complete; the P5 review and production-security approval are not. Production use and release are not approved. See [protocol status](docs/protocol-status.md) for current decisions and required gates.
 
 ## Architecture
 
-The planned security-sensitive implementation lives once in a Rust core. Dart and .NET packages will provide idiomatic wrappers around that core; they will not implement production cryptography independently. The core is intended to remain application-neutral. See [architecture](docs/architecture.md).
+The security-sensitive implementation lives once in a Rust core; the experimental P4 native core exists in [`core/`](core/README.md). Dart and .NET packages will provide idiomatic wrappers around that core; they will not implement production cryptography independently. The core is intended to remain application-neutral. See [architecture](docs/architecture.md).
 
 ## Planned consumers
 

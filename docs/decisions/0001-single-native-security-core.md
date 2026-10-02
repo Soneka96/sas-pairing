@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted as the intended implementation architecture; implementation has not started.
+Accepted as the intended implementation architecture. The P4 experimental native Rust security core is implemented; a public native API/ABI and the Dart and .NET bindings do not yet exist.
 
 ## Context
 

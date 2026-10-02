@@ -208,6 +208,20 @@
       "semantic_description": "Canonical completion wire frame.",
       "hex": "53415350414952000108000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c00000020f309fcd8da269c12a5d380ddfe626c9cee1c153d8bf5e6e90b24f78d2e6baec6",
       "length": 144
+    },
+    "CANCEL": {
+      "initiator": {
+        "name": "initiator_cancel_wire",
+        "semantic_description": "CANCEL 0x09: common profile/request fields, explicit sender-role field, reason-code field, raw tag field.",
+        "hex": "53415350414952000109000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f0000000101000000010200000020e4289b39d4ab4e17ef95398f926642bcdf203d21d3d93c33f16785838ebb7652",
+        "length": 118
+      },
+      "responder": {
+        "name": "responder_cancel_wire",
+        "semantic_description": "CANCEL 0x09: common profile/request fields, explicit sender-role field, reason-code field, raw tag field.",
+        "hex": "53415350414952000109000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000010000102030405060708090a0b0c0d0e0f000000010200000001030000002061c6ca7fa28eba2cd2fd3e3fdc262f9253ffadb8586b3f2fe96d5c9889a4ad42",
+        "length": 118
+      }
     }
   },
   "commitment": {
@@ -562,6 +576,116 @@
           "name": "initiator_finish_ack_mac",
           "semantic_description": "32-byte raw completion tag.",
           "hex": "f309fcd8da269c12a5d380ddfe626c9cee1c153d8bf5e6e90b24f78d2e6baec6",
+          "length": 32
+        }
+      }
+    }
+  },
+  "cancellation": {
+    "auth_frame_type": "0x34",
+    "mac_context_type": "0x38",
+    "outer_purpose": "cancel",
+    "info_string_rule": "ASCII(\"sas-pairing-vodozemac-profile-draft-01/cancel/\") || unpadded_Base64url(complete canonical type-0x38 CancelMacContext frame)",
+    "mac_input_rule": "unpadded_Base64url(complete canonical type-0x34 CancelAuthFrame); the wire MAC field is never included",
+    "field_order": [
+      "protocol_domain",
+      "profile_identifier",
+      "version_u16be",
+      "sender_role_code",
+      "receiver_role_code",
+      "ceremony_identity",
+      "reason_code"
+    ],
+    "reason_codes": {
+      "01": "user rejection",
+      "02": "user cancellation",
+      "03": "timeout",
+      "04": "local policy failure"
+    },
+    "ceremony_identity": "3c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c",
+    "status": "TEST VECTOR ONLY \u2014 fixed test shared secret; demonstrates deterministic encoding/derivation only, not security",
+    "directions": {
+      "initiator": {
+        "sender_role_code": "01",
+        "receiver_role_code": "02",
+        "reason_code": "02",
+        "reason": "user cancellation",
+        "auth_frame": {
+          "name": "initiator_cancel_auth_frame",
+          "semantic_description": "Non-wire CancelAuthFrame 0x34; fields domain, profile identifier, version, sender role, receiver role, ceremony_identity, reason code.",
+          "hex": "534153504149520001340000000f6f72672e7361732d70616972696e67000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000002000100000001010000000102000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c0000000102",
+          "length": 128
+        },
+        "mac_input_base64url_unpadded": "U0FTUEFJUgABNAAAAA9vcmcuc2FzLXBhaXJpbmcAAAAmc2FzLXBhaXJpbmctdm9kb3plbWFjLXByb2ZpbGUtZHJhZnQtMDEAAAACAAEAAAABAQAAAAECAAAAIDydHgMyO6EgRvogITkf3SLWiDpuaaSTgBwKuHA61wwcAAAAAQI",
+        "mac_input_hex": "553046545545464a556741424e41414141413976636d63756332467a4c58426861584a70626d63414141416d6332467a4c58426861584a70626d6374646d396b6233706c6257466a4c58427962325a70624755745a484a685a6e51744d4445414141414341414541414141424151414141414543414141414944796448674d794f36456752766f6749546b6633534c5769447075616153546742774b754841363177776341414141415149",
+        "mac_input": {
+          "canonical_binary_hex": "534153504149520001340000000f6f72672e7361732d70616972696e67000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000002000100000001010000000102000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c0000000102",
+          "base64url_unpadded": "U0FTUEFJUgABNAAAAA9vcmcuc2FzLXBhaXJpbmcAAAAmc2FzLXBhaXJpbmctdm9kb3plbWFjLXByb2ZpbGUtZHJhZnQtMDEAAAACAAEAAAABAQAAAAECAAAAIDydHgMyO6EgRvogITkf3SLWiDpuaaSTgBwKuHA61wwcAAAAAQI"
+        },
+        "context_frame": {
+          "name": "initiator_cancel_mac_context",
+          "semantic_description": "Non-wire CancelMacContext 0x38; same seven fields in the same order; no inner purpose field.",
+          "hex": "534153504149520001380000000f6f72672e7361732d70616972696e67000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000002000100000001010000000102000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c0000000102",
+          "length": 128
+        },
+        "info_string": "sas-pairing-vodozemac-profile-draft-01/cancel/U0FTUEFJUgABOAAAAA9vcmcuc2FzLXBhaXJpbmcAAAAmc2FzLXBhaXJpbmctdm9kb3plbWFjLXByb2ZpbGUtZHJhZnQtMDEAAAACAAEAAAABAQAAAAECAAAAIDydHgMyO6EgRvogITkf3SLWiDpuaaSTgBwKuHA61wwcAAAAAQI",
+        "mac_context": {
+          "canonical_binary_hex": "534153504149520001380000000f6f72672e7361732d70616972696e67000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000002000100000001010000000102000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c0000000102",
+          "base64url_unpadded": "U0FTUEFJUgABOAAAAA9vcmcuc2FzLXBhaXJpbmcAAAAmc2FzLXBhaXJpbmctdm9kb3plbWFjLXByb2ZpbGUtZHJhZnQtMDEAAAACAAEAAAABAQAAAAECAAAAIDydHgMyO6EgRvogITkf3SLWiDpuaaSTgBwKuHA61wwcAAAAAQI",
+          "info_string": "sas-pairing-vodozemac-profile-draft-01/cancel/U0FTUEFJUgABOAAAAA9vcmcuc2FzLXBhaXJpbmcAAAAmc2FzLXBhaXJpbmctdm9kb3plbWFjLXByb2ZpbGUtZHJhZnQtMDEAAAACAAEAAAABAQAAAAECAAAAIDydHgMyO6EgRvogITkf3SLWiDpuaaSTgBwKuHA61wwcAAAAAQI"
+        },
+        "mac_key_test_only_hex": "8598a577c02f90a2934a7a5590a88b08780f9d884a102bcec035d33598f6b124",
+        "mac": {
+          "algorithm": "HMAC-SHA-256 (vodozemac calculate_mac semantics)",
+          "input_hex": "553046545545464a556741424e41414141413976636d63756332467a4c58426861584a70626d63414141416d6332467a4c58426861584a70626d6374646d396b6233706c6257466a4c58427962325a70624755745a484a685a6e51744d4445414141414341414541414141424151414141414543414141414944796448674d794f36456752766f6749546b6633534c5769447075616153546742774b754841363177776341414141415149",
+          "output_hex": "e4289b39d4ab4e17ef95398f926642bcdf203d21d3d93c33f16785838ebb7652"
+        },
+        "raw_mac": {
+          "name": "initiator_cancel_mac",
+          "semantic_description": "32-byte raw CANCEL authentication tag.",
+          "hex": "e4289b39d4ab4e17ef95398f926642bcdf203d21d3d93c33f16785838ebb7652",
+          "length": 32
+        }
+      },
+      "responder": {
+        "sender_role_code": "02",
+        "receiver_role_code": "01",
+        "reason_code": "03",
+        "reason": "timeout",
+        "auth_frame": {
+          "name": "responder_cancel_auth_frame",
+          "semantic_description": "Non-wire CancelAuthFrame 0x34; fields domain, profile identifier, version, sender role, receiver role, ceremony_identity, reason code.",
+          "hex": "534153504149520001340000000f6f72672e7361732d70616972696e67000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000002000100000001020000000101000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c0000000103",
+          "length": 128
+        },
+        "mac_input_base64url_unpadded": "U0FTUEFJUgABNAAAAA9vcmcuc2FzLXBhaXJpbmcAAAAmc2FzLXBhaXJpbmctdm9kb3plbWFjLXByb2ZpbGUtZHJhZnQtMDEAAAACAAEAAAABAgAAAAEBAAAAIDydHgMyO6EgRvogITkf3SLWiDpuaaSTgBwKuHA61wwcAAAAAQM",
+        "mac_input_hex": "553046545545464a556741424e41414141413976636d63756332467a4c58426861584a70626d63414141416d6332467a4c58426861584a70626d6374646d396b6233706c6257466a4c58427962325a70624755745a484a685a6e51744d4445414141414341414541414141424167414141414542414141414944796448674d794f36456752766f6749546b6633534c5769447075616153546742774b75484136317777634141414141514d",
+        "mac_input": {
+          "canonical_binary_hex": "534153504149520001340000000f6f72672e7361732d70616972696e67000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000002000100000001020000000101000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c0000000103",
+          "base64url_unpadded": "U0FTUEFJUgABNAAAAA9vcmcuc2FzLXBhaXJpbmcAAAAmc2FzLXBhaXJpbmctdm9kb3plbWFjLXByb2ZpbGUtZHJhZnQtMDEAAAACAAEAAAABAgAAAAEBAAAAIDydHgMyO6EgRvogITkf3SLWiDpuaaSTgBwKuHA61wwcAAAAAQM"
+        },
+        "context_frame": {
+          "name": "responder_cancel_mac_context",
+          "semantic_description": "Non-wire CancelMacContext 0x38; same seven fields in the same order; no inner purpose field.",
+          "hex": "534153504149520001380000000f6f72672e7361732d70616972696e67000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000002000100000001020000000101000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c0000000103",
+          "length": 128
+        },
+        "info_string": "sas-pairing-vodozemac-profile-draft-01/cancel/U0FTUEFJUgABOAAAAA9vcmcuc2FzLXBhaXJpbmcAAAAmc2FzLXBhaXJpbmctdm9kb3plbWFjLXByb2ZpbGUtZHJhZnQtMDEAAAACAAEAAAABAgAAAAEBAAAAIDydHgMyO6EgRvogITkf3SLWiDpuaaSTgBwKuHA61wwcAAAAAQM",
+        "mac_context": {
+          "canonical_binary_hex": "534153504149520001380000000f6f72672e7361732d70616972696e67000000267361732d70616972696e672d766f646f7a656d61632d70726f66696c652d64726166742d303100000002000100000001020000000101000000203c9d1e03323ba12046fa2021391fdd22d6883a6e69a493801c0ab8703ad70c1c0000000103",
+          "base64url_unpadded": "U0FTUEFJUgABOAAAAA9vcmcuc2FzLXBhaXJpbmcAAAAmc2FzLXBhaXJpbmctdm9kb3plbWFjLXByb2ZpbGUtZHJhZnQtMDEAAAACAAEAAAABAgAAAAEBAAAAIDydHgMyO6EgRvogITkf3SLWiDpuaaSTgBwKuHA61wwcAAAAAQM",
+          "info_string": "sas-pairing-vodozemac-profile-draft-01/cancel/U0FTUEFJUgABOAAAAA9vcmcuc2FzLXBhaXJpbmcAAAAmc2FzLXBhaXJpbmctdm9kb3plbWFjLXByb2ZpbGUtZHJhZnQtMDEAAAACAAEAAAABAgAAAAEBAAAAIDydHgMyO6EgRvogITkf3SLWiDpuaaSTgBwKuHA61wwcAAAAAQM"
+        },
+        "mac_key_test_only_hex": "669c5d179b67aa28a720c30ccb752b1357f6dd1f57b2ed32c9e43564915ea927",
+        "mac": {
+          "algorithm": "HMAC-SHA-256 (vodozemac calculate_mac semantics)",
+          "input_hex": "553046545545464a556741424e41414141413976636d63756332467a4c58426861584a70626d63414141416d6332467a4c58426861584a70626d6374646d396b6233706c6257466a4c58427962325a70624755745a484a685a6e51744d4445414141414341414541414141424167414141414542414141414944796448674d794f36456752766f6749546b6633534c5769447075616153546742774b75484136317777634141414141514d",
+          "output_hex": "61c6ca7fa28eba2cd2fd3e3fdc262f9253ffadb8586b3f2fe96d5c9889a4ad42"
+        },
+        "raw_mac": {
+          "name": "responder_cancel_mac",
+          "semantic_description": "32-byte raw CANCEL authentication tag.",
+          "hex": "61c6ca7fa28eba2cd2fd3e3fdc262f9253ffadb8586b3f2fe96d5c9889a4ad42",
           "length": 32
         }
       }
