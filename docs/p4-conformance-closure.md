@@ -248,12 +248,15 @@ Neither is an implementation gap. Closing them needs a different API or an indep
 
 ## Verification Snapshot
 
-The evidence was recorded on branch `feature/p4-native-security-core`, starting from `ef0205b806bc5350466a66ca446c1990518e8c71`, whose CI was green. The closure commit that adds this file is reported with its CI run on PR #10.
+**Final P4 state.** The final P4 implementation is `86e77ea7fed0d6c124c08194d10e7bb321bdd31b` on branch `feature/p4-native-security-core` (Increment 20.1), whose CI was green; the final-freeze commit on top of it changes documentation only. Increment 20.1 resolved the unsafe `TOKEN_USER` alignment finding (see [Source Audits](#source-audits)) and added one unit test; the 92-row matrix above is unchanged by it and by the freeze.
 
 - Toolchain: `rustc 1.99.0 (b940084d7 2026-09-28)` on Windows 11 Pro 10.0.26200.
-- `cargo fmt --check`, `cargo clippy --all-targets -D warnings` (Windows target, and `x86_64-unknown-linux-gnu` as a compile check), and `cargo test`: 327 unit, 6 integration, and 1 doctest, all passing.
-- Linux unsupported-platform tests run only in CI (`unsupported-platform-fails-closed`).
-- Each new test failed under a targeted mutation, and every mutation was reverted:
+- At the final P4 state, `cargo fmt --check`, `cargo clippy --all-targets -D warnings`, and `cargo test` pass: 328 unit, 6 integration, and 1 doctest.
+- CI on `windows-latest` (`windows-core`), the Linux unsupported-platform job (`unsupported-platform-fails-closed`), and repository consistency were green for `86e77ea`. Linux unsupported-platform tests run only in CI.
+
+**Original closure run.** The closure evidence was first recorded starting from `ef0205b806bc5350466a66ca446c1990518e8c71`, whose CI was green, with 327 unit, 6 integration, and 1 doctest passing (Windows target, and `x86_64-unknown-linux-gnu` as a Clippy compile check).
+
+- Each new closure test failed under a targeted mutation, and every mutation was reverted:
   - an Initiator state left non-terminal during key generation;
   - a pending slot not released on unwind;
   - the commitment check skipped;

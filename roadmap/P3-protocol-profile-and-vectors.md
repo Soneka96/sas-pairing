@@ -47,4 +47,4 @@ Return to P2 or stop if the selected construction cannot support a required prof
 
 ## What this unlocks
 
-P4 is the next planned phase and is authorized but not complete. Begin with the narrowly scoped Rust authority-ownership and shared guard/accounting foundation in the [P4 roadmap](P4-native-security-core.md). P5 remains an implementation-focused review after P4; production use and release remain unapproved.
+P3 unlocked P4, which is now complete as the experimental native security core (see the [P4 roadmap](P4-native-security-core.md)). P5 remains an implementation-focused review after P4; production use and release remain unapproved.
