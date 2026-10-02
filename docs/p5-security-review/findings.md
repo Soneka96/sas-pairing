@@ -28,11 +28,11 @@ For `FALSE-POSITIVE` entries, severity is the severity the candidate **would hav
 
 ### Status
 
-`OPEN` (confirmed defect, or confirmed mismatch with the current normative baseline; remediation recommended, even where the remedy's design or values still need an owner decision) · `NEEDS-DECISION` (confirmed behavior where whether the current normative baseline is violated depends on an unresolved owner interpretation; no finding currently has this status) · `FALSE-POSITIVE` (disproved) · `ACCEPTED-LIMITATION` (already accepted by an owner decision or the normative profile; re-confirmed here) · `OUT-OF-SCOPE` · `DUPLICATE` · `REMEDIATED-IN-P6` (not used in P5; set by P6 only after its closure bar is met, with the P5 entry otherwise preserved).
+`OPEN` (confirmed defect, or confirmed mismatch with the current normative baseline; remediation recommended, even where the remedy's design or values still need an owner decision) · `NEEDS-DECISION` (confirmed behavior where whether the current normative baseline is violated depends on an unresolved owner interpretation; no finding currently has this status) · `FALSE-POSITIVE` (disproved) · `ACCEPTED-LIMITATION` (already accepted by an owner decision or the normative profile; re-confirmed here) · `OUT-OF-SCOPE` · `DUPLICATE` · `REMEDIATED-IN-P6` (not used in P5; set by P6 only after its closure bar is met, with the P5 entry otherwise preserved) · `DISPOSITIONED-IN-P6` (not used in P5; set by P6 when the core behavior was reviewed and accepted and an owner decision assigns a mandatory implementation obligation to a later owning phase, which has not yet been met).
 
 ## Summary
 
-**P6 status update (P6.3, 2026-10-02):** [P5-F-002](#p5-f-002) is **REMEDIATED-IN-P6** under owner decision P6-D-001 ([remediation record](../p6-remediation/p5-f-002.md)), [P5-F-001](#p5-f-001) is **REMEDIATED-IN-P6** under owner decision P6-D-003 ([remediation record](../p6-remediation/p5-f-001.md)), and [P5-F-003](#p5-f-003) is **REMEDIATED-IN-P6** under owner decision P6-D-002 ([remediation record](../p6-remediation/p5-f-003.md)). Two findings stay OPEN: P5-F-005 and P5-F-007. Current remediation status lives in the [P6 remediation package](../p6-remediation/README.md); the summary table and closure note below are the P5 closure snapshot and are left as P5 recorded them.
+**P6 status update (P6.4, 2026-10-02):** [P5-F-002](#p5-f-002) is **REMEDIATED-IN-P6** under owner decision P6-D-001 ([remediation record](../p6-remediation/p5-f-002.md)), [P5-F-001](#p5-f-001) is **REMEDIATED-IN-P6** under owner decision P6-D-003 ([remediation record](../p6-remediation/p5-f-001.md)), and [P5-F-003](#p5-f-003) is **REMEDIATED-IN-P6** under owner decision P6-D-002 ([remediation record](../p6-remediation/p5-f-003.md)). [P5-F-005](#p5-f-005) is **DISPOSITIONED-IN-P6 (P6.4) — mandatory P7 ABI containment requirement** under owner decision P6-D-004 ([disposition record](../p6-remediation/p5-f-005.md)). One finding stays OPEN: P5-F-007. Current remediation status lives in the [P6 remediation package](../p6-remediation/README.md); the summary table and closure note below are the P5 closure snapshot and are left as P5 recorded them.
 
 | Severity | Open | False Positive | Accepted Limitation | Out of Scope |
 |---|---|---|---|---|
@@ -58,9 +58,9 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 |---|---|---|---|---|
 | [P5-F-001](#p5-f-001) | Owner loop discards bytes received before a graceful peer close | LOW | HIGH | REMEDIATED-IN-P6 (P6.2; OPEN at P5 closure) |
 | [P5-F-002](#p5-f-002) | Connections with no frame in progress never expire, so 16 idle peers hold the live-connection cap indefinitely | MEDIUM | HIGH | REMEDIATED-IN-P6 (P6.1; OPEN at P5 closure) |
-| [P5-F-003](#p5-f-003) | In-process re-registration starts a fresh opportunity budget without process replacement | LOW | HIGH | OPEN |
+| [P5-F-003](#p5-f-003) | In-process re-registration starts a fresh opportunity budget without process replacement | LOW | HIGH | REMEDIATED-IN-P6 (P6.3; OPEN at P5 closure) |
 | [P5-F-004](#p5-f-004) | `token_user_sid` does not bound the OS-written SID to the returned buffer | INFO | HIGH | ACCEPTED-LIMITATION (P5.3) |
-| [P5-F-005](#p5-f-005) | `Sas::new()` entropy panic leaves Router and adapter state conservatively stuck and escapes owner-loop calls | INFO | HIGH | OPEN |
+| [P5-F-005](#p5-f-005) | `Sas::new()` entropy panic leaves Router and adapter state conservatively stuck and escapes owner-loop calls | INFO | HIGH | DISPOSITIONED-IN-P6 (P6.4; mandatory P7 ABI containment requirement; OPEN at P5 closure) |
 | [P5-F-006](#p5-f-006) | `base64`'s default `simd-unsafe` engine encodes every MAC and HKDF input | INFO (if real) | HIGH | FALSE-POSITIVE (P5.3) |
 | [P5-F-007](#p5-f-007) | Reverse asymmetric completion at the Initiator's deadline boundary | INFO | HIGH | OPEN |
 | [P5-F-008](#p5-f-008) | Same-profile attacker can race the lock-path checks (TOCTOU) | INFO | HIGH | ACCEPTED-LIMITATION |
@@ -201,7 +201,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 <a id="p5-f-005"></a>
 ### P5-F-005 — `Sas::new()` entropy panic leaves Router and adapter state conservatively stuck and escapes owner-loop calls
 
-- **Status:** OPEN
+- **Status:** DISPOSITIONED-IN-P6 (P6.4) — mandatory P7 ABI containment requirement. OPEN at P5 closure; the P5 record below is unchanged and the P6 note is appended at the end of this entry.
 - **Severity:** INFO
 - **Confidence:** HIGH
 - **Affected requirement(s):** P3 §5 (no success from failed entropy; no graceful-error promise); P3 §11.2 (teardown); decision 0001 (future native boundary).
@@ -225,6 +225,14 @@ Not every OPEN finding needs a production change. The INFO findings may close as
   - **Security properties hold:** no result, no exposure without consumption, no refund, no premature guard reuse, no stale route accepting input. A future `extern "C"` ABI would abort on an escaping panic (Rust ≥ 1.81), not unwind, unless a binding opts into `C-unwind`.
   - **P6/P7:** choose `panic = "abort"`, or `catch_unwind` at every export that then discards the authority. Optionally add RAII cleanup of the claim and release transport accounting for a poisoned run.
 - **Evidence:** [state and routing §3](state-and-routing.md#3-router-and-session-isolation); [secrets, panics, dependencies §3](secrets-panics-dependencies.md#3-panic-and-abort-surfaces); [deep review §7](dependency-unsafe-deep-review.md#7-p5-f-005-entropy-panic).
+- **P6 disposition (appended in P6.4; the P5 record above is unchanged):**
+  - **Decision:** [P6-D-004 — Native Panic Containment Policy](../p6-remediation/decisions.md#p6-d-004--native-panic-containment-policy). The core does no broad panic recovery. The P7 ABI catches every panic inside Rust before it can cross `extern "C"`, at every export and every Rust-owned thread root. The affected native context becomes permanently fatal, and later calls return a stable fatal-state error without entering the core. There is no same-process retry, re-registration, or accounting reset; recovery is a process restart. No panic payload is ABI contract. The supported artifact uses an unwind-compatible panic strategy, and P7 CI tests containment. `extern "C-unwind"` is not a supported contract. `panic = "abort"` is not the selected ABI policy, so the P5 suggestion above was considered and not chosen.
+  - **Why no core remediation:** the panic is not remotely triggerable and fails closed. A core that resumed after a panic (internal `catch_unwind`, mutex-poison recovery) would trade that for a large, hard-to-review semantic commitment. The optional Router RAII and poisoned-run transport release stay optional hardening and are not needed under P6-D-004, because a panicked context is fatal.
+  - **Current evidence (re-run in P6.4, assertions unchanged):** `p5_f005_001..005` and the P4 ceremony panic test pass. New test-only assertions (`9628fa3`) show that after a caught Initiator panic, dropping every handle and registering the same authority in the same process fails with `OwnershipUncertain` and never yields `Ready { remaining: 10 }` (P6.3 interaction). After the Responder panic, re-registration continues the same START limiter. A throwaway foreign-host experiment confirmed the Rust semantics: an escaping panic aborts the host, `catch_unwind` inside the export contains it under `unwind`, and nothing is caught under `abort`.
+  - **Mandatory P7 requirement:** recorded in [P7](../../roadmap/P7-native-abi.md) as scope, security invariants, and exit criteria, including a deterministic panic-containment test. P7 cannot be completed without it.
+  - **Not:** REMEDIATED-IN-P6 (no ABI exists yet), FALSE-POSITIVE (the panic is real), or ACCEPTED-LIMITATION (P7 has a mandatory obligation). It does not block the protocol freeze: no wire, crypto, or protocol-semantic change is needed.
+  - **Normative sync:** no P3 change; `R-OWNER-013` amended in place (still 92 normative rows).
+  - **P6 record:** [p5-f-005.md](../p6-remediation/p5-f-005.md).
 
 <a id="p5-f-006"></a>
 ### P5-F-006 — `base64`'s default `simd-unsafe` engine encodes every MAC and HKDF input

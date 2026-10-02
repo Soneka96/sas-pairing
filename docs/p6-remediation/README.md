@@ -22,7 +22,7 @@ P5 closed with five OPEN findings ([P5 findings](../p5-security-review/findings.
 | [P5-F-002](../p5-security-review/findings.md#p5-f-002) | MEDIUM | **REMEDIATED-IN-P6** (P6.1, `1ce0753`) | [P6-D-001](decisions.md#p6-d-001--f-002-connection-lifetime) | [p5-f-002.md](p5-f-002.md) |
 | [P5-F-001](../p5-security-review/findings.md#p5-f-001) | LOW | **REMEDIATED-IN-P6** (P6.2, `c4212f2`) | [P6-D-003](decisions.md#p6-d-003--graceful-tcp-hang-up-handling) | [p5-f-001.md](p5-f-001.md) |
 | [P5-F-003](../p5-security-review/findings.md#p5-f-003) | LOW | **REMEDIATED-IN-P6** (P6.3, `5aa1b15`) | [P6-D-002](decisions.md#p6-d-002--f-003-owner-session-policy) | [p5-f-003.md](p5-f-003.md) |
-| [P5-F-005](../p5-security-review/findings.md#p5-f-005) | INFO | OPEN; no decision yet (with P7 planning) | — | — |
+| [P5-F-005](../p5-security-review/findings.md#p5-f-005) | INFO | **DISPOSITIONED-IN-P6** (P6.4) — mandatory P7 ABI containment requirement; no production change | [P6-D-004](decisions.md#p6-d-004--native-panic-containment-policy) | [p5-f-005.md](p5-f-005.md) |
 | [P5-F-007](../p5-security-review/findings.md#p5-f-007) | INFO | OPEN; no decision yet | — | — |
 
 The six accepted limitations (P5-F-004, P5-F-008 to P5-F-012) and eleven false positives stay as P5 recorded them.
@@ -34,7 +34,8 @@ The six accepted limitations (P5-F-004, P5-F-008 to P5-F-012) and eleven false p
 | P6.1 | Establish this package and the owner decisions; remediate P5-F-002; record the P5-F-003 decision without implementing it | **Complete:** P5-F-002 remediated ([record](p5-f-002.md)); P6-D-002 recorded, P5-F-003 not implemented |
 | P6.2 | Remediate P5-F-001 graceful hang-up handling under owner decision P6-D-003, bounded by the P6-D-001 lifetime | **Complete:** P5-F-001 remediated ([record](p5-f-001.md)) |
 | P6.3 | Remediate P5-F-003 process-session accounting reset under P6-D-002 | **Complete:** P5-F-003 remediated ([record](p5-f-003.md)) |
-| P6.4 | Decide and disposition P5-F-005 entropy-panic / ABI policy | Next |
+| P6.4 | Decide and disposition P5-F-005 entropy-panic / ABI policy under owner decision P6-D-004 | **Complete:** P5-F-005 dispositioned ([record](p5-f-005.md)); P7 owns the ABI containment implementation |
+| P6.5 | Disposition P5-F-007 reverse asymmetric completion semantics | Next |
 
 ## Remediation rule
 
@@ -47,6 +48,7 @@ P3 requirement -> P5 finding -> owner decision -> remediation -> regression evid
 
 - An owner decision is recorded in [decisions.md](decisions.md) before the code that depends on it.
 - P5 documents stay historical evidence. P6 may mark a finding `REMEDIATED-IN-P6` and append its remediation evidence, but never rewrites what P5 observed. The [P5 final synthesis](../p5-security-review/final-synthesis.md) stays a P5 closure snapshot; current status lives here.
+- A finding is `DISPOSITIONED-IN-P6` when its core behavior was reviewed and accepted, an owner decision assigns a mandatory implementation obligation to the later phase that owns the affected boundary, and that phase's roadmap records the obligation in its scope and exit criteria. It is not a remediation claim.
 - A finding is `REMEDIATED-IN-P6` only when all of these hold: owner decision recorded, production fix, unit and regression tests, the P5 reproducer passing, a follow-up adversarial review, P3 and conformance text synchronized, documentation synchronized, and full CI green.
 - P5 known-bug reproducers become regression tests only for the finding being remediated. Reproducers of other findings keep failing until their own remediation.
 - No remediation changes the wire format, cryptography, ceremony authentication, or the security accounting (ten-opportunity budget, exposed-ceremony guard, START limiter, authorization seal, pending and preliminary caps, request-ID reservation) unless a recorded owner decision says so and the change is re-analyzed.
