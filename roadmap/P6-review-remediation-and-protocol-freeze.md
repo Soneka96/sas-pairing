@@ -2,7 +2,11 @@
 
 ## Status
 
-🔵 **NEXT — P5 REVIEW COMPLETE.** Not started. P5 closed with five OPEN findings handed to P6; no remediation has been performed.
+🟠 **IN PROGRESS.** Current increment: **P6.1 — F-002 remediation** (P5-F-002 connection lifetime; owner decisions P6-D-001 and P6-D-002 recorded). All P6 work happens on the one branch `feature/p6-review-remediation-protocol-freeze`, with one pull request at P6 closure. Tracking package: [docs/p6-remediation](../docs/p6-remediation/README.md).
+
+| Increment | Scope | State |
+|---|---|---|
+| P6.1 | P6 package and owner decisions; remediate P5-F-002; record the P5-F-003 decision (implementation later) | In progress |
 
 ## P5 handoff
 
@@ -15,6 +19,8 @@ The [P5 final review synthesis](../docs/p5-security-review/final-synthesis.md#10
 | [P5-F-003](../docs/p5-security-review/findings.md#p5-f-003) | LOW | Same-process re-registration resets the opportunity budget and START limiter, contrary to current P3 policy | Default (keep P3, fix the implementation) or an explicit P3 policy revision |
 | [P5-F-005](../docs/p5-security-review/findings.md#p5-f-005) | INFO | Entropy-panic policy and unwind behavior across the Router, adapter, owner loop, and future ABI | Panic policy, with P7 |
 | [P5-F-007](../docs/p5-security-review/findings.md#p5-f-007) | INFO | Reverse asymmetric completion at the Initiator's deadline boundary; documentation | Optional boundary rule |
+
+Owner decisions so far: [P6-D-001](../docs/p6-remediation/decisions.md#p6-d-001--f-002-connection-lifetime) (P5-F-002 timer model and values) and [P6-D-002](../docs/p6-remediation/decisions.md#p6-d-002--f-003-owner-session-policy) (P5-F-003: keep current P3 semantics and fix the implementation later).
 
 Recommended order: P5-F-002, then P5-F-001 (together with or after P5-F-002), then P5-F-003 (with its owner decision taken early), P5-F-005, and P5-F-007. The P5 expected-fail reproducers for P5-F-001 and P5-F-002 become regression tests as fixes land. The accepted limitations (P5-F-004, P5-F-008 to P5-F-012) stay accepted; P5-F-004 has optional hardening.
 
