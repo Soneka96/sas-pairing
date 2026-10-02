@@ -5,13 +5,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use sas_pairing_core::TrustedAuthority;
+use sas_pairing_core::{Role, TrustedAuthority};
 
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     let scope = args.get(1).expect("scope argument");
     if let Some(index) = args.iter().position(|arg| arg == "--file-control") {
         file_control(scope, PathBuf::from(&args[index + 1]));
+        return;
+    }
+    if args.iter().any(|arg| arg == "--session") {
+        process_session(scope);
         return;
     }
     if args.iter().any(|arg| arg == "--race") {
@@ -45,6 +49,26 @@ fn main() {
     let mut input = String::new();
     let _ = io::stdin().read_to_string(&mut input);
     drop(authority);
+}
+
+/// One process session: reports the status at its first registration, spends one opportunity,
+/// releases, registers again in the same process, and reports again, then exits.
+fn process_session(scope: &str) {
+    let authority = TrustedAuthority::register(scope.as_bytes()).expect("authority ownership");
+    let executor = authority.executor();
+    println!("FIRST {:?}", executor.status().expect("status"));
+    let mut ceremony = executor.begin(Role::Initiator).expect("ceremony");
+    let token = authority.authorize(&mut ceremony).expect("authorization");
+    executor
+        .reserve(&mut ceremony, Some(token))
+        .expect("reservation");
+    executor.terminate(&mut ceremony).expect("termination");
+    drop((ceremony, executor));
+    authority.release().expect("release ownership");
+    let again = TrustedAuthority::register(scope.as_bytes()).expect("authority ownership");
+    println!("AGAIN {:?}", again.executor().status().expect("status"));
+    again.release().expect("release ownership");
+    let _ = io::stdout().flush();
 }
 
 fn file_control(scope: &str, dir: PathBuf) {

@@ -8558,9 +8558,12 @@ mod tests {
         a.release();
     }
 
-    // R-OWNER-038 (b), (c): only a safely established new owner starts fresh.
+    // R-OWNER-038 (b), (c): while an owner exists no second owner, and so no second limiter,
+    // can be created; only a new process session starts fresh. A same-process release and
+    // re-registration is not a replacement owner (P6-D-002): it continues the same limiter.
+    // P6.3 corrected the P4 version of this test, which expected a fresh limiter here.
     #[test]
-    fn a_safely_replaced_owner_starts_with_a_fresh_limiter() {
+    fn only_a_new_process_session_starts_a_fresh_limiter() {
         let scope = b"start-limiter-owner";
         let clock = ManualClock::new();
         let owner = TrustedAuthority::register_with_limiter_clock(scope, clock.clone()).unwrap();
@@ -8570,7 +8573,6 @@ mod tests {
         }
         assert_eq!(decide(&executor), StartLimit::Refused);
         clock.set(secs(3));
-        // While the owner exists no second owner, and so no second limiter, can be created.
         assert_eq!(
             TrustedAuthority::register_with_limiter_clock(scope, clock.clone()).unwrap_err(),
             OwnerError::AlreadyRegistered
@@ -8581,8 +8583,19 @@ mod tests {
         drop(executor);
         owner.release().unwrap();
 
-        let replacement = TrustedAuthority::register_with_limiter_clock(scope, clock).unwrap();
-        let executor = replacement.executor();
+        let again = TrustedAuthority::register_with_limiter_clock(scope, clock.clone()).unwrap();
+        let executor = again.executor();
+        assert_eq!(executor.start_limiter_snapshot(), state);
+        assert_eq!(decide(&executor), StartLimit::Refused);
+        drop(executor);
+        again.release().unwrap();
+
+        // An authority this process never owned has no session yet: exactly the state a new
+        // process starts in after safe acquisition.
+        let fresh =
+            TrustedAuthority::register_with_limiter_clock(b"start-limiter-owner-new", clock)
+                .unwrap();
+        let executor = fresh.executor();
         assert_eq!(
             executor.start_limiter_snapshot(),
             StartLimiterSnapshot {
@@ -8597,7 +8610,7 @@ mod tests {
         }
         assert_eq!(decide(&executor), StartLimit::Refused);
         drop(executor);
-        replacement.release().unwrap();
+        fresh.release().unwrap();
     }
 
     // R-OWNER-039: an unusable limiter clock admits nothing and changes nothing.

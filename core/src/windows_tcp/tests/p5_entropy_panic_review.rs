@@ -144,7 +144,12 @@ fn p5_f005_003_adapter_initiator_exposure_panic_poisons_the_run() {
         Next::InboundFrame,
         Next::Close,
     ] {
-        let (i, r) = (Node::new("p5-f005-003-i"), Node::new("p5-f005-003-r"));
+        // One authority pair per case: the held live slot keeps each process session
+        // non-quiescent, so re-registering a scope would fail closed (P6.3).
+        let (i, r) = (
+            Node::new(&format!("p5-f005-003-i-{next:?}")),
+            Node::new(&format!("p5-f005-003-r-{next:?}")),
+        );
         let (tc, ci, cr) = clocks();
         let mut x = Sides::new(&i, &r, &tc, &ci, &cr);
         let run = x.open(&ci, [0x61; 16]);

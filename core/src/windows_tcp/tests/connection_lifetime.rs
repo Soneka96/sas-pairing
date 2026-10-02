@@ -79,7 +79,11 @@ fn ownerless_output_has_absolute_and_no_progress_deadlines() {
         Out::Trickle(-1),
         Out::Trickle(0),
     ] {
-        let (i, r) = (Node::new("p6-out-i"), Node::new("p6-out-r"));
+        // One authority pair per case: budgets persist per process session (P6.3).
+        let (i, r) = (
+            Node::new(&format!("p6-out-i-{case:?}")),
+            Node::new(&format!("p6-out-r-{case:?}")),
+        );
         let (tc, ci, cr) = clocks();
         let mut s = Sides::new(&i, &r, &tc, &ci, &cr);
         let (run, _) = s.sas(&i, &r, &ci, [0x60; 16]);
@@ -196,7 +200,10 @@ fn a_local_rejects_cancel_is_bounded_like_any_ownerless_output() {
 #[test]
 fn quiescent_connection_after_a_completed_ceremony_releases_its_live_slot() {
     for reuse in [false, true] {
-        let (i, r) = (Node::new("p6-quiet-i"), Node::new("p6-quiet-r"));
+        let (i, r) = (
+            Node::new(&format!("p6-quiet-i-{reuse}")),
+            Node::new(&format!("p6-quiet-r-{reuse}")),
+        );
         let (tc, ci, cr) = clocks();
         let mut s = Sides::new(&i, &r, &tc, &ci, &cr);
         let (run, identity) = s.sas(&i, &r, &ci, [0x62; 16]);

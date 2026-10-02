@@ -168,12 +168,21 @@ fn process_ownership_and_full_reservation_lifecycle() {
     drop(eleventh);
     drop(executor);
     authority.release().unwrap();
-    let replacement = TrustedAuthority::register(b"integration-owner").unwrap();
+    // P6.3 (P6-D-002) intentionally corrected the P4 registration-lifetime interpretation, under
+    // which this re-registration started a fresh `Ready { remaining: 10 }`. Re-registering in
+    // the same live process is not a replacement owner: the session stays exhausted.
+    let again = TrustedAuthority::register(b"integration-owner").unwrap();
+    let executor = again.executor();
+    assert_eq!(executor.status().unwrap(), Status::Exhausted);
+    let mut twelfth = executor.begin(Role::Initiator).unwrap();
+    let token = again.authorize(&mut twelfth).unwrap();
     assert_eq!(
-        replacement.executor().status().unwrap(),
-        Status::Ready { remaining: 10 }
+        executor.reserve(&mut twelfth, Some(token)),
+        Err(Error::Exhausted)
     );
-    replacement.release().unwrap();
+    drop(twelfth);
+    drop(executor);
+    again.release().unwrap();
 }
 
 #[test]
@@ -289,7 +298,8 @@ fn shared_guard_race_has_one_winner() {
 // R-OWNER-031: clean release first requires that no ceremony state of the authority remains.
 // While any exists the explicit release is refused, the OS lease stays held (another process
 // and an in-process re-registration are both denied), and the exposed ceremony keeps its guard.
-// Only once that state has ended is the lease released, so a replacement starts a fresh budget.
+// Only once that state has ended is the lease released. A re-registration in this same process
+// then continues the same process session (P6.3, P6-D-002; P4 expected a fresh 10 here).
 #[test]
 fn ownership_is_never_released_while_ceremony_state_remains() {
     let scope = format!("release-live-{}", std::process::id());
@@ -316,12 +326,12 @@ fn ownership_is_never_released_while_ceremony_state_remains() {
     assert_eq!(executor.status().unwrap(), Status::Ready { remaining: 9 });
     drop(ceremony);
     drop(executor);
-    let replacement = TrustedAuthority::register(scope.as_bytes()).unwrap();
+    let again = TrustedAuthority::register(scope.as_bytes()).unwrap();
     assert_eq!(
-        replacement.executor().status().unwrap(),
-        Status::Ready { remaining: 10 }
+        again.executor().status().unwrap(),
+        Status::Ready { remaining: 9 }
     );
-    replacement.release().unwrap();
+    again.release().unwrap();
 }
 
 #[test]
@@ -424,4 +434,143 @@ fn simultaneous_independent_processes_have_one_owner_and_safe_replacement() {
 
     let replacement = TrustedAuthority::register(scope.as_bytes()).unwrap();
     replacement.release().unwrap();
+}
+
+/// One locally authorized exposure reservation, terminated at once; the opportunity stays spent.
+fn spend(authority: &TrustedAuthority) -> Result<u8, Error> {
+    let executor = authority.executor();
+    let mut ceremony = executor.begin(Role::Initiator).unwrap();
+    let token = authority.authorize(&mut ceremony).unwrap();
+    let result = executor.reserve(&mut ceremony, Some(token));
+    executor.terminate(&mut ceremony).unwrap();
+    result
+}
+
+// P6.3 (P6-D-002, R-OWNER-017, R-OWNER-021): while another process holds the authority between
+// two registrations of this process, reactivation fails on the OS lease and this process's
+// session keeps its spent budget; once the other process is gone the same session continues.
+#[test]
+fn a_foreign_owner_in_between_never_resets_this_process_session() {
+    let scope = format!("foreign-between-{}", std::process::id());
+    let authority = TrustedAuthority::register(scope.as_bytes()).unwrap();
+    assert_eq!(spend(&authority), Ok(9));
+    assert_eq!(spend(&authority), Ok(8));
+    authority.release().unwrap();
+
+    let (mut child, mut input) = owner(&scope);
+    for _ in 0..2 {
+        assert_eq!(
+            TrustedAuthority::register(scope.as_bytes()).unwrap_err(),
+            Error::OwnershipUnavailable
+        );
+    }
+    writeln!(input).unwrap();
+    drop(input);
+    assert!(child.wait().unwrap().success());
+
+    let again = TrustedAuthority::register(scope.as_bytes()).unwrap();
+    assert_eq!(
+        again.executor().status().unwrap(),
+        Status::Ready { remaining: 8 }
+    );
+    // This process holds the lease again: another process is excluded.
+    let contender = Command::new(env!("CARGO_BIN_EXE_ownership_probe"))
+        .arg(&scope)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!contender.status.success(), "the lease is held again");
+    again.release().unwrap();
+}
+
+// P6.3 (P6-D-002, I1): threads racing to re-register an inactive process session produce one
+// registration per round, all over one budget, so the session never exposes more than ten.
+#[test]
+fn same_process_re_registration_race_has_one_winner_and_one_budget() {
+    const THREADS: usize = 8;
+    let scope = format!("reregister-race-{}", std::process::id());
+    TrustedAuthority::register(scope.as_bytes())
+        .unwrap()
+        .release()
+        .unwrap();
+    let mut granted = 0u8;
+    for round in 0..14 {
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let contenders: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let (barrier, scope) = (barrier.clone(), scope.clone());
+                thread::spawn(move || {
+                    barrier.wait();
+                    TrustedAuthority::register(scope.as_bytes())
+                })
+            })
+            .collect();
+        let (mut winners, losers): (Vec<_>, Vec<_>) = contenders
+            .into_iter()
+            .map(|contender| contender.join().unwrap())
+            .partition(Result::is_ok);
+        assert_eq!(winners.len(), 1, "round {round}");
+        assert!(
+            losers
+                .iter()
+                .all(|loser| loser.as_ref().err() == Some(&Error::AlreadyRegistered)),
+            "round {round}: {losers:?}"
+        );
+        let winner = winners.pop().unwrap().unwrap();
+        let expected = if granted == 10 {
+            Status::Exhausted
+        } else {
+            Status::Ready {
+                remaining: 10 - granted,
+            }
+        };
+        assert_eq!(
+            winner.executor().status().unwrap(),
+            expected,
+            "round {round}"
+        );
+        if spend(&winner).is_ok() {
+            granted += 1;
+        }
+        winner.release().unwrap();
+    }
+    assert_eq!(granted, 10);
+}
+
+// P6.3 (P6-D-002, R-OWNER-006, R-OWNER-038(c)): each genuinely new OS process starts a fresh
+// volatile session after safely acquiring ownership, while its own same-process release and
+// re-registration continues that session.
+#[test]
+fn every_new_process_starts_fresh_but_its_re_registration_does_not() {
+    let scope = format!("process-session-{}", std::process::id());
+    for process in 0..2 {
+        let output = Command::new(env!("CARGO_BIN_EXE_ownership_probe"))
+            .args([&scope, "--session"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "process {process}");
+        assert_eq!(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            [
+                "FIRST Ready { remaining: 10 }",
+                "AGAIN Ready { remaining: 9 }"
+            ],
+            "process {process}"
+        );
+    }
+    // This test process never owned the scope, so its first registration is fresh as well.
+    let authority = TrustedAuthority::register(scope.as_bytes()).unwrap();
+    assert_eq!(
+        authority.executor().status().unwrap(),
+        Status::Ready { remaining: 10 }
+    );
+    authority.release().unwrap();
 }

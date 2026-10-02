@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt,
     sync::{
         Arc, Mutex, OnceLock,
@@ -33,7 +33,10 @@ const MAX_OPPORTUNITIES: u8 = 10;
 const MAX_PENDING_RESPONDERS: usize = 4;
 /// P3 §11.1.1: concurrent expensive preliminary operations per authority.
 const MAX_PRELIMINARY_OPERATIONS: usize = 2;
-static REGISTRY: OnceLock<Mutex<HashSet<Vec<u8>>>> = OnceLock::new();
+/// The process-wide authority registry (P3 §11.1.2(3)), keyed only by canonical identity. An
+/// entry is created by the first successful OS ownership of that identity and is never removed:
+/// its accounting lives until the OS process terminates (P6-D-002).
+static REGISTRY: OnceLock<Mutex<HashMap<Vec<u8>, ProcessSession>>> = OnceLock::new();
 static NEXT_CEREMONY: AtomicU64 = AtomicU64::new(1);
 static NEXT_AUTHORIZATION: AtomicU64 = AtomicU64::new(1);
 
@@ -102,14 +105,42 @@ impl fmt::Debug for CeremonyExecutor {
     }
 }
 
+/// One active registration: this process currently holds the authority's OS lease. Registrations
+/// come and go inside one process; the accounting they use belongs to the process session.
 struct State {
     identity: Vec<u8>,
-    shared: Mutex<Shared>,
+    /// The process session's one accounting state, shared with the registry entry.
+    shared: Arc<Mutex<Shared>>,
     ownership: Mutex<Option<os_lock::Lease>>,
-    /// The authority's one monotonic START-limiter clock for its whole owner lifetime, so all
-    /// limiter instants share one origin. Never a ceremony's clock; never wall-clock time.
-    /// Read only while `shared` is held; it must never take `shared` itself.
+    /// The authority's one monotonic START-limiter clock for its whole process session, so all
+    /// limiter instants share one origin across registrations. Never a ceremony's clock; never
+    /// wall-clock time. Read only while `shared` is held; it must never take `shared` itself.
     limiter_clock: Clock,
+    /// Whether this registration has yet to end (release its lease, settle the registry entry).
+    live: bool,
+}
+
+/// Whether a process session's authority is currently registered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Registration {
+    /// No registration and no lease; the accounting waits for the next registration.
+    Inactive,
+    /// One registration holds the OS lease.
+    Active,
+    /// Releasing the lease was uncertain: registration fails closed until process replacement.
+    Uncertain,
+}
+
+/// The process-session state of one canonical authority this process has owned (P6-D-002). The
+/// registry holds it strongly, so no release, drop, idle time, or failed reacquisition ends it;
+/// only process termination does. It is never persisted.
+struct ProcessSession {
+    /// Opportunity budget, START limiter, and the active registration's runtime resources, in
+    /// the one mutex that keeps guard and opportunity reservation atomic.
+    shared: Arc<Mutex<Shared>>,
+    /// Selected when the session is created and reused by every later registration.
+    limiter_clock: Clock,
+    registration: Registration,
 }
 
 struct Shared {
@@ -124,7 +155,8 @@ struct Shared {
     /// Expensive preliminary operations in progress, each held by one `PreliminaryPermit`.
     preliminary_operations: usize,
     /// The authority-wide START admission limiter. Volatile, never persisted, never reset by
-    /// any ceremony, connection, or refusal event; only a new owner session starts it fresh.
+    /// any ceremony, connection, refusal, release, or re-registration event; only a new process
+    /// session (a new OS process that safely acquires ownership) starts it fresh.
     start_limiter: StartLimiter,
     /// P3 §11.1.1 transport admission, shared by every router and listener of this authority
     /// (see `transport`): adapter accept-work tasks not yet turned into live connections, each
@@ -138,6 +170,33 @@ struct Shared {
 }
 
 impl Shared {
+    /// A new process session: ten opportunities, a fresh START limiter, no runtime resources.
+    fn new() -> Self {
+        Self {
+            remaining: MAX_OPPORTUNITIES,
+            active: None,
+            initiator_request_ids: HashSet::new(),
+            pending_responders: 0,
+            preliminary_operations: 0,
+            start_limiter: StartLimiter::new(),
+            pending_accepts: 0,
+            live_connections: 0,
+            incomplete_frames: 0,
+        }
+    }
+
+    /// Whether every runtime resource of past registrations was released. The budget and the
+    /// limiter are not runtime resources and carry over unchanged.
+    fn quiescent(&self) -> bool {
+        self.active.is_none()
+            && self.initiator_request_ids.is_empty()
+            && self.pending_responders == 0
+            && self.preliminary_operations == 0
+            && self.pending_accepts == 0
+            && self.live_connections == 0
+            && self.incomplete_frames == 0
+    }
+
     /// Releases a ceremony's request-ID reservation, if any, exactly once.
     fn release_request_id(&mut self, owned: &mut Option<[u8; 16]>) {
         if let Some(request_id) = owned.take() {
@@ -197,11 +256,38 @@ impl Drop for PreliminaryPermit {
     }
 }
 
+fn registry() -> &'static Mutex<HashMap<Vec<u8>, ProcessSession>> {
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+impl State {
+    /// Ends this registration once: releases the OS lease, then marks its process session
+    /// inactive, or uncertain if the release was. The session's accounting is kept either way.
+    /// Takes the registry lock with no other lock held; it never takes `shared`.
+    fn end(&mut self) -> Result<(), Error> {
+        if !std::mem::replace(&mut self.live, false) {
+            return Ok(());
+        }
+        let released = match self.ownership.get_mut() {
+            Ok(lease) => lease.take().map_or(Ok(()), os_lock::Lease::release),
+            Err(_) => Err(Error::OwnershipUncertain),
+        };
+        // A poisoned registry fails every later registration closed, so nothing is lost.
+        if let Ok(mut sessions) = registry().lock()
+            && let Some(session) = sessions.get_mut(&self.identity)
+        {
+            session.registration = match released {
+                Ok(()) => Registration::Inactive,
+                Err(_) => Registration::Uncertain,
+            };
+        }
+        released
+    }
+}
+
 impl Drop for State {
     fn drop(&mut self) {
-        if let Ok(mut known) = REGISTRY.get_or_init(|| Mutex::new(HashSet::new())).lock() {
-            known.remove(&self.identity);
-        }
+        let _ = self.end();
     }
 }
 
@@ -231,18 +317,25 @@ impl fmt::Debug for Authorization {
 
 impl TrustedAuthority {
     /// Registers one canonical scope. The trusted registry must issue one stable scope per capability.
+    ///
+    /// The opportunity budget and START limiter belong to this process's session for the
+    /// authority, not to the registration (P3 §11.1, P6-D-002): registering again after a
+    /// release or the final drop reacquires the OS lease and continues the same accounting.
+    /// Only a new OS process that safely acquires ownership starts fresh.
     pub fn register(scope: &[u8]) -> Result<Self, Error> {
-        Self::register_with(scope, system_clock())
+        Self::register_with(scope, system_clock)
     }
 
     /// `register` with one injected authority START-limiter clock (tests only; registration
-    /// succeeds only where an ownership lease exists).
+    /// succeeds only where an ownership lease exists). The clock takes effect only when this
+    /// call creates the process session; a later registration of the same authority keeps the
+    /// session's original clock and ignores `clock`, so no registration rewrites the timeline.
     #[cfg(all(test, windows))]
     pub(crate) fn register_with_limiter_clock(scope: &[u8], clock: Clock) -> Result<Self, Error> {
-        Self::register_with(scope, clock)
+        Self::register_with(scope, move || clock)
     }
 
-    fn register_with(scope: &[u8], limiter_clock: Clock) -> Result<Self, Error> {
+    fn register_with(scope: &[u8], limiter_clock: impl FnOnce() -> Clock) -> Result<Self, Error> {
         if scope.is_empty() || scope.len() > u32::MAX as usize {
             return Err(Error::InvalidScope);
         }
@@ -250,33 +343,50 @@ impl TrustedAuthority {
         identity.extend_from_slice(&(scope.len() as u32).to_be_bytes());
         identity.extend_from_slice(scope);
         // ponytail: one registry mutex serializes authority registration; shard only if contention is measured.
-        let registry = REGISTRY.get_or_init(|| Mutex::new(HashSet::new()));
-        let mut known = registry.lock().map_err(|_| Error::OwnershipUncertain)?;
-        if !known.insert(identity.clone()) {
-            return Err(Error::AlreadyRegistered);
-        }
-        let lease = match os_lock::Lease::acquire(&identity) {
-            Ok(lease) => lease,
-            Err(error) => {
-                known.remove(&identity);
-                return Err(error);
+        // Lock order: registry, then a session's `shared`; nothing takes the registry while
+        // holding `shared`.
+        let mut sessions = registry().lock().map_err(|_| Error::OwnershipUncertain)?;
+        let (shared, limiter_clock, lease) = match sessions.get_mut(&identity) {
+            Some(session) => {
+                match session.registration {
+                    Registration::Active => return Err(Error::AlreadyRegistered),
+                    Registration::Uncertain => return Err(Error::OwnershipUncertain),
+                    Registration::Inactive => {}
+                }
+                // Reactivation never resets or repairs: runtime resources an earlier
+                // registration left held (only after poisoning or an uncertain teardown) or
+                // poisoned accounting fail closed until process replacement.
+                if !matches!(
+                    session.shared.lock().map(|shared| shared.quiescent()),
+                    Ok(true)
+                ) {
+                    return Err(Error::OwnershipUncertain);
+                }
+                // Same accounting, but OS ownership is acquired anew; a failure leaves the
+                // session inactive with its accounting unchanged.
+                let lease = os_lock::Lease::acquire(&identity)?;
+                session.registration = Registration::Active;
+                (session.shared.clone(), session.limiter_clock.clone(), lease)
+            }
+            None => {
+                // A failed first acquisition establishes no ownership and creates no session.
+                let lease = os_lock::Lease::acquire(&identity)?;
+                let session = ProcessSession {
+                    shared: Arc::new(Mutex::new(Shared::new())),
+                    limiter_clock: limiter_clock(),
+                    registration: Registration::Active,
+                };
+                let parts = (session.shared.clone(), session.limiter_clock.clone(), lease);
+                sessions.insert(identity.clone(), session);
+                parts
             }
         };
         Ok(Self(Arc::new(State {
             identity,
-            shared: Mutex::new(Shared {
-                remaining: MAX_OPPORTUNITIES,
-                active: None,
-                initiator_request_ids: HashSet::new(),
-                pending_responders: 0,
-                preliminary_operations: 0,
-                start_limiter: StartLimiter::new(),
-                pending_accepts: 0,
-                live_connections: 0,
-                incomplete_frames: 0,
-            }),
+            shared,
             ownership: Mutex::new(Some(lease)),
             limiter_clock,
+            live: true,
         })))
     }
 
@@ -307,18 +417,12 @@ impl TrustedAuthority {
         })
     }
 
-    /// Explicit release is preferred; dropping the final handle also closes the OS lease.
+    /// Explicit release is preferred; dropping the final handle releases the OS lease the same
+    /// way. Either ends only this registration: the process session's budget and START limiter
+    /// stay, and an uncertain release disables registration until process replacement.
     pub fn release(self) -> Result<(), Error> {
         let mut state = Arc::try_unwrap(self.0).map_err(|_| Error::Busy)?;
-        let lease = state
-            .ownership
-            .get_mut()
-            .map_err(|_| Error::OwnershipUncertain)?
-            .take();
-        if let Some(lease) = lease {
-            lease.release()?;
-        }
-        Ok(())
+        state.end()
     }
 }
 
@@ -590,6 +694,15 @@ mod os_lock {
     // The operation has completed before the lease moves between threads.
     unsafe impl Send for Lease {}
 
+    #[cfg(test)]
+    thread_local! {
+        /// Test-only fault: the calling thread's next `release` reports an uncertain unlock
+        /// without unlocking (closing the handle still frees the lock). Per thread, so parallel
+        /// tests never see it.
+        pub(crate) static FAIL_NEXT_RELEASE: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+    }
+
     impl Lease {
         pub fn acquire(identity: &[u8]) -> Result<Self, Error> {
             let (sid, profile) = authenticated_account()?;
@@ -636,6 +749,10 @@ mod os_lock {
             Ok(Self { file, overlapped })
         }
         pub fn release(mut self) -> Result<(), Error> {
+            #[cfg(test)]
+            if FAIL_NEXT_RELEASE.take() {
+                return Err(Error::OwnershipUncertain);
+            }
             let ok = unsafe {
                 UnlockFileEx(
                     self.file.as_raw_handle() as HANDLE,
@@ -942,7 +1059,18 @@ mod windows_tests {
         drop(ceremony);
         drop(executor);
         authority.release().unwrap();
+        // Poisoned accounting is never discarded or rebuilt: re-registering this authority
+        // fails closed for the rest of the process (P6.3).
+        for _ in 0..2 {
+            assert_eq!(
+                TrustedAuthority::register(b"poisoned-state-test").unwrap_err(),
+                Error::OwnershipUncertain
+            );
+        }
     }
+
+    /// P6.3 process-session regressions (P5-F-003, P6-D-002).
+    mod process_session;
 }
 
 #[cfg(all(test, not(windows)))]
