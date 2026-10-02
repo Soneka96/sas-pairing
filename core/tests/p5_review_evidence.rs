@@ -18,8 +18,9 @@ use windows_sys::Win32::{
 
 /// P5-F-001 precondition. After a peer writes bytes and closes its socket gracefully, `WSAPoll`
 /// reports `POLLHUP` together with `POLLRDNORM`, and the bytes the peer wrote are still readable.
-/// The experimental owner loop treats any `POLLHUP` as "close without reading", so such bytes
-/// (for example a final INITIATOR_FINISH_ACK) are discarded. This test records only the OS fact.
+/// At P5 the experimental owner loop treated any `POLLHUP` as "close without reading", so such
+/// bytes (for example a final INITIATOR_FINISH_ACK) were discarded; since P6.2 (P6-D-003) it reads
+/// them until EOF. This test records only the OS fact, which stays true.
 #[test]
 fn p5_f_001_wsapoll_reports_hang_up_while_written_bytes_remain_readable() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

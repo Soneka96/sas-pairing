@@ -7,18 +7,24 @@
 //! authorization, routing, limiter, or accounting decision.
 //!
 //! One `drive_once` is bounded synchronous work, with no thread, timer, sleep, or queue:
-//! 1. a deadline sweep: per live connection at most one transport frame-deadline poll and one
-//!    bounded ceremony-deadline poll (itself at most `MAX_CEREMONY_POLLS_PER_CALL` routes);
+//! 1. a deadline sweep: per live connection at most one transport connection-deadline poll
+//!    (frame deadlines, or the P6-D-001 connection lifetime) and one bounded ceremony-deadline
+//!    poll (itself at most `MAX_CEREMONY_POLLS_PER_CALL` routes);
 //! 2. at most one `WSAPoll` over at most `MAX_POLL_SOCKETS` (1 listener + 16 connections) sockets,
 //!    waiting at most `OWNER_LOOP_MAX_WAIT` (not at all if step 1 produced an event). That wait is
 //!    scheduling plumbing only: not a protocol deadline, and a wake (or a zero return) is not
 //!    progress, activity, keepalive, or timeout of anything;
 //! 3. the same deadline sweep again, so no socket I/O follows a wait (or a long pause between
 //!    calls) before deadlines were re-evaluated;
-//! 4. per existing connection at most ONE socket operation: error, hang-up, or invalid-handle
-//!    readiness closes it without any read or write; otherwise one `on_writable` while a frame is
-//!    retained, else one `on_readable` if the socket is readable or the adapter still retains
-//!    unconsumed input of an earlier read (which also makes the wait zero);
+//! 4. per existing connection at most ONE socket operation: error or invalid-handle readiness
+//!    closes it without any read or write; otherwise one `on_writable` while a frame is retained
+//!    and the socket is writable, else one `on_readable` if the socket is readable or hung up or
+//!    the adapter still retains unconsumed input of an earlier read (which also makes the wait
+//!    zero). Hang-up (P6-D-003) is a peer's graceful FIN, which ends only its sending direction:
+//!    it closes nothing by itself, its earlier bytes are still read and a retained frame is
+//!    still written, and the connection ends at the read that returns EOF. Draining is one
+//!    operation per drive, never a loop; the transport's frame and P6-D-001 connection
+//!    deadlines and the ceremony deadlines bound a half-closed peer that never reaches EOF;
 //! 5. at most ONE OS accept, after every existing connection was served, so a continuously
 //!    readable listener never starves established connections.
 //!
@@ -31,13 +37,14 @@
 //! stronger implementation bound than the authority's 4, which is unchanged. The OS backlog is
 //! the listener's and stays unclaimed and unbounded here.
 //!
-//! Failure scope. Connection-local endings (EOF, socket error, readiness error/hang-up, transport
-//! or routing failure, an abandoned partial frame) remove only that connection. A listener error
-//! or error readiness drops only the listener; live connections continue and nothing rebinds. An
-//! interrupted `WSAPoll` makes no progress. A failed `WSAPoll` (readiness, and so deadline driving,
-//! can no longer be trusted) or any `OwnershipUncertain` (shared authority state or cleanup
-//! uncertain) fails the whole hosting context closed: listener dropped, every connection's close
-//! attempted, nothing admitted again, uncertain capacity held as the existing teardown leaves it.
+//! Failure scope. Connection-local endings (EOF, socket error, error or invalid-handle readiness,
+//! transport or routing failure, an abandoned partial frame) remove only that connection. A
+//! listener accept error, or error, hang-up, or invalid-handle readiness on the listener, drops
+//! only the listener; live connections continue and nothing rebinds. An interrupted `WSAPoll`
+//! makes no progress. A failed `WSAPoll` (readiness, and so deadline driving, can no longer be
+//! trusted) or any `OwnershipUncertain` (shared authority state or cleanup uncertain) fails the
+//! whole hosting context closed: listener dropped, every connection's close attempted, nothing
+//! admitted again, uncertain capacity held as the existing teardown leaves it.
 //!
 //! The loop is a hosting layer, not the authority: closing, dropping, or replacing it (a frontend
 //! or listener restart) releases no ownership lease and resets no opportunity budget, guard, START
@@ -78,8 +85,15 @@ const _: () = assert!(OWNER_LOOP_MAX_WAIT.as_millis() == WAIT_MS as u128);
 pub(crate) const MAX_POLL_SOCKETS: usize = 1 + MAX_LIVE_UNAUTHENTICATED_CONNECTIONS;
 /// At most one listener event plus one event per live connection.
 pub(crate) const MAX_STEP_EVENTS: usize = MAX_POLL_SOCKETS;
-/// Readiness that ends a socket's use, whatever else is reported with it.
-const FAILED: i16 = POLLERR | POLLHUP | POLLNVAL;
+/// Readiness that ends a connection's use before any read or write, whatever else is reported
+/// with it (P6-D-003). Hang-up is not among them: see `READABLE`.
+const CONNECTION_FAILED: i16 = POLLERR | POLLNVAL;
+/// Readiness that makes one read worthwhile for a connection with no retained frame: data, or a
+/// peer's graceful hang-up (P6-D-003), which ends only the peer's sending direction. The read
+/// then returns the bytes the peer sent before it, or EOF, the one graceful-close boundary.
+const READABLE: i16 = POLLIN | POLLHUP;
+/// Readiness that ends the listener's use, whatever else is reported with it.
+const LISTENER_FAILED: i16 = POLLERR | POLLHUP | POLLNVAL;
 
 /// The already-bound listener the loop accepts from. Production is `std::net::TcpListener`;
 /// tests script accepts and failures.
@@ -163,7 +177,8 @@ pub(crate) enum ListenerFailure {
 pub(crate) enum ConnectionEnd {
     /// The adapter ended it (EOF, socket or host failure, abandoned partial frame).
     Adapter(TcpError),
-    /// Error, hang-up, or invalid-handle readiness: closed before any read or write.
+    /// Error or invalid-handle readiness (the reported flags, diagnostic only): closed before any
+    /// read or write. A peer's graceful hang-up ends through the adapter's EOF instead.
     Readiness(i16),
 }
 
@@ -349,7 +364,9 @@ impl<'r, L: Listen> WindowsOwnerLoop<'r, L> {
                 continue;
             }
             let connection = live.connection;
-            let outcome = if revents & FAILED != 0 {
+            // Hang-up alone closes nothing: a half-closed peer still receives (the retained frame
+            // is written on writable readiness) and its earlier bytes are still read, until EOF.
+            let outcome = if revents & CONNECTION_FAILED != 0 {
                 match live.tcp.close() {
                     Ok(()) => Err(Some(ConnectionEnd::Readiness(revents))),
                     Err(error) => Ok(Err(error)),
@@ -357,7 +374,7 @@ impl<'r, L: Listen> WindowsOwnerLoop<'r, L> {
             } else if live.tcp.write_pending() && revents & POLLOUT != 0 {
                 Ok(live.tcp.on_writable())
             } else if !live.tcp.write_pending()
-                && (revents & POLLIN != 0 || live.tcp.input_buffered())
+                && (revents & READABLE != 0 || live.tcp.input_buffered())
             {
                 Ok(live.tcp.on_readable())
             } else {
@@ -544,8 +561,8 @@ impl<'r, L: Listen> WindowsOwnerLoop<'r, L> {
             .ok_or(OwnerLoopError::UnknownConnection)
     }
 
-    /// One bounded deadline pass: per connection without an event yet, one frame-deadline poll
-    /// and one ceremony-deadline poll. An event marks the connection served for this drive.
+    /// One bounded deadline pass: per connection without an event yet, one connection-deadline
+    /// poll and one ceremony-deadline poll. An event marks the connection served for this drive.
     fn sweep(&mut self, step: &mut OwnerStep) {
         for index in 0..self.connections.len() {
             let live = &mut self.connections[index];
@@ -554,7 +571,7 @@ impl<'r, L: Listen> WindowsOwnerLoop<'r, L> {
             }
             let outcome = live
                 .tcp
-                .poll_frame_deadlines()
+                .poll_connection_deadlines()
                 .and_then(|_| live.tcp.poll_ceremony_deadlines());
             if matches!(&outcome, Ok(polled) if polled.event.is_none() && polled.result.is_none()) {
                 continue;
@@ -592,7 +609,7 @@ impl<'r, L: Listen> WindowsOwnerLoop<'r, L> {
     /// The listener's readiness: error flags drop it; otherwise at most one accept, admitted at
     /// once through a permit and the adapter, or dropped.
     fn listen(&mut self, revents: i16, step: &mut OwnerStep) {
-        if revents & FAILED != 0 {
+        if revents & LISTENER_FAILED != 0 {
             self.listener = None;
             step.push(OwnerEvent::ListenerDisabled(ListenerFailure::Readiness(
                 revents,
@@ -902,8 +919,11 @@ mod tests {
         fn last_wait(&self) -> (usize, i32) {
             *self.waits.borrow().last().unwrap()
         }
+        /// Reports `revents` for `fd` from now on, replacing any earlier override for it.
         fn set(&self, fd: SOCKET, revents: i16) {
-            self.overrides.borrow_mut().push((fd, revents));
+            let mut overrides = self.overrides.borrow_mut();
+            overrides.retain(|(socket, _)| *socket != fd);
+            overrides.push((fd, revents));
         }
         fn during(&self, op: impl FnOnce() + 'static) {
             *self.during.borrow_mut() = Some(Box::new(op));
@@ -1461,8 +1481,14 @@ mod tests {
         r.release();
     }
 
+    /// Error and invalid-handle readiness close a connection before any read or write; hang-up
+    /// does not. P6.2 intentionally corrected the P4 reading of this test (formerly
+    /// `error_or_hang_up_readiness_closes_a_connection_before_any_read_or_write`), under which
+    /// `POLLHUP | POLLRDNORM` also closed A unread and discarded the START its peer sent before a
+    /// graceful close (P5-F-001). Under P6-D-003 hang-up is read toward EOF and does not stop a
+    /// retained frame from being written; the hard-failure half is unchanged.
     #[test]
-    fn error_or_hang_up_readiness_closes_a_connection_before_any_read_or_write() {
+    fn error_or_invalid_handle_readiness_closes_a_connection_before_any_read_or_write() {
         let r = Node::new("loop-readiness-error");
         let (tc, cc, _) = clocks();
         let (mut owner, net) = hosting(&r, &tc, &cc);
@@ -1474,29 +1500,43 @@ mod tests {
         inbound(step_of(drive(&mut owner, &net), b));
         // A: readable input with a hang-up. B: writable with an error. C: ordinary input.
         sa.data(&start(&[1; 16]));
+        sa.read(ReadStep::Eof);
         sc.data(&start(&[3; 16]));
         net.set(sa.raw_socket(), POLLHUP | POLLRDNORM);
         net.set(sb.raw_socket(), POLLERR | POLLWRNORM);
-        let mut events = drive(&mut owner, &net).events;
-        assert_eq!(events.len(), 3);
-        let third = events.pop().unwrap();
-        assert_eq!(
-            events,
-            [
-                OwnerEvent::Closed(a, ConnectionEnd::Readiness(POLLHUP | POLLRDNORM)),
-                OwnerEvent::Closed(b, ConnectionEnd::Readiness(POLLERR | POLLWRNORM)),
-            ]
-        );
-        let OwnerEvent::Step(conn, step) = third else {
-            panic!("no step: {third:?}");
+        let events = drive(&mut owner, &net).events;
+        let [
+            OwnerEvent::Step(ca, sta),
+            OwnerEvent::Closed(cb, end),
+            OwnerEvent::Step(cx, stc),
+        ] = <[_; 3]>::try_from(events).unwrap()
+        else {
+            panic!("not A's step, B's close, C's step");
         };
-        assert_eq!((conn, inbound(step).0), (c, HostEvent::StartAccepted));
-        // Neither was read from or written to; both shut down; B's run ended with it.
-        assert_eq!((sa.reads(), sb.writes(), sb.wire()), (0, 0, vec![]));
-        assert_eq!((sa.shutdowns(), sb.shutdowns(), sc.shutdowns()), (1, 1, 0));
-        assert_eq!((r.routes(), r.counts()), (1, (0, 1, 0, 1)));
+        assert_eq!((ca, cb, cx), (a, b, c));
+        assert_eq!(end, ConnectionEnd::Readiness(POLLERR | POLLWRNORM));
+        assert_eq!(inbound(sta).0, HostEvent::StartAccepted);
+        assert_eq!(inbound(stc).0, HostEvent::StartAccepted);
+        // A was read once and stays live; B was neither read nor written and is shut down.
+        assert_eq!((sa.reads(), sb.writes(), sb.wire()), (1, 0, vec![]));
+        assert_eq!((sa.shutdowns(), sb.shutdowns(), sc.shutdowns()), (0, 1, 0));
+        assert_eq!((r.routes(), r.counts()), (2, (0, 2, 0, 2)));
         assert!(owner.is_listening());
-        // An invalid handle alike, while C retains its ACCEPT.
+        // A's ACCEPT still goes out to its half-closed peer; then its EOF ends A normally.
+        sc.hold(true);
+        net.set(sa.raw_socket(), POLLHUP | POLLWRNORM);
+        assert_eq!(step_of(drive(&mut owner, &net), a), written());
+        assert!(matches!(message(&sa.take_wire()), Message::Accept { .. }));
+        net.set(sa.raw_socket(), POLLHUP);
+        assert_eq!(
+            drive(&mut owner, &net).events,
+            vec![OwnerEvent::Closed(
+                a,
+                ConnectionEnd::Adapter(TcpError::PeerClosed)
+            )]
+        );
+        assert_eq!((sa.reads(), sa.shutdowns()), (2, 1));
+        // An invalid handle closes like an error, while C retains its ACCEPT.
         net.set(sc.raw_socket(), POLLNVAL);
         assert_eq!(
             drive(&mut owner, &net).events,
@@ -2652,10 +2692,11 @@ mod tests {
             let step = owner.drive_once().unwrap();
             (!step.events.is_empty()).then_some(step)
         });
+        // A graceful close with nothing in flight ends at the read that returns EOF, not on the
+        // hang-up readiness itself (P6-D-003).
         assert!(matches!(
             step.events.as_slice(),
-            [OwnerEvent::Closed(c, ConnectionEnd::Readiness(_) | ConnectionEnd::Adapter(TcpError::PeerClosed))]
-                if *c == a
+            [OwnerEvent::Closed(c, ConnectionEnd::Adapter(TcpError::PeerClosed))] if *c == a
         ));
         assert_eq!((owner.live_connections(), r.counts()), (1, (0, 1, 0, 0)));
         second.write_all(&start(&[7; 16])).unwrap();
@@ -2666,6 +2707,12 @@ mod tests {
         drop(owner);
         r.release();
     }
+
+    /// P6-D-001 connection-lifetime regressions (P5-F-002 remediation).
+    mod connection_lifetime;
+
+    /// P6-D-003 graceful hang-up regressions (P5-F-001 remediation).
+    mod graceful_hang_up;
 
     /// P5.2 review-only owner-loop evidence (not part of the product); see
     /// `docs/p5-security-review/adversarial-sequences.md`.

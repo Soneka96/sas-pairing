@@ -6,6 +6,9 @@
 //! The panic is injected with the existing P4 pause points immediately before
 //! `EphemeralSas::new()`. PASSING EVIDENCE TESTS: they assert the security properties that
 //! must hold and record the availability effects without asserting them as desirable.
+//!
+//! P6.4 (decision P6-D-004) adds a test-only assertion that a same-process re-registration of
+//! the panicked Initiator's authority fails closed with `OwnershipUncertain`.
 use super::*;
 use crate::test_hook::{self, Point};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -110,4 +113,16 @@ fn p5_f005_005_owner_loop_initiator_panic_then_the_loop_fails_closed() {
     // The peer Responder is untouched: still pending, bounded by its own deadlines.
     assert_eq!(r.counts(), (0, 1, 0, 1));
     assert_eq!(r.status(), Status::Ready { remaining: 10 });
+    // P6.4 (P6-D-004): a same-process re-registration of the panicked authority fails closed;
+    // it never yields fresh accounting.
+    let shared = i.executor.0.shared.clone();
+    drop(i);
+    for _ in 0..2 {
+        assert_eq!(
+            TrustedAuthority::register(b"p5-f005-005-i").unwrap_err(),
+            crate::Error::OwnershipUncertain
+        );
+    }
+    let shared = shared.lock().unwrap();
+    assert_eq!((shared.remaining, shared.live_connections), (9, 1));
 }

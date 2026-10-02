@@ -3,7 +3,8 @@
 //! experimental Windows TCP adapter, with scripted sockets and hand clocks. Families
 //! `F007-*`, `TCP-STREAM-*`, `TCP-RD-*`, `TCP-W-*`, `TCP-DEADLINE-*`, `F002-*`, and `TCP-OUT-*` in
 //! `docs/p5-security-review/adversarial-sequences.md`. Ignored tests here are EXPECTED-FAIL
-//! known-bug reproducers: they state the desired future invariant and fail until P6.
+//! known-bug reproducers: they state the desired future invariant and fail until P6. The
+//! P5-F-002 reproducer failed through P5 and became a normal regression test in P6.1.
 use super::*;
 use crate::start_limiter::ROLLING_WINDOW;
 use std::fmt::Write as _;
@@ -889,7 +890,8 @@ fn p5_tcp_w_002_final_ack_write_sequences_confirm_only_the_last_byte() {
 /// TCP-DEADLINE-001: the 2 s no-progress and 10 s whole-frame deadlines of an incomplete
 /// frame, at −1 ns / exactly / +1 ns, with retained-byte progress, a WouldBlock read, and a
 /// poll before the boundary (neither refreshes). Expiry is `elapsed >= deadline`. Without an
-/// incomplete frame no transport deadline exists at all (P5-F-002).
+/// incomplete frame no transport deadline existed at all in P5 (P5-F-002; P6-D-001 adds the
+/// connection lifetime).
 #[test]
 fn p5_tcp_deadline_001_frame_deadlines_at_the_exact_boundary() {
     let r = drained("p5-tcp-deadline");
@@ -946,7 +948,7 @@ fn p5_tcp_deadline_001_frame_deadlines_at_the_exact_boundary() {
                 if case.starts_with("would-block") {
                     tc.set(ms(1900));
                     assert_eq!(tcp.on_readable(), Ok(TcpStep::default()));
-                    assert_eq!(tcp.poll_frame_deadlines(), Ok(TcpStep::default()));
+                    assert_eq!(tcp.poll_connection_deadlines(), Ok(TcpStep::default()));
                 }
                 let instant = match offset {
                     -1 => probe - NS,
@@ -955,7 +957,7 @@ fn p5_tcp_deadline_001_frame_deadlines_at_the_exact_boundary() {
                 };
                 tc.set(instant);
                 let outcome = if via_poll {
-                    tcp.poll_frame_deadlines()
+                    tcp.poll_connection_deadlines()
                 } else {
                     io.data(&a[chunks.len() * 10..]);
                     tcp.on_readable()
@@ -990,7 +992,10 @@ fn p5_tcp_deadline_001_frame_deadlines_at_the_exact_boundary() {
 /// One owner-loop sweep's worth of polling for one connection, as the loop does it.
 fn sweep(tcp: &mut Tcp<'_>) -> Result<Vec<TcpEvent>, TcpError> {
     let mut events = Vec::new();
-    for step in [tcp.poll_frame_deadlines()?, tcp.poll_ceremony_deadlines()?] {
+    for step in [
+        tcp.poll_connection_deadlines()?,
+        tcp.poll_ceremony_deadlines()?,
+    ] {
         events.extend(step.event);
     }
     Ok(events)
@@ -1129,8 +1134,8 @@ fn f002_cases(tag: &str, mut record: impl FnMut(&str, bool, String)) {
 /// F002-001 (PASSING EVIDENCE): which connection states have a finite release today. Durable
 /// assertions only: an incomplete frame (C) and a complete unroutable frame (D) are released;
 /// no case creates a result or touches the budget. The unbounded cases (A, B, E) are recorded,
-/// not asserted; `p5_f_002_idle_connections_eventually_release_their_live_slot` (ignored)
-/// states the desired invariant.
+/// not asserted here; `p5_f_002_idle_connections_eventually_release_their_live_slot` asserts
+/// their release since P6.1.
 #[test]
 fn p5_f002_001_connection_lifetime_cases() {
     let mut rows = Vec::new();
@@ -1143,13 +1148,12 @@ fn p5_f002_001_connection_lifetime_cases() {
     eprintln!("F002-001:\n  {}", rows.join("\n  "));
 }
 
-/// P5-F-002 EXPECTED-FAIL KNOWN-BUG REPRODUCER (desired invariant; fails until P6): every
-/// admitted connection, idle before its first frame (A), idle after its run ended (B), or
-/// holding only an owner-less retained frame for a peer that never reads (E), is eventually
-/// released by the owner's ordinary sweep. Run with
-/// `cargo test --manifest-path core/Cargo.toml --lib p5_f_002_idle -- --ignored --nocapture`.
+/// P5-F-002 REGRESSION (P6.1, decision P6-D-001): every admitted connection, idle before its
+/// first frame (A), idle after its run ended (B), or holding only an owner-less retained frame
+/// for a peer that never reads (E), is released by the owner's ordinary sweep. In P5 this was
+/// the `#[ignore]`d EXPECTED-FAIL reproducer of the gap and failed on A, B, and E; it runs
+/// normally since the P6.1 remediation.
 #[test]
-#[ignore = "P5-F-002 known gap; enable after P6 remediation"]
 fn p5_f_002_idle_connections_eventually_release_their_live_slot() {
     let mut unreleased = Vec::new();
     f002_cases("desired", |case, released, detail| {
@@ -1168,8 +1172,9 @@ fn p5_f_002_idle_connections_eventually_release_their_live_slot() {
 /// Output lifetime is separate from ceremony lifetime: a frame a live run owns never outlives
 /// that run (at its deadline an unsent frame is discarded, a partly sent one closes the
 /// connection), but whatever replaces it, the run's own timeout CANCEL, and a local REJECT or
-/// CANCEL frame, have no owner and no deadline. Durable assertions: no owned frame outlives its
-/// run, and no result or refund ever appears; the owner-less retention is recorded.
+/// CANCEL frame, have no owner, and in P5 no deadline. Durable assertions: no owned frame
+/// outlives its run, and no result or refund ever appears; the owner-less retention is
+/// recorded. Since P6-D-001 (P5-F-002 remediation) the owner-less CANCEL is released too.
 #[test]
 fn p5_tcp_out_001_retained_output_lifetime_versus_ceremony_lifetime() {
     let mut rows = Vec::new();
@@ -1202,11 +1207,20 @@ fn p5_tcp_out_001_retained_output_lifetime_versus_ceremony_lifetime() {
                 "a partly sent owned frame closes at its run's deadline"
             );
         } else {
-            assert_eq!(
-                owner_less,
-                Some(true),
-                "the owned frame was replaced by its CANCEL"
+            // P5 found the owned frame replaced by its owner-less CANCEL, retained for good.
+            // Since P6-D-001 (P5-F-002 remediation) that CANCEL has its own retained-output
+            // deadlines, so the connection is released.
+            assert!(
+                events.iter().any(|event| matches!(
+                    event,
+                    TcpEvent::Deadline {
+                        cancel: TimeoutCancel::Pending,
+                        ..
+                    }
+                )),
+                "the owned frame was replaced by its CANCEL: {events:?}"
             );
+            assert!(released, "the owner-less CANCEL is bounded (P6-D-001)");
         }
         rows.push(format!(
             "final ACK {tag}: released={released}, retained owner-less frame={owner_less:?}, events {events:?}, end {end:?}"

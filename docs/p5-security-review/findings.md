@@ -28,9 +28,11 @@ For `FALSE-POSITIVE` entries, severity is the severity the candidate **would hav
 
 ### Status
 
-`OPEN` (confirmed defect, or confirmed mismatch with the current normative baseline; remediation recommended, even where the remedy's design or values still need an owner decision) · `NEEDS-DECISION` (confirmed behavior where whether the current normative baseline is violated depends on an unresolved owner interpretation; no finding currently has this status) · `FALSE-POSITIVE` (disproved) · `ACCEPTED-LIMITATION` (already accepted by an owner decision or the normative profile; re-confirmed here) · `OUT-OF-SCOPE` · `DUPLICATE` · `REMEDIATED-IN-P6` (not used in P5).
+`OPEN` (confirmed defect, or confirmed mismatch with the current normative baseline; remediation recommended, even where the remedy's design or values still need an owner decision) · `NEEDS-DECISION` (confirmed behavior where whether the current normative baseline is violated depends on an unresolved owner interpretation; no finding currently has this status) · `FALSE-POSITIVE` (disproved) · `ACCEPTED-LIMITATION` (already accepted by an owner decision or the normative profile; re-confirmed here) · `OUT-OF-SCOPE` · `DUPLICATE` · `REMEDIATED-IN-P6` (not used in P5; set by P6 only after its closure bar is met, with the P5 entry otherwise preserved) · `DISPOSITIONED-IN-P6` (not used in P5; not a remediation claim; set by P6 when the reviewed behavior needs no P6 production fix and an owner decision either (A) accepts the current behavior and makes all required protocol and documentation semantics explicit, as for P5-F-007, or (B) accepts the current core behavior and assigns a mandatory implementation obligation to the later phase that owns the affected interface, as for P5-F-005).
 
 ## Summary
+
+**P6 status update (P6.6, 2026-10-02):** [P5-F-002](#p5-f-002) is **REMEDIATED-IN-P6** under owner decision P6-D-001 ([remediation record](../p6-remediation/p5-f-002.md)), [P5-F-001](#p5-f-001) is **REMEDIATED-IN-P6** under owner decision P6-D-003 ([remediation record](../p6-remediation/p5-f-001.md)), and [P5-F-003](#p5-f-003) is **REMEDIATED-IN-P6** under owner decision P6-D-002 ([remediation record](../p6-remediation/p5-f-003.md)). [P5-F-005](#p5-f-005) is **DISPOSITIONED-IN-P6 (P6.4) — mandatory P7 ABI containment requirement** under owner decision P6-D-004 ([disposition record](../p6-remediation/p5-f-005.md)). [P5-F-007](#p5-f-007) is **DISPOSITIONED-IN-P6 (P6.5) — current conservative completion boundary retained and documented** under owner decision P6-D-005 ([disposition record](../p6-remediation/p5-f-007.md)). No finding that P5 handed to P6 as OPEN remains OPEN, and P6.6 closed P6 with the experimental protocol-candidate freeze ([P6 final closure](../p6-remediation/final-closure.md)); the accepted limitations and false positives below are unchanged. Current remediation status lives in the [P6 remediation package](../p6-remediation/README.md); the summary table and closure note below are the P5 closure snapshot and are left as P5 recorded them.
 
 | Severity | Open | False Positive | Accepted Limitation | Out of Scope |
 |---|---|---|---|---|
@@ -54,13 +56,13 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 
 | ID | Title | Severity | Confidence | Status |
 |---|---|---|---|---|
-| [P5-F-001](#p5-f-001) | Owner loop discards bytes received before a graceful peer close | LOW | HIGH | OPEN |
-| [P5-F-002](#p5-f-002) | Connections with no frame in progress never expire, so 16 idle peers hold the live-connection cap indefinitely | MEDIUM | HIGH | OPEN |
-| [P5-F-003](#p5-f-003) | In-process re-registration starts a fresh opportunity budget without process replacement | LOW | HIGH | OPEN |
+| [P5-F-001](#p5-f-001) | Owner loop discards bytes received before a graceful peer close | LOW | HIGH | REMEDIATED-IN-P6 (P6.2; OPEN at P5 closure) |
+| [P5-F-002](#p5-f-002) | Connections with no frame in progress never expire, so 16 idle peers hold the live-connection cap indefinitely | MEDIUM | HIGH | REMEDIATED-IN-P6 (P6.1; OPEN at P5 closure) |
+| [P5-F-003](#p5-f-003) | In-process re-registration starts a fresh opportunity budget without process replacement | LOW | HIGH | REMEDIATED-IN-P6 (P6.3; OPEN at P5 closure) |
 | [P5-F-004](#p5-f-004) | `token_user_sid` does not bound the OS-written SID to the returned buffer | INFO | HIGH | ACCEPTED-LIMITATION (P5.3) |
-| [P5-F-005](#p5-f-005) | `Sas::new()` entropy panic leaves Router and adapter state conservatively stuck and escapes owner-loop calls | INFO | HIGH | OPEN |
+| [P5-F-005](#p5-f-005) | `Sas::new()` entropy panic leaves Router and adapter state conservatively stuck and escapes owner-loop calls | INFO | HIGH | DISPOSITIONED-IN-P6 (P6.4; mandatory P7 ABI containment requirement; OPEN at P5 closure) |
 | [P5-F-006](#p5-f-006) | `base64`'s default `simd-unsafe` engine encodes every MAC and HKDF input | INFO (if real) | HIGH | FALSE-POSITIVE (P5.3) |
-| [P5-F-007](#p5-f-007) | Reverse asymmetric completion at the Initiator's deadline boundary | INFO | HIGH | OPEN |
+| [P5-F-007](#p5-f-007) | Reverse asymmetric completion at the Initiator's deadline boundary | INFO | HIGH | DISPOSITIONED-IN-P6 (P6.5; conservative completion boundary retained and documented; OPEN at P5 closure) |
 | [P5-F-008](#p5-f-008) | Same-profile attacker can race the lock-path checks (TOCTOU) | INFO | HIGH | ACCEPTED-LIMITATION |
 | [P5-F-009](#p5-f-009) | Fork, snapshot, restore, or duplicated state can repeat ephemeral material | INFO | HIGH | ACCEPTED-LIMITATION |
 | [P5-F-010](#p5-f-010) | Secret remanence beyond the x25519-dalek drop boundary | INFO | HIGH | ACCEPTED-LIMITATION |
@@ -82,7 +84,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 <a id="p5-f-001"></a>
 ### P5-F-001 — Owner loop discards bytes received before a graceful peer close
 
-- **Status:** OPEN
+- **Status:** REMEDIATED-IN-P6 (P6.2). OPEN at P5 closure; the P5 record below is unchanged and the P6 note is appended at the end of this entry.
 - **Severity:** LOW
 - **Confidence:** HIGH
 - **Affected requirement(s):** P3 §9 (the Responder's result follows verification of INITIATOR_FINISH_ACK); P3 §3.1 and `R-WIRE-025` (received input is assembled into frames); `R-MAC-012`.
@@ -102,11 +104,18 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 - **Recommended remediation:** Treat `POLLHUP` without `POLLERR`/`POLLNVAL` as "readable until EOF": keep serving `on_readable` (retained suffix, then socket) one bounded operation per drive, and close only on `read() == 0` or an error. While a frame is retained, keep serving `on_writable` on writable readiness, because a half-closed peer still receives. Keep `POLLERR`/`POLLNVAL` as immediate close. A peer that never sends EOF stays bounded by the transport and ceremony deadlines (and by the P5-F-002 lifetime once remediated). Regression tests: enable the three P5.2 `#[ignore]` reproducers (complete frames before close or half-close, the loop-as-Responder final ACK, and pending output after a half-close).
 - **P6 disposition:** Remediate (adapter-only, no protocol change). Enable the P5.2 EXPECTED-FAIL reproducers as regression tests. The OS-fact test and LOOP-HUP-001..003 stay as durable evidence.
 - **Evidence:** the tests above; [adversarial sequences §4–§5](adversarial-sequences.md#4-owner-loop); [resources, deadlines, and transport §5–§6](resources-deadlines-transport.md#5-owner-loop); [reproducers](reproducers/README.md).
+- **P6 remediation (appended in P6.2; the P5 record above is unchanged):**
+  - **Decision:** [P6-D-003](../p6-remediation/decisions.md#p6-d-003--graceful-tcp-hang-up-handling): on an established connection `POLLERR` and `POLLNVAL` stay hard failures that close before any I/O; `POLLHUP` alone is a graceful peer FIN, drained toward EOF one operation per drive, and never suppresses a retained frame's write. Listener readiness is unchanged.
+  - **Remediation commit:** `c4212f201540e537e95a04233b19bf47e5df1b3f` (`fix: drain graceful hang-up before close`) on `feature/p6-review-remediation-protocol-freeze`. Owner-loop readiness classification only (`CONNECTION_FAILED`, `READABLE`, `LISTENER_FAILED`); the adapter, the P6-D-001 lifetime that bounds a half-closed peer, and every wire, crypto, and accounting rule are unchanged.
+  - **Regressions:** the three P5.2 `#[ignore]` reproducers now pass as normal tests (`…dispatches_complete_frames_before_graceful_close`, with one documented qualification for a full close after two frames, where the closed peer's reset is a hard failure; `…responder_loses_final_ack_before_graceful_close`; `…writes_pending_output_after_peer_half_close`); new permanent tests in `windows_owner_loop::tests::graceful_hang_up`, including the readiness precedence matrix and real-loopback close and `shutdown(Send)` cases. The P4 readiness test is split into its hard-failure meaning. The OS-fact test and LOOP-HUP-001..003 stay as evidence.
+  - **Normative sync:** no P3 change needed; `R-WIRE-025` and `R-MAC-012` amended in place.
+  - **CI:** Repository consistency, `windows-core`, and `unsupported-platform-fails-closed` SUCCESS at `c4212f2`.
+  - **P6 review evidence:** readiness model, follow-up adversarial review, and verification in the [remediation record](../p6-remediation/p5-f-001.md).
 
 <a id="p5-f-002"></a>
 ### P5-F-002 — Connections with no frame in progress never expire, so 16 idle peers hold the live-connection cap indefinitely
 
-- **Status:** OPEN
+- **Status:** REMEDIATED-IN-P6 (P6.1). OPEN at P5 closure; everything below the P6 remediation note is P5's original record.
 - **Severity:** MEDIUM
 - **Confidence:** HIGH
 - **Classification:** Confirmed implementation gap against P3 §11.1.1. P3 already requires the transport to bound header waiting with finite deadlines; P4 implements no such bound before a frame's first byte.
@@ -130,11 +139,17 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 - **Recommended remediation:** In P6, after the owner selects the timer model and values: add a finite, never-refreshed first-header (pre-frame) deadline from activation; decide whether a separate idle deadline is needed for a connection with no live run; and decide a finite bound on a retained owner-less outbound frame where one applies. Each should close through the existing generic teardown, with no limiter, budget, or guard change. Optionally enable TCP keepalive in the adapter. Every chosen value must stay finite and must never reset an authority control.
 - **P6 disposition:** Remediate. The owner selects the narrow finite timer model and values, then P6 changes the transport and adapter and enables the reproducers (the P5.1 patch test and the P5.2 `#[ignore]` test covering subcases A–C) as regression tests.
 - **Evidence:** as above; [resources, deadlines, and transport §1, §3, §4, §6](resources-deadlines-transport.md); [adversarial sequences §8](adversarial-sequences.md#8-p5-f-002-evidence-f002-001-tcp-out-001).
+- **P6 remediation (appended in P6.1; the P5 record above is unchanged):**
+  - **Decision:** [P6-D-001](../p6-remediation/decisions.md#p6-d-001--f-002-connection-lifetime): 10 s from admission to the first frame; 10 s quiescent with no live run, no frame, and no pending output; 10 s absolute and 2 s no-progress for owner-less retained output; the existing 10 s / 2 s incomplete-frame deadlines unchanged; live ceremonies governed only by their ceremony deadlines.
+  - **Remediation commit:** `1ce07537e9552ea5963fb563d83883dc96db2ebe` (`fix: bound connection lifetime`) on `feature/p6-review-remediation-protocol-freeze`. One transport-owned connection-lifetime state, checked by the owner-loop sweep before socket I/O and by the adapter before each write; expiry uses the existing teardown and releases the live slot exactly once. No wire, crypto, budget, guard, or limiter change.
+  - **Regressions:** `p5_f_002_idle_connections_eventually_release_their_live_slot` now passes as a normal test (its `#[ignore]` removed); new permanent tests in `transport::tests::connection_lifetime`, `windows_tcp::tests::connection_lifetime`, and `windows_owner_loop::tests::connection_lifetime`, including the 16-idle / 17th-admission regression at exact boundaries. The P5.1 patch test is superseded by them.
+  - **Normative sync:** P3 §11.1.1 "Connection lifetime" row; `R-OWNER-023` amended in place.
+  - **P6 review evidence:** follow-up adversarial review, rebuilt resource table, and CI in the [remediation record](../p6-remediation/p5-f-002.md).
 
 <a id="p5-f-003"></a>
 ### P5-F-003 — In-process re-registration starts a fresh opportunity budget without process replacement
 
-- **Status:** OPEN
+- **Status:** REMEDIATED-IN-P6 (P6.3). OPEN at P5 closure; the P5 record below is unchanged and the P6 note is appended at the end of this entry.
 - **Severity:** LOW
 - **Confidence:** HIGH
 - **Classification:** Confirmed mismatch with the current P3 owner-session reset policy.
@@ -150,6 +165,16 @@ Not every OPEN finding needs a production change. The INFO findings may close as
   - **Alternative: change the policy.** The owner explicitly decides to revise P3 so that the owner session is the `TrustedAuthority` registration lifetime. This is a policy change, not a documentation clarification of the current baseline. It requires re-analyzing exposure accounting, updating P3, the conformance cases, and the security argument, and then aligning the implementation and the P7 binding rules.
 - **P6 disposition:** Remediate under the default path unless the owner explicitly chooses the policy revision.
 - **Evidence:** as above; [ownership and FFI §2, §5](ownership-and-ffi.md#2-lease-lifecycle).
+- **P6 remediation (appended in P6.3; the P5 record above is unchanged):**
+  - **Decision:** [P6-D-002](../p6-remediation/decisions.md#p6-d-002--f-003-owner-session-policy) (P6.1): keep the current P3 process/session semantics, the default path above. The owner session is not the registration lifetime; P3 is not revised.
+  - **Remediation commit:** `5aa1b1580672304afe74d65f3270f8b1da333901` (`fix: preserve process-session accounting`) on `feature/p6-review-remediation-protocol-freeze`.
+  - **Architecture:** the process-wide registry maps each canonical identity this process has successfully owned to one process session that holds the shared accounting (budget, START limiter, runtime counts, in the one mutex that keeps guard and opportunity reservation atomic) and the limiter clock, strongly, until the process exits; registrations are `Inactive`, `Active`, or `Uncertain` on top of it. Release and the final drop release the OS lease and leave the accounting; every reactivation acquires the lease anew and continues the same accounting; a failed first acquisition creates nothing; an uncertain release, poisoned accounting, or runtime resources left held fail closed with `OwnershipUncertain` until process replacement. No eviction, no persistence, no reset API.
+  - **Budget regressions:** partial spend kept across explicit release (7) and the final drop (9); `Exhausted` survives re-registration; registration cycles grant exactly 10 in total; a day of monotonic time refills nothing. The two P4 assertions cited above are inverted (`Exhausted`, and `remaining: 9`) with comments recording the correction.
+  - **Limiter regressions:** an emptied burst stays empty across immediate re-registration and gains exactly one token at 5 s; the R-OWNER-035 rolling schedule run with a re-registration before every decision still refuses at 45 s and 59.999 s and recovers at exactly 60 s by age; long idle restores capacity only at the next evaluation; a later registration cannot replace the session clock; P4's same-process fresh-limiter test is rewritten to the process-session meaning.
+  - **Cross-process evidence:** a real foreign owner process between two registrations makes reactivation fail with `OwnershipUnavailable` and leaves 8, which continues after it exits; eight threads racing re-registration produce one winner per round over one budget; each new `ownership_probe --session` process starts at 10 while its own release and re-registration keeps 9; existing cross-process exclusion tests unchanged.
+  - **Normative sync:** no P3 change needed; `R-OWNER-006`, `R-OWNER-017`, `R-OWNER-022`, `R-OWNER-031`, and `R-OWNER-038` amended in place (still 92 normative rows).
+  - **CI:** Repository consistency, `windows-core`, and `unsupported-platform-fails-closed` SUCCESS at `5aa1b15`.
+  - **P6 review evidence:** process-session model, state table, follow-up adversarial review, mutation checks, and verification in the [remediation record](../p6-remediation/p5-f-003.md).
 
 <a id="p5-f-004"></a>
 ### P5-F-004 — `token_user_sid` does not bound the OS-written SID to the returned buffer
@@ -176,7 +201,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 <a id="p5-f-005"></a>
 ### P5-F-005 — `Sas::new()` entropy panic leaves Router and adapter state conservatively stuck and escapes owner-loop calls
 
-- **Status:** OPEN
+- **Status:** DISPOSITIONED-IN-P6 (P6.4) — mandatory P7 ABI containment requirement. OPEN at P5 closure; the P5 record below is unchanged and the P6 note is appended at the end of this entry.
 - **Severity:** INFO
 - **Confidence:** HIGH
 - **Affected requirement(s):** P3 §5 (no success from failed entropy; no graceful-error promise); P3 §11.2 (teardown); decision 0001 (future native boundary).
@@ -200,6 +225,14 @@ Not every OPEN finding needs a production change. The INFO findings may close as
   - **Security properties hold:** no result, no exposure without consumption, no refund, no premature guard reuse, no stale route accepting input. A future `extern "C"` ABI would abort on an escaping panic (Rust ≥ 1.81), not unwind, unless a binding opts into `C-unwind`.
   - **P6/P7:** choose `panic = "abort"`, or `catch_unwind` at every export that then discards the authority. Optionally add RAII cleanup of the claim and release transport accounting for a poisoned run.
 - **Evidence:** [state and routing §3](state-and-routing.md#3-router-and-session-isolation); [secrets, panics, dependencies §3](secrets-panics-dependencies.md#3-panic-and-abort-surfaces); [deep review §7](dependency-unsafe-deep-review.md#7-p5-f-005-entropy-panic).
+- **P6 disposition (appended in P6.4; the P5 record above is unchanged):**
+  - **Decision:** [P6-D-004 — Native Panic Containment Policy](../p6-remediation/decisions.md#p6-d-004--native-panic-containment-policy). The core does no broad panic recovery. The P7 ABI catches every panic inside Rust before it can cross `extern "C"`, at every export and every Rust-owned thread root. The affected native context becomes permanently fatal, and later calls return a stable fatal-state error without entering the core. There is no same-process retry, re-registration, or accounting reset; recovery is a process restart. No panic payload is ABI contract. The supported artifact uses an unwind-compatible panic strategy, and P7 CI tests containment. `extern "C-unwind"` is not a supported contract. `panic = "abort"` is not the selected ABI policy, so the P5 suggestion above was considered and not chosen.
+  - **Why no core remediation:** the panic is not remotely triggerable and fails closed. A core that resumed after a panic (internal `catch_unwind`, mutex-poison recovery) would trade that for a large, hard-to-review semantic commitment. The optional Router RAII and poisoned-run transport release stay optional hardening and are not needed under P6-D-004, because a panicked context is fatal.
+  - **Current evidence (re-run in P6.4, assertions unchanged):** `p5_f005_001..005` and the P4 ceremony panic test pass. New test-only assertions (`9628fa3`) show that after a caught Initiator panic, dropping every handle and registering the same authority in the same process fails with `OwnershipUncertain` and never yields `Ready { remaining: 10 }` (P6.3 interaction). After the Responder panic, re-registration continues the same START limiter. A throwaway foreign-host experiment confirmed the Rust semantics: an escaping panic aborts the host, `catch_unwind` inside the export contains it under `unwind`, and nothing is caught under `abort`.
+  - **Mandatory P7 requirement:** recorded in [P7](../../roadmap/P7-native-abi.md) as scope, security invariants, and exit criteria, including a deterministic panic-containment test. P7 cannot be completed without it.
+  - **Not:** REMEDIATED-IN-P6 (no ABI exists yet), FALSE-POSITIVE (the panic is real), or ACCEPTED-LIMITATION (P7 has a mandatory obligation). It does not block the protocol freeze: no wire, crypto, or protocol-semantic change is needed.
+  - **Normative sync:** no P3 change; `R-OWNER-013` amended in place (still 92 normative rows).
+  - **P6 record:** [p5-f-005.md](../p6-remediation/p5-f-005.md).
 
 <a id="p5-f-006"></a>
 ### P5-F-006 — `base64`'s default `simd-unsafe` engine encodes every MAC and HKDF input
@@ -226,7 +259,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 <a id="p5-f-007"></a>
 ### P5-F-007 — Reverse asymmetric completion at the Initiator's deadline boundary
 
-- **Status:** OPEN
+- **Status:** DISPOSITIONED-IN-P6 (P6.5) — current conservative completion boundary retained and documented; no production change required. OPEN at P5 closure; the P5 record below is unchanged and the P6 note is appended at the end of this entry.
 - **Severity:** INFO
 - **Confidence:** HIGH
 - **Affected requirement(s):** P3 §9 (result conditions; asymmetric observation); P3 §11.3 (expiry produces no success).
@@ -240,6 +273,13 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 - **Recommended remediation:** State in P3 §9 and the consumer guidance that either side may hold the only result, and that R's connection may end on I's following timeout CANCEL. Optionally (owner decision), judge the confirmation against the instant the last byte was written rather than the confirmation instant. If chosen, the P5.2 test's crossing row would change to "both results".
 - **P6 disposition:** Documentation; optional decision. The P5.2 boundary test is a passing characterization; P6 updates its expected rows only if the owner changes the boundary rule.
 - **Evidence:** [protocol composition §7](protocol-composition.md#7-completion-and-pairingresult); [resources, deadlines, and transport §3](resources-deadlines-transport.md#3-deadlines); [adversarial sequences §6](adversarial-sequences.md#6-p5-f-007-evidence-f007-001002).
+- **P6 disposition (appended in P6.5; the P5 record above is unchanged):**
+  - **Decision:** [P6-D-005 — Local Completion and Final-ACK Deadline Boundary](../p6-remediation/decisions.md#p6-d-005--local-completion-and-final-ack-deadline-boundary), option A. The Initiator's success stays judged when its final-ACK send is confirmed while the ceremony is live, never backdated to the last-byte instant. Either side may be the only result holder; I-only (lost final ACK) and R-only (this finding) are both valid profile outcomes, and two successful results can never conflict. The timeout `CANCEL` that ends R's session after its result stays under the current P3 §11.2 routing; a returned result is never revoked. The optional last-byte rule suggested above was considered and not selected.
+  - **Implementation re-check:** the source at `3b8bf43` matches this record (preflight in `on_writable`, write, then `confirm_sent` → `confirm_initiator_finish_ack_sent` inside `step`, which checks deadlines first). No production change.
+  - **Documentation:** P3 §9 (both asymmetric directions; local result is not bilateral commit), §10 (`AwaitResponderFinish` success only after a live send confirmation; `AwaitInitiatorFinishAck` independent of I's result), and §11.3 (a complete write earns no deadline exemption) were clarified. Conformance rows `R-OWNER-007`, `R-MAC-012`, `R-RESOURCE-006`, and `R-RESOURCE-007` were amended in place (still 92 normative rows). The core README states the reverse direction.
+  - **Evidence:** `p5_f007_final_ack_deadline_boundary_end_to_end` passes unchanged; its crossing row stays R-only.
+  - **Not:** REMEDIATED-IN-P6 (no defect fixed), FALSE-POSITIVE (the asymmetry is real), or ACCEPTED-LIMITATION (it is now an explicitly selected protocol semantic). It does not block the protocol freeze.
+  - **P6 record:** [p5-f-007.md](../p6-remediation/p5-f-007.md).
 
 <a id="p5-f-008"></a>
 ### P5-F-008 — Same-profile attacker can race the lock-path checks (TOCTOU)

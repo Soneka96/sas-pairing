@@ -5,13 +5,13 @@
 //! at most one dispatched frame or local action with at most one event, one outbound frame,
 //! and one `PairingResult`. It drives a complete remote ceremony through this type alone.
 //!
-//! Responsibilities stay split. The transport owns connection admission, bounded frame
-//! assembly, its 10 s / 2 s frame deadlines, and teardown. The Router owns `(session,
-//! request_id)` routing, START admission, and the runs. This layer only classifies each
-//! complete frame at the protocol's dispatch boundary (`protocol::routable`: common fields, and
-//! for START the structural candidate, never the bootstrap), calls `receive_start` or
-//! `deliver`, maps the outcome, and ends the connection when its session can no longer
-//! continue. It tracks no ceremony state, opens no session, and never bypasses frame assembly.
+//! Responsibilities stay split. The transport owns connection admission, bounded frame assembly,
+//! its 10 s / 2 s frame deadlines, the P6-D-001 connection lifetime, and teardown. The Router owns
+//! `(session, request_id)` routing, START admission, and the runs. This layer only classifies each
+//! complete frame at the protocol's dispatch boundary (`protocol::routable`: common fields, and for
+//! START the structural candidate, never the bootstrap), calls `receive_start` or `deliver`, maps
+//! the outcome, and ends the connection when its session can no longer continue. It tracks no
+//! ceremony state, opens no session, and never bypasses frame assembly.
 //!
 //! Connection scope of each outcome:
 //! - Structurally unroutable complete frame (wrong profile ID, request ID outside 1..=64): a
@@ -70,7 +70,7 @@ use crate::{
         DeadlineCursor, DeadlineEnded, DeadlineEvent, DeadlinePoll, Inbound, RouteError, Routed,
         Router, RunRef, SessionHandle, StartRouting,
     },
-    transport::{Fed, TransportConnection, TransportError},
+    transport::{Fed, OutboundState, TransportConnection, TransportError},
 };
 
 /// Why the connection ended. Every `Err` from a `HostConnection` method means the connection
@@ -337,11 +337,22 @@ impl<'r> HostConnection<'r> {
         Ok(HostFed { consumed, frame })
     }
 
-    /// The transport frame-deadline poll; expiry ends the connection with no dispatch.
-    pub(crate) fn poll_frame_deadlines(&mut self) -> Result<(), HostError> {
+    /// The transport's connection-deadline poll (frame deadlines, or the P6-D-001 lifetime for
+    /// what the connection holds, `outbound` being the adapter's retained output); expiry ends
+    /// the connection with no dispatch.
+    pub(crate) fn poll_connection_deadlines(
+        &mut self,
+        outbound: OutboundState,
+    ) -> Result<(), HostError> {
         self.transport
-            .poll_frame_deadlines()
+            .poll_connection_deadlines(outbound)
             .map_err(HostError::Transport)
+    }
+
+    /// `TransportConnection::record_output_progress`: the adapter wrote at least one byte of
+    /// its retained frame right after a connection-deadline poll found the connection live.
+    pub(crate) fn record_output_progress(&mut self) {
+        self.transport.record_output_progress();
     }
 
     /// Drives this connection's ceremony deadlines while no input arrives: one bounded pass of
@@ -605,6 +616,9 @@ impl<'r> HostConnection<'r> {
         local: Bootstrap,
         expected: Option<Bootstrap>,
     ) -> HostResult<LocalAction> {
+        // No new run on a connection whose lifetime already expired. Actions are never taken
+        // while the adapter retains output.
+        self.poll_connection_deadlines(OutboundState::Empty)?;
         let started = self.routed(|router, session| {
             router.start_initiator_run(clock, ids, session, local, expected)
         })?;
@@ -1579,7 +1593,7 @@ mod tests {
             Err(HostError::Transport(TransportError::Closed))
         );
         assert_eq!(
-            a.poll_frame_deadlines(),
+            a.poll_connection_deadlines(OutboundState::Empty),
             Err(HostError::Transport(TransportError::Closed))
         );
         // An unknown-route CANCEL is the same session-fatal case.
@@ -1822,10 +1836,10 @@ mod tests {
         assert_eq!(h.receive(&s[..30]).unwrap().frame, None);
         assert_eq!(r.counts(), (1, 1, 1));
         tc.advance(IDLE_READ_DEADLINE - NS);
-        assert_eq!(h.poll_frame_deadlines(), Ok(()));
+        assert_eq!(h.poll_connection_deadlines(OutboundState::Empty), Ok(()));
         tc.advance(NS);
         assert_eq!(
-            h.poll_frame_deadlines(),
+            h.poll_connection_deadlines(OutboundState::Empty),
             Err(HostError::Transport(TransportError::IdleTimeout))
         );
         assert!(h.is_closed());
@@ -1905,7 +1919,7 @@ mod tests {
         admit(&mut h, &start(&x));
         // Transport time is neither ceremony time nor limiter time.
         tc.advance(Duration::from_secs(3600));
-        assert_eq!(h.poll_frame_deadlines(), Ok(()));
+        assert_eq!(h.poll_connection_deadlines(OutboundState::Empty), Ok(()));
         assert_eq!(
             r.local(session, &x, |run| run.poll_deadlines()).output,
             DeadlineOutcome::Active
@@ -1919,11 +1933,11 @@ mod tests {
             r.local(session, &x, |run| run.poll_deadlines()).output,
             DeadlineOutcome::Active
         );
-        assert_eq!(h.poll_frame_deadlines(), Ok(()));
+        assert_eq!(h.poll_connection_deadlines(OutboundState::Empty), Ok(()));
         assert_eq!(r.counts(), (1, 1, 0));
         // Limiter time refills credit (seen at the next admission) and does nothing else.
         r.limiter.advance(REFILL_PERIOD);
-        assert_eq!(h.poll_frame_deadlines(), Ok(()));
+        assert_eq!(h.poll_connection_deadlines(OutboundState::Empty), Ok(()));
         // The frame completes on transport time; its new run starts on ceremony time now, and
         // its admission found the refilled token: 3 + 1 - 1.
         admit(&mut h, &s[20..]);
@@ -2123,7 +2137,7 @@ mod tests {
             deliver_in(&mut h, &start(&y), 64).unwrap().event,
             HostEvent::StartDuplicate
         );
-        assert_eq!(h.poll_frame_deadlines(), Ok(()));
+        assert_eq!(h.poll_connection_deadlines(OutboundState::Empty), Ok(()));
         assert_eq!(r.state(session, &x), "InitiatorAwaitAccept");
         // Exactly at 60 s the driver ends X: before SAS there is no authenticated CANCEL.
         assert_eq!(

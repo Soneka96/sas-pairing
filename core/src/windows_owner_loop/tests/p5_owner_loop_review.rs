@@ -2,8 +2,9 @@
 //! owner loop's readiness classification and precedence (scripted readiness), deadline-versus-
 //! socket precedence, and real Windows graceful-close behavior for P5-F-001. Families
 //! `LOOP-READY-*`, `LOOP-DEADLINE-*`, `LOOP-HUP-*`, and `F001-*` in
-//! `docs/p5-security-review/adversarial-sequences.md`. Ignored tests here are EXPECTED-FAIL
-//! known-bug reproducers: they state the desired future behavior and fail until P6.
+//! `docs/p5-security-review/adversarial-sequences.md`. The three `p5_f_001_*` tests were
+//! EXPECTED-FAIL known-bug reproducers (`#[ignore]`, failing on the frozen P4/P5 code); since the
+//! P6.2 remediation of P5-F-001 (P6-D-003) they pass and run as normal regression tests.
 use super::*;
 use crate::{ceremony::PairingResult, windows_tcp::tests::admit as admit_on};
 use windows_sys::Win32::Networking::WinSock::{POLLHUP, POLLRDNORM};
@@ -421,9 +422,10 @@ fn hup_cases() -> Vec<HupCase> {
 }
 
 /// One real graceful-close case against the production owner loop (real listener, real
-/// `WSAPoll`). Returns `(revents, events until the connection ended, frames dispatched)`.
-fn run_hup_case(case: &HupCase) -> (i16, Vec<String>, usize) {
-    let r = Node::new(&format!("p5-loop-hup-{}", &case.name[..1]));
+/// `WSAPoll`). Returns `(revents, events until the connection ended, frames dispatched, how the
+/// connection ended)`. `tag` keeps the authority scopes of concurrent callers distinct.
+fn run_hup_case(case: &HupCase, tag: &str) -> (i16, Vec<String>, usize, ConnectionEnd) {
+    let r = Node::new(&format!("p5-loop-hup-{tag}-{}", &case.name[..1]));
     let (listener, address) = real_listener();
     let mut owner =
         WindowsOwnerLoop::from_bound_listener(listener, &r.router, responder_bootstrap(), None)
@@ -445,6 +447,7 @@ fn run_hup_case(case: &HupCase) -> (i16, Vec<String>, usize) {
     let revents = await_hang_up(owner.connections[0].tcp.raw_socket());
     let mut events = Vec::new();
     let mut dispatched = 0;
+    let mut end = None;
     let give_up = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while owner.live_connections() > 0 {
         assert!(
@@ -461,7 +464,10 @@ fn run_hup_case(case: &HupCase) -> (i16, Vec<String>, usize) {
                         dispatched += 1;
                     }
                 }
-                OwnerEvent::Closed(c, _) => assert_eq!(*c, conn),
+                OwnerEvent::Closed(c, ended) => {
+                    assert_eq!(*c, conn);
+                    end = Some(ended.clone());
+                }
                 other => panic!("unexpected {other:?}"),
             }
             events.push(format!("{event:?}"));
@@ -473,7 +479,12 @@ fn run_hup_case(case: &HupCase) -> (i16, Vec<String>, usize) {
     drop(kept);
     drop(owner);
     r.release();
-    (revents, events, dispatched)
+    (
+        revents,
+        events,
+        dispatched,
+        end.expect("the connection ended"),
+    )
 }
 
 /// LOOP-HUP-001 (real Windows, PASSING EVIDENCE): a peer writes then closes or half-closes.
@@ -485,7 +496,7 @@ fn run_hup_case(case: &HupCase) -> (i16, Vec<String>, usize) {
 fn p5_loop_hup_001_real_graceful_close_matrix() {
     let mut rows = Vec::new();
     for case in hup_cases() {
-        let (revents, events, dispatched) = run_hup_case(&case);
+        let (revents, events, dispatched, _) = run_hup_case(&case, "evidence");
         assert_ne!(revents & POLLHUP, 0, "{}", case.name);
         assert_ne!(
             revents & POLLRDNORM,
@@ -502,17 +513,35 @@ fn p5_loop_hup_001_real_graceful_close_matrix() {
     eprintln!("LOOP-HUP-001:\n  {}", rows.join("\n  "));
 }
 
-/// P5-F-001 EXPECTED-FAIL KNOWN-BUG REPRODUCER (desired behavior; fails until P6): every
-/// complete frame a peer wrote before its graceful close or half-close is dispatched before the
-/// loop ends the connection. Run with
-/// `cargo test --manifest-path core/Cargo.toml --lib p5_f_001_owner_loop -- --ignored --nocapture`.
+/// P5-F-001 KNOWN-BUG REPRODUCER, PASSING REGRESSION SINCE P6.2. It failed on the frozen P4/P5
+/// code (`#[ignore]`d EXPECTED-FAIL: 0 of 1, 0 of 1, 0 of 2 complete frames dispatched, each
+/// connection closed as `Readiness(0x0102)` before any read). Every complete frame a peer wrote
+/// before its graceful close or half-close is dispatched before the loop ends the connection.
+///
+/// One P6.2 qualification (P6-D-003), for case D only: the loop must write its ACCEPT for the
+/// first START before it reads the second (one retained frame, write backpressure). A FULLY
+/// closed peer answers that ACCEPT with a reset, which Windows reports as `POLLERR` (observed:
+/// `Readiness(0x0003)`), and error readiness closes before any further read whatever input is
+/// retained. So D must dispatch its first frame and may lose its second only to that hard
+/// failure, never to hang-up. The same two frames before a half-close are all dispatched:
+/// `graceful_hang_up::real_two_frames_before_shutdown_send_are_each_dispatched_once`.
 #[test]
-#[ignore = "P5-F-001 known bug: the owner loop closes on POLLHUP before reading; enable after P6"]
 fn p5_f_001_owner_loop_dispatches_complete_frames_before_graceful_close() {
     let mut lost = Vec::new();
     for case in hup_cases() {
-        let (revents, events, dispatched) = run_hup_case(&case);
-        if dispatched != case.complete {
+        let (revents, events, dispatched, end) = run_hup_case(&case, "regression");
+        let reset_after_answer = case.end == ClientEnd::Close
+            && case.complete > 1
+            && dispatched >= 1
+            && match end {
+                ConnectionEnd::Readiness(flags) => flags & CONNECTION_FAILED != 0,
+                ConnectionEnd::Adapter(TcpError::Io(kind)) => matches!(
+                    kind,
+                    ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
+                ),
+                ConnectionEnd::Adapter(_) => false,
+            };
+        if dispatched != case.complete && !reset_after_answer {
             lost.push(format!(
                 "{}: revents 0x{revents:04x}, dispatched {dispatched}/{}, events {events:?}",
                 case.name, case.complete
@@ -529,8 +558,11 @@ fn p5_f_001_owner_loop_dispatches_complete_frames_before_graceful_close() {
 /// Drives a real ceremony with the production owner loop as Responder and a direct adapter as
 /// Initiator up to the Initiator's confirmed final ACK, then the Initiator closes at once.
 /// Returns `(Initiator result, revents at the loop, Responder results, loop events after)`.
-fn final_ack_then_close() -> (PairingResult, i16, Vec<PairingResult>, Vec<String>) {
-    let (i, r) = (Node::new("p5-f001-real-i"), Node::new("p5-f001-real-r"));
+fn final_ack_then_close(tag: &str) -> (PairingResult, i16, Vec<PairingResult>, Vec<String>) {
+    let (i, r) = (
+        Node::new(&format!("p5-f001-real-i-{tag}")),
+        Node::new(&format!("p5-f001-real-r-{tag}")),
+    );
     let (listener, address) = real_listener();
     let mut owner =
         WindowsOwnerLoop::from_bound_listener(listener, &r.router, responder_bootstrap(), None)
@@ -631,7 +663,7 @@ fn final_ack_then_close() -> (PairingResult, i16, Vec<PairingResult>, Vec<String
 /// is released. Whether the Responder got its result is recorded (today: no, P5-F-001).
 #[test]
 fn p5_loop_hup_002_real_final_ack_then_close_is_safe() {
-    let (initiator, revents, results, events) = final_ack_then_close();
+    let (initiator, revents, results, events) = final_ack_then_close("evidence");
     assert!(results.len() <= 1, "second Responder result");
     if let Some(responder) = results.first() {
         results_agree(&initiator, responder, initiator.request_id());
@@ -642,28 +674,34 @@ fn p5_loop_hup_002_real_final_ack_then_close_is_safe() {
     );
 }
 
-/// P5-F-001 EXPECTED-FAIL KNOWN-BUG REPRODUCER (desired behavior; fails until P6): with the
-/// owner loop as Responder, an Initiator that writes its final INITIATOR_FINISH_ACK and closes
-/// immediately leaves the ACK readable while Windows reports `POLLHUP | POLLRDNORM`; the loop
-/// should verify it and return the Responder's result. Today it closes without reading. Run with
-/// `cargo test --manifest-path core/Cargo.toml --lib p5_f_001_owner_loop -- --ignored --nocapture`.
+/// P5-F-001 KNOWN-BUG REPRODUCER, PASSING REGRESSION SINCE P6.2. It failed on the frozen P4/P5
+/// code (`#[ignore]`d EXPECTED-FAIL: the loop closed on `POLLHUP | POLLRDNORM` without reading,
+/// so the Responder had no result). With the owner loop as Responder, an Initiator that writes
+/// its final INITIATOR_FINISH_ACK and closes immediately leaves the ACK readable while Windows
+/// reports `POLLHUP | POLLRDNORM`; the loop verifies it and returns the Responder's one result,
+/// compatible with the Initiator's, before EOF ends the connection.
 #[test]
-#[ignore = "P5-F-001 known bug: the owner loop drops a final ACK that arrives with hang-up; enable after P6"]
 fn p5_f_001_owner_loop_responder_loses_final_ack_before_graceful_close() {
-    let (initiator, revents, results, events) = final_ack_then_close();
+    let (initiator, revents, results, events) = final_ack_then_close("regression");
     eprintln!("revents 0x{revents:04x}; events {events:?}");
     let responder = results
         .first()
         .expect("the Responder's result: its final ACK was delivered before the close");
     results_agree(&initiator, responder, initiator.request_id());
+    assert_eq!(results.len(), 1, "second Responder result");
+    assert!(
+        events
+            .last()
+            .is_some_and(|last| last.ends_with("Adapter(PeerClosed))"))
+    );
 }
 
 /// The loop's own retained output when the peer half-closes (`shutdown(Send)`), as a peer with
 /// nothing more to send may do (for example a Responder after RESPONDER_FINISH_ACK, which then
 /// only awaits the final ACK). Returns `(revents for writable interest, loop events until the
 /// connection ended or the frame was written, bytes the peer received)`.
-fn half_close_with_output_pending() -> (i16, Vec<String>, Vec<u8>) {
-    let r = Node::new("p5-loop-hup-output");
+fn half_close_with_output_pending(tag: &str) -> (i16, Vec<String>, Vec<u8>) {
+    let r = Node::new(&format!("p5-loop-hup-output-{tag}"));
     let (listener, address) = real_listener();
     let mut owner =
         WindowsOwnerLoop::from_bound_listener(listener, &r.router, responder_bootstrap(), None)
@@ -721,7 +759,7 @@ fn half_close_with_output_pending() -> (i16, Vec<String>, Vec<u8>) {
 /// the loop closes without writing, a write-side facet of P5-F-001).
 #[test]
 fn p5_loop_hup_003_real_half_close_while_output_pending() {
-    let (revents, events, received) = half_close_with_output_pending();
+    let (revents, events, received) = half_close_with_output_pending("evidence");
     assert_ne!(revents & POLLHUP, 0);
     if !received.is_empty() {
         assert!(matches!(
@@ -735,14 +773,13 @@ fn p5_loop_hup_003_real_half_close_while_output_pending() {
     );
 }
 
-/// P5-F-001 EXPECTED-FAIL KNOWN-BUG REPRODUCER (write side; desired behavior; fails until P6):
-/// a peer's half-close ends only its sending direction, so the loop should still write the
-/// frame it holds. Today `POLLHUP` closes the connection first. Run with
-/// `cargo test --manifest-path core/Cargo.toml --lib p5_f_001_owner_loop -- --ignored --nocapture`.
+/// P5-F-001 KNOWN-BUG REPRODUCER (write side), PASSING REGRESSION SINCE P6.2. It failed on the
+/// frozen P4/P5 code (`#[ignore]`d EXPECTED-FAIL: `Readiness(0x0012)`, the retained START never
+/// written). A peer's half-close ends only its sending direction, so the loop still writes the
+/// frame it holds on `POLLHUP | POLLWRNORM`, and the half-closed peer receives it.
 #[test]
-#[ignore = "P5-F-001 known bug: POLLHUP after a peer half-close drops the loop's pending output; enable after P6"]
 fn p5_f_001_owner_loop_writes_pending_output_after_peer_half_close() {
-    let (revents, events, received) = half_close_with_output_pending();
+    let (revents, events, received) = half_close_with_output_pending("regression");
     assert!(
         matches!(
             protocol::decode(&received).map(|m| m.message),

@@ -1,0 +1,68 @@
+# P6 Review Remediation
+
+> **Pre-alpha. Not production approval.** P6 remediates and dispositions the findings of the internal, AI-assisted P5 review and then decides whether a protocol candidate can be frozen. Nothing here is a professional audit, formal verification, certification, or production-security or release approval.
+
+## Status
+
+**P6 COMPLETE — PROTOCOL CANDIDATE FROZEN** (P6.6). The experimental remote protocol candidate `sas-pairing-vodozemac-profile-draft-01`, version 1, together with owner decisions P6-D-001 to P6-D-005 and the amended normative conformance cases, is frozen for P7 native-ABI work. This is an experimental protocol-candidate freeze only, not production approval, professional security audit, or formal verification. Closure summary, freeze decision, and P7 handoff: **[final closure](final-closure.md)**. Next: [P7 — Native ABI](../../roadmap/P7-native-abi.md), only after the P6 pull request is reviewed and merged.
+
+## Target
+
+| Item | Value |
+|---|---|
+| Phase | [P6 — Review Remediation and Protocol Freeze](../../roadmap/P6-review-remediation-and-protocol-freeze.md) |
+| Branch | `feature/p6-review-remediation-protocol-freeze`: the one branch for every P6 increment, correction, remediation, the protocol freeze, and the P6 closure. One pull request is opened only when P6 is finished and frozen |
+| Baseline | `main` at `57131ad4878063baf326fe0b2f7a0eded7a47982`, the merge of the P5 pull request #11 |
+| P5 closure | `b892937a6740bee4a877d3beea815cca6d24c48c` ([final synthesis](../p5-security-review/final-synthesis.md)) |
+| Implementation under remediation | The experimental P4 native Rust core in `core/`, as reviewed by P5 |
+| Normative baseline | The [P3 remote profile](../p3-vodozemac-ceremony-profile-draft.md), owner decisions 0001–0003, the [threat model](../threat-model.md), and the current [P3 conformance cases](../p3-conformance-cases.md) |
+
+## Findings entering P6
+
+P5 closed with five OPEN findings ([P5 findings](../p5-security-review/findings.md)). Their current P6 state:
+
+| Finding | Severity | P6 state | Owner decision | Record |
+|---|---|---|---|---|
+| [P5-F-002](../p5-security-review/findings.md#p5-f-002) | MEDIUM | **REMEDIATED-IN-P6** (P6.1, `1ce0753`) | [P6-D-001](decisions.md#p6-d-001--f-002-connection-lifetime) | [p5-f-002.md](p5-f-002.md) |
+| [P5-F-001](../p5-security-review/findings.md#p5-f-001) | LOW | **REMEDIATED-IN-P6** (P6.2, `c4212f2`) | [P6-D-003](decisions.md#p6-d-003--graceful-tcp-hang-up-handling) | [p5-f-001.md](p5-f-001.md) |
+| [P5-F-003](../p5-security-review/findings.md#p5-f-003) | LOW | **REMEDIATED-IN-P6** (P6.3, `5aa1b15`) | [P6-D-002](decisions.md#p6-d-002--f-003-owner-session-policy) | [p5-f-003.md](p5-f-003.md) |
+| [P5-F-005](../p5-security-review/findings.md#p5-f-005) | INFO | **DISPOSITIONED-IN-P6** (P6.4) — mandatory P7 ABI containment requirement; no production change | [P6-D-004](decisions.md#p6-d-004--native-panic-containment-policy) | [p5-f-005.md](p5-f-005.md) |
+| [P5-F-007](../p5-security-review/findings.md#p5-f-007) | INFO | **DISPOSITIONED-IN-P6** (P6.5) — current conservative completion boundary retained and documented; no production change | [P6-D-005](decisions.md#p6-d-005--local-completion-and-final-ack-deadline-boundary) | [p5-f-007.md](p5-f-007.md) |
+
+**No OPEN P5 handoff finding remains:** all five were remediated or dispositioned, and P6.6 froze the protocol candidate ([final closure](final-closure.md)).
+
+The six accepted limitations (P5-F-004, P5-F-008 to P5-F-012) and eleven false positives stay as P5 recorded them.
+
+## Increments
+
+| Increment | Scope | State |
+|---|---|---|
+| P6.1 | Establish this package and the owner decisions; remediate P5-F-002; record the P5-F-003 decision without implementing it | **Complete:** P5-F-002 remediated ([record](p5-f-002.md)); P6-D-002 recorded, P5-F-003 not implemented |
+| P6.2 | Remediate P5-F-001 graceful hang-up handling under owner decision P6-D-003, bounded by the P6-D-001 lifetime | **Complete:** P5-F-001 remediated ([record](p5-f-001.md)) |
+| P6.3 | Remediate P5-F-003 process-session accounting reset under P6-D-002 | **Complete:** P5-F-003 remediated ([record](p5-f-003.md)) |
+| P6.4 | Decide and disposition P5-F-005 entropy-panic / ABI policy under owner decision P6-D-004 | **Complete:** P5-F-005 dispositioned ([record](p5-f-005.md)); P7 owns the ABI containment implementation |
+| P6.4.1 | Correct P6-D-004's panic-payload disposal: a caught payload must not run an uncontained destructor (item 14); add the Drop-panicking-payload P7 exit test | **Complete:** policy correction only; no new finding, decision ID, or production change ([record §8.1](p5-f-005.md#81-panic-payload-disposal-p641)) |
+| P6.5 | Disposition P5-F-007 reverse asymmetric completion semantics under owner decision P6-D-005 | **Complete:** P5-F-007 dispositioned ([record](p5-f-007.md)); confirmation-time boundary kept, both asymmetric directions documented in P3; no production change |
+| P6.6 | Final cross-check, protocol candidate freeze, and final P6 closure | **Complete:** candidate frozen for P7 ([final closure](final-closure.md)); documentation and status only, no production change |
+
+## Remediation rule
+
+P6 changes production behavior only as the justified remediation of a validated P5 finding, and never as general refactoring or new features. Every remediation keeps one traceable chain:
+
+```text
+P3 requirement -> P5 finding -> owner decision -> remediation -> regression evidence
+  -> follow-up review -> finding disposition -> protocol-candidate freeze
+```
+
+- An owner decision is recorded in [decisions.md](decisions.md) before the code that depends on it.
+- P5 documents stay historical evidence. P6 may mark a finding `REMEDIATED-IN-P6` and append its remediation evidence, but never rewrites what P5 observed. The [P5 final synthesis](../p5-security-review/final-synthesis.md) stays a P5 closure snapshot; current status lives here.
+- A finding is `DISPOSITIONED-IN-P6` when it was reviewed, needs no P6 production fix, and an owner decision settles it in one of two ways. It is not a remediation claim.
+  - **Type A — accepted semantics:** the current behavior is accepted by an owner decision, and every required protocol and documentation semantic is now explicit (P3, conformance, consumer documentation). Example: P5-F-007 (P6.5, P6-D-005).
+  - **Type B — later-phase obligation:** the current core behavior is accepted, and the owner decision assigns a mandatory implementation obligation to the later phase that owns the affected interface; that phase's roadmap records the obligation in its scope and exit criteria. Example: P5-F-005 (P6.4, P6-D-004 → P7).
+- A finding is `REMEDIATED-IN-P6` only when all of these hold: owner decision recorded, production fix, unit and regression tests, the P5 reproducer passing, a follow-up adversarial review, P3 and conformance text synchronized, documentation synchronized, and full CI green.
+- P5 known-bug reproducers become regression tests only for the finding being remediated. Reproducers of other findings keep failing until their own remediation.
+- No remediation changes the wire format, cryptography, ceremony authentication, or the security accounting (ten-opportunity budget, exposed-ceremony guard, START limiter, authorization seal, pending and preliminary caps, request-ID reservation) unless a recorded owner decision says so and the change is re-analyzed.
+
+## Assurance limits
+
+Everything P5 stated as a limit still applies ([P5 assurance limitations](../p5-security-review/final-synthesis.md#9-assurance-limitations)): AI-assisted review, Windows-only executed evidence (Linux evidence is the CI fail-closed job), bounded deterministic tests rather than exhaustive exploration, fuzzing, or model checking, no formal verification, no professional audit, and the accepted environment assumptions. P6 follow-up reviews are internal and AI-assisted as well.

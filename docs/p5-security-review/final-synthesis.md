@@ -2,7 +2,7 @@
 
 > **Internal, AI-assisted implementation and protocol security review.** This is not a professional penetration test, a professional cryptographic audit, formal verification, model checking, exhaustive fuzzing, certification, a proof of constant-time behavior, or production-security approval.
 
-This is the authoritative closure summary of P5. Detailed evidence stays in the documents it links to; this page does not repeat it.
+This is the authoritative closure summary of P5, kept as the P5 closure snapshot. For the current status of the findings it hands over (P5-F-002 has since been remediated in P6.1, P5-F-001 in P6.2, and P5-F-003 in P6.3; P5-F-005 was later dispositioned by P6-D-004 in P6.4, and P7 owns its ABI containment; P5-F-007 was later dispositioned by P6-D-005 in P6.5; P6.6 then froze the experimental protocol candidate and closed P6 in its [final closure](../p6-remediation/final-closure.md)), see the [P6 remediation package](../p6-remediation/README.md). Detailed evidence stays in the documents it links to; this page does not repeat it.
 
 ## 1. Review target
 
