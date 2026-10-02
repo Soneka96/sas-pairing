@@ -35,6 +35,7 @@ The six accepted limitations (P5-F-004, P5-F-008 to P5-F-012) and eleven false p
 | P6.2 | Remediate P5-F-001 graceful hang-up handling under owner decision P6-D-003, bounded by the P6-D-001 lifetime | **Complete:** P5-F-001 remediated ([record](p5-f-001.md)) |
 | P6.3 | Remediate P5-F-003 process-session accounting reset under P6-D-002 | **Complete:** P5-F-003 remediated ([record](p5-f-003.md)) |
 | P6.4 | Decide and disposition P5-F-005 entropy-panic / ABI policy under owner decision P6-D-004 | **Complete:** P5-F-005 dispositioned ([record](p5-f-005.md)); P7 owns the ABI containment implementation |
+| P6.4.1 | Correct P6-D-004's panic-payload disposal: a caught payload must not run an uncontained destructor (item 14); add the Drop-panicking-payload P7 exit test | **Complete:** policy correction only; no new finding, decision ID, or production change ([record §8.1](p5-f-005.md#81-panic-payload-disposal-p641)) |
 | P6.5 | Disposition P5-F-007 reverse asymmetric completion semantics | Next |
 
 ## Remediation rule

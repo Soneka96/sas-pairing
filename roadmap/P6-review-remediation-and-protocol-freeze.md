@@ -2,7 +2,7 @@
 
 ## Status
 
-🟠 **IN PROGRESS.** Latest increment: **P6.4 — F-005 disposition**, complete: P5-F-005 is DISPOSITIONED-IN-P6 under owner decision P6-D-004 (the core does no panic recovery; the P7 ABI must catch every panic inside Rust, poison the affected context permanently, and never reset accounting in the same process); the implementation obligation belongs to P7. P6.1 remediated P5-F-002 (P6-D-001) and recorded P6-D-002; P6.2 remediated P5-F-001 (P6-D-003); P6.3 remediated P5-F-003 (P6-D-002). Still OPEN: P5-F-007 (INFO). Next: P6.5 — disposition P5-F-007 reverse asymmetric completion semantics. No protocol freeze is claimed yet. All P6 work happens on the one branch `feature/p6-review-remediation-protocol-freeze`, with one pull request at P6 closure. Tracking package: [docs/p6-remediation](../docs/p6-remediation/README.md).
+🟠 **IN PROGRESS.** Latest increment: **P6.4 — F-005 disposition**, complete: P5-F-005 is DISPOSITIONED-IN-P6 under owner decision P6-D-004 (the core does no panic recovery; the P7 ABI must catch every panic inside Rust, poison the affected context permanently, never run the caught payload's destructor (P6.4.1 correction), and never reset accounting in the same process); the implementation obligation belongs to P7. P6.1 remediated P5-F-002 (P6-D-001) and recorded P6-D-002; P6.2 remediated P5-F-001 (P6-D-003); P6.3 remediated P5-F-003 (P6-D-002). Still OPEN: P5-F-007 (INFO). Next: P6.5 — disposition P5-F-007 reverse asymmetric completion semantics. No protocol freeze is claimed yet. All P6 work happens on the one branch `feature/p6-review-remediation-protocol-freeze`, with one pull request at P6 closure. Tracking package: [docs/p6-remediation](../docs/p6-remediation/README.md).
 
 | Increment | Scope | State |
 |---|---|---|
@@ -10,6 +10,7 @@
 | P6.2 | Remediate P5-F-001 graceful hang-up handling | Complete ([P5-F-001 record](../docs/p6-remediation/p5-f-001.md)) |
 | P6.3 | Remediate P5-F-003 process-session accounting reset (P6-D-002) | Complete ([P5-F-003 record](../docs/p6-remediation/p5-f-003.md)) |
 | P6.4 | Decide and disposition P5-F-005 entropy-panic / ABI policy (P6-D-004) | Complete ([P5-F-005 record](../docs/p6-remediation/p5-f-005.md)); P7 owns the ABI containment |
+| P6.4.1 | Correct P6-D-004 panic-payload disposal (no uncontained payload destructor; Drop-panicking-payload P7 exit test) | Complete; policy correction, F-005 stays DISPOSITIONED-IN-P6 |
 | P6.5 | Disposition P5-F-007 reverse asymmetric completion semantics | Next |
 
 ## P5 handoff
