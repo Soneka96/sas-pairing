@@ -4,7 +4,7 @@
 
 ## Status
 
-**P5 REVIEW IN PROGRESS — P5.2 ACCEPTED.** Increment P5.1 set up the review method and completed one broad adversarial pass over every major P4 surface. Increment P5.1.1 reclassified P5-F-002 and P5-F-003 from NEEDS-DECISION to OPEN against the current P3 text. Increment P5.2 completed the [state-machine and transport adversarial sequence review](adversarial-sequences.md), summarized below. P5 is not complete. Remediation belongs to [P6](../../roadmap/P6-review-remediation-and-protocol-freeze.md); P5 changes no production behavior.
+**P5 REVIEW IN PROGRESS — P5.3 ACCEPTED.** Increment P5.1 set up the review method and completed one broad adversarial pass over every major P4 surface. Increment P5.1.1 reclassified P5-F-002 and P5-F-003 from NEEDS-DECISION to OPEN against the current P3 text. Increment P5.2 completed the [state-machine and transport adversarial sequence review](adversarial-sequences.md). Increment P5.3 completed the [dependency, unsafe/FFI, and secret-lifetime deep review](dependency-unsafe-deep-review.md). Both are summarized below. P5 is not complete: final synthesis and closure remain. Remediation belongs to [P6](../../roadmap/P6-review-remediation-and-protocol-freeze.md); P5 changes no production behavior.
 
 ## Review target
 
@@ -15,6 +15,16 @@
 | Review branch | `feature/p5-security-review` (single branch and single PR for all of P5) |
 | Toolchain | `rustc 1.99.0 (b940084d7 2026-09-28)`, Windows 11 Pro 10.0.26200 |
 | Date | 2026-10-02 |
+
+## P5.3 summary
+
+- **Locked graph and provenance:** 97 resolved packages (96 from crates.io), rebuilt with `--locked`. Every cached archive matches its `Cargo.lock` checksum (96/96), and the extracted sources of the 20 security-relevant crates are byte-identical to them. Versions are as P5.1 recorded.
+- **Runtime crypto paths** traced in the locked source: RNG (vodozemac `Sas::new` → rand `ThreadRng`/ChaCha12 → `ProcessPrng`), DH (x25519/curve25519 ladder), HKDF, HMAC with tag verification down to `cmov` assembly, and Base64url. Reachable upstream `unsafe` (curve25519 AVX2 dispatch, `subtle`, `cmov`, chacha20, rand, getrandom, sha2 SHA-NI, cpufeatures, zeroize) was inspected; no invariant takes attacker-controlled lengths.
+- **Project `unsafe`:** 16 production sites (15 blocks + 1 `unsafe impl`), all sound. Ten lack `// SAFETY:` comments (hygiene). All `windows-sys` signatures match the documented prototypes.
+- **Finding changes:** P5-F-004 → ACCEPTED-LIMITATION (the Windows contract implies the SID postcondition, and real Windows was observed to honor it). P5-F-006 → FALSE-POSITIVE (the authentication path uses the scalar, safe `GeneralPurpose` engine; the encoder matched an independent reference for every length 0..=65,536). P5-F-005 strengthened (reproduced through Router, adapter, and owner loop; an Initiator-side panic leaves one live-connection slot held), still INFO OPEN. P5-F-010 strengthened (rand keeps upstream copies of the ephemeral key), still accepted. P5-F-009 unchanged. **No new finding.**
+- **Coverage:** side channels (#32) and dependency assumptions (#33) are now `COMPLETE` for the current threat scope. **No `PARTIAL` surface remains.**
+- **Advisories:** OSV, 96 crates, none (2026-10-02T15:23Z).
+- **Production behavior and dependency graph:** unchanged. One `#[cfg(test)]` module declaration each in `crypto.rs`, `windows_tcp.rs`, and `windows_owner_loop.rs`, and one integration test.
 
 ## P5.2 summary
 
@@ -41,10 +51,10 @@ Specification-to-code tracing; adversarial reasoning across 34 axes and 12 attac
 ## Assurance limitations
 
 - AI-assisted reading can miss defects. Absence of a finding is not proof of absence.
-- The first pass is broad. Side channels and dependency internals remain `PARTIAL` ([coverage](coverage.md)). The state machine and Router concurrency were deepened by P5.2's bounded generated sequences and forced interleavings, which are not exhaustive.
-- No fuzzing, randomized property testing, formal model, loom-style interleaving exploration, or measurement was performed.
-- Windows only. Linux results come from CI (`unsupported-platform-fails-closed`).
-- Upstream crates (vodozemac, x25519-dalek, rand, getrandom, hkdf, hmac, sha2, base64) were trusted beyond the touchpoints read.
+- The state machine and Router concurrency were deepened by P5.2's bounded generated sequences and forced interleavings, which are not exhaustive. P5.3 traced side channels to their primitives but did not measure them or prove them constant-time.
+- No fuzzing, randomized property testing, formal model, loom-style interleaving exploration, timing measurement, Miri, or sanitizer run was performed.
+- Windows only. Linux results come from CI (`unsupported-platform-fails-closed`). NEON code was never executed (it is also unreachable).
+- Upstream crates are trusted beyond the security-relevant paths P5.3 inspected in locked source ([deep review §12](dependency-unsafe-deep-review.md#12-dependencies-33)).
 
 ## Current finding counts
 
@@ -54,13 +64,13 @@ Specification-to-code tracing; adversarial reasoning across 34 axes and 12 attac
 | HIGH | 0 | 5 | 0 | 0 |
 | MEDIUM | 1 | 3 | 0 | 0 |
 | LOW | 2 | 1 | 0 | 0 |
-| INFO | 4 | 0 | 5 | 0 |
+| INFO | 2 | 1 | 6 | 0 |
 
 There is no confirmed CRITICAL or HIGH finding. Confirmed OPEN findings, in order of severity:
 
 - **MEDIUM:** P5-F-002, a gap against P3 §11.1.1: admitted connections have no finite first-header wait, so 16 idle peers hold the live-connection cap. A finite bound is required; the timer design and values are left to P6.
 - **LOW:** P5-F-001, the owner loop discards readable bytes on hang-up. P5-F-003, in-process re-registration starts a fresh budget, a mismatch with the current P3 process/session policy.
-- **INFO:** P5-F-004 to P5-F-007, defense-in-depth, panic, dependency, and deadline-boundary observations. These may close as hardening or documentation decisions rather than production changes.
+- **INFO:** P5-F-005 (entropy-panic policy across the Router, adapter, and a future ABI) and P5-F-007 (reverse asymmetric completion at the deadline boundary). These may close as owner, hardening, or documentation decisions rather than production changes. P5.3 moved P5-F-004 to ACCEPTED-LIMITATION and P5-F-006 to FALSE-POSITIVE.
 
 No finding is currently NEEDS-DECISION. False-positive severities are what each candidate would have been if real. Details: [findings.md](findings.md).
 
@@ -78,8 +88,9 @@ No finding is currently NEEDS-DECISION. False-positive severities are what each 
 | [resources-deadlines-transport.md](resources-deadlines-transport.md) | Resource table, limiter math, deadlines, TCP adapter, owner loop |
 | [secrets-panics-dependencies.md](secrets-panics-dependencies.md) | Secret lifetime, logging, panics, allocation, side channels, dependencies, static analysis |
 | [adversarial-sequences.md](adversarial-sequences.md) | P5.2 generated state-machine, transport, readiness, deadline, and Router-race sequences; F-001, F-002, F-007 evidence |
+| [dependency-unsafe-deep-review.md](dependency-unsafe-deep-review.md) | P5.3 locked graph and provenance, crypto call graph, reachable upstream and project `unsafe`, F-004/005/006 dispositions, side channels, secret lifetime, RNG, advisories |
 | [reproducers/](reproducers/README.md) | Passing evidence tests, expected-fail known-bug reproducers, and the throwaway patch, each classified |
 
 ## Next increment
 
-Recommended P5.3 (not yet started): **Dependency, unsafe/FFI, and secret-lifetime deep review.** Coverage surfaces #32 (side channels) and #33 (dependency assumptions) are the remaining `PARTIAL` surfaces. P5-F-004 (`token_user_sid` bounds), P5-F-005 (panic policy across the Router, adapter, and a future ABI), and P5-F-006 (`base64` SIMD engine) all sit at upstream or `unsafe` boundaries that P5.1 read only at their touchpoints. P5.3 would review the locked upstream crates' `unsafe` and constant-time claims at the exact versions, the `base64` encoder against a reference across every length up to the cap, the Win32 FFI boundaries, and the zeroization boundary.
+Recommended P5.4 (not yet started): **Final review synthesis and P5 closure.** No `PARTIAL` coverage surface remains after P5.3. P5.4 would reconcile the finding set and dispositions for P6, confirm every reproducer's classification, freeze the package, and only then open the single P5 pull request. (P5.3 was the dependency, unsafe/FFI, and secret-lifetime deep review.)

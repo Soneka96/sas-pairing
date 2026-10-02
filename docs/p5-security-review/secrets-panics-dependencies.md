@@ -1,6 +1,6 @@
 # P5 Analysis — Secrets, Logging, Panics, Allocation, Side Channels, Dependencies, Static Analysis
 
-Reviewed at `e21ff0b`, with the exact cached crate sources for the versions in `core/Cargo.lock`.
+Reviewed at `e21ff0b`, with the exact cached crate sources for the versions in `core/Cargo.lock`. P5.3 deepened §1, §3, §5, and §6 against the locked upstream source; see the [dependency, unsafe, and secret-lifetime deep review](dependency-unsafe-deep-review.md). Short notes below mark what changed.
 
 ## 1. Secret lifetime
 
@@ -14,6 +14,8 @@ Reviewed at `e21ff0b`, with the exact cached crate sources for the versions in `
 | vodozemac `SasBytes` | `Established::sas` | Temporary | End of `SasSession::new` | No | `Debug + Clone` (upstream) |
 | Authorization seal | `authorize` | `Ceremony` and the token | `reserve` (consumed) or terminate | Not secret | `Debug` redacted |
 | `PairingResult` | Success | Consumer | Consumer | Public data | `Debug + Clone` |
+
+**P5.3:** the `Zeroized: Yes` entries hold for the x25519-dalek objects themselves. The same ephemeral key bytes also remain in rand's thread-local `ThreadRng` output buffer and can be regenerated from its ChaCha12 state until the next reseed. A clamped `Scalar` copy is not zeroized on drop. HKDF, HMAC, and SHA-256 state are not zeroized either (`zeroize` features off). These are upstream copies, which strengthens [P5-F-010](findings.md#p5-f-010) ([deep review §10](dependency-unsafe-deep-review.md#10-secret-lifetime-and-zeroization)).
 
 No copy of a secret survives a terminal transition inside the core, except where noted: upstream temporaries, compiler or stack copies, and swap or crash dumps are not covered. That is the documented boundary in P3 §5, recorded as [P5-F-010](findings.md#p5-f-010). No memory-forensic resistance is claimed.
 
@@ -35,7 +37,7 @@ No copy of a secret survives a terminal transition inside the core, except where
 | Indexing and slicing (37 sites, review Clippy) | — | Each guarded (triaged one by one: field counts, `bounded`, extent checks, `start ≤ end ≤ 8192`, `offset < len`, index valid until `retain`) |
 | `debug_assert!`s (`retain` slot free, event count, `fds` length) | — | Invariants hold. In release builds `retain` would overwrite silently, but every caller checks the slot first |
 | `vodozemac` internal `expect`s (HKDF expand of 6 or 32 bytes, HMAC new) | — | Unreachable |
-| **`Sas::new()`** (rand `ThreadRng` seeding or reseeding failure) | Responder admission (peer START), Initiator `expose_key` (local) | Reachable only on OS entropy failure. Accounting and no-success hold (P4 test). The unwind leaves Router and adapter state conservatively stuck ([P5-F-005](findings.md#p5-f-005)) |
+| **`Sas::new()`** (rand `ThreadRng` seeding or reseeding failure) | Responder admission (peer START), Initiator `expose_key` (local) | Reachable only on OS entropy failure. Accounting and no-success hold (P4 test). The unwind leaves Router and adapter state conservatively stuck ([P5-F-005](findings.md#p5-f-005)). P5.3 reproduced it through the Router, adapter, and owner loop ([deep review §7](dependency-unsafe-deep-review.md#7-p5-f-005-entropy-panic)) |
 | Allocation failure | Anywhere | Aborts (Rust default). Out of scope |
 | Integer overflow in release builds | Counters (`+=`/`-=`) | Every decrement is paired with an `Option` or flag taken exactly once; `remaining` is checked `> 0`. No wrap path ([P5-F-020](findings.md#p5-f-020)) |
 
@@ -50,7 +52,7 @@ Every declared length is validated before allocation (`wire_frame_extent`; `Part
 - MAC tags: `digest` 0.11.3 `verify_slice` compares in constant time (`ctutils::CtEq`). X25519 is constant time upstream.
 - Non-constant-time comparisons exist only on **public or local** values: the commitment (`==` on a public digest), the transcript digest against `ceremony_identity` (public), the final-ACK bytes (local), and bootstrap or context bytes (public). Recorded as the false positive [P5-F-016](findings.md#p5-f-016).
 - Timing of HKDF and HMAC over variable-length public inputs reveals only public lengths.
-- Cache, power, and microarchitectural attacks on the endpoint are outside the remote attacker model. Upstream constant-time claims were trusted, not measured. **PARTIAL** in [coverage](coverage.md).
+- Cache, power, and microarchitectural attacks on the endpoint are outside the remote attacker model. Upstream constant-time claims were trusted, not measured. ~~PARTIAL~~ **COMPLETE after P5.3** for the remote threat scope: every comparison classified, and every secret path traced to its constant-time primitive (`ctutils` → `cmov` assembly for the tag; `subtle` in the ladder). Not measured ([deep review §9](dependency-unsafe-deep-review.md#9-side-channels-32)).
 
 ## 6. Dependencies
 
@@ -70,7 +72,8 @@ Every declared length is validated before allocation (`wire_frame_extent`; `Part
 - **Duplicate versions:** `sha2`, `digest`, `block-buffer`, `crypto-common`, and `cpufeatures` each appear at two versions; `syn` 2/3 at build time only. The core's own SHA-256 uses (commitment, transcript, lock name) are project constructions defined by P3, not a bypass of vodozemac's pinned SAS, HKDF, or MAC path. No project code calls `x25519-dalek`, `hkdf`, or `hmac` directly (searched).
 - **Unused but compiled:** vodozemac's non-optional `aes`, `cbc`, `chacha20poly1305`, `hpke`, `ed25519-dalek`, `serde_json`. Unreachable from the core.
 - **Supply-chain hardening (observation):** CI runs `cargo test` without `--locked`, so a manifest change that disagreed with the lockfile would be resolved silently in CI. This is not a finding today (the lock is committed and consistent). Recommended for P6 as CI hygiene.
-- **`base64` SIMD engine:** [P5-F-006](findings.md#p5-f-006).
+- **`base64` SIMD engine:** [P5-F-006](findings.md#p5-f-006), reclassified FALSE-POSITIVE in P5.3. The feature only compiles separate SIMD engines; `URL_SAFE_NO_PAD` is the scalar `GeneralPurpose` engine ([deep review §8](dependency-unsafe-deep-review.md#8-p5-f-006-base64-simd)).
+- **P5.3 reachability and provenance:** 96/96 archive checksums verified; reachable versus compiled-only crates, duplicate rationale, and the vodozemac compiled-but-unused modules are in [deep review §1–§4, §12](dependency-unsafe-deep-review.md#12-dependencies-33).
 
 ### Advisory scan
 
@@ -80,6 +83,7 @@ Every declared length is validated before allocation (`wire_frame_extent`; `Part
 - **Result:** **no advisories**. A control query with known-vulnerable versions (`time 0.1.43`, `smallvec 1.6.0`) returned their RustSec and GHSA IDs, confirming the query works.
 - **Applicability:** not applicable, since nothing was reported.
 - The dependency graph was not changed. No dependency was upgraded.
+- **P5.3 re-run:** 2026-10-02T15:23:01Z, same mechanism and scope, 0 advisories, control query confirmed ([deep review §13](dependency-unsafe-deep-review.md#13-advisory-scan)).
 
 ## 7. Static analysis
 
@@ -90,4 +94,4 @@ Every declared length is validated before allocation (`wire_frame_extent`; `Part
 | `cargo clippy --all-targets -D warnings --target x86_64-unknown-linux-gnu` | Pass |
 | Review-only lints on `--lib --bins` (`undocumented_unsafe_blocks`, `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`, `arithmetic_side_effects`, `cast_*`, `as_conversions`) | 109 library and 26 probe hits, all triaged. Security-relevant result: none beyond the `unsafe` documentation observation in [ownership and FFI §6](ownership-and-ffi.md#6-production-unsafe-inventory) and the triage above. No code was changed |
 
-`cargo-miri` is installed, but Miri cannot execute the Win32 FFI that holds the remaining `unsafe`, so it was not used.
+Miri cannot execute the Win32 FFI that holds the remaining `unsafe`, so it was not used. (Correction in P5.3: only the `cargo-miri` rustup proxy exists; no installed toolchain has the `miri` component, and it was not installed.)

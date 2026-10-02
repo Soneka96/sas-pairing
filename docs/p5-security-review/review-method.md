@@ -45,6 +45,10 @@ Every candidate MEDIUM or higher finding needs a concrete reproducer where possi
 
 Bounded, deterministic exploration with no randomness and no new dependency. Generated action sequences run from every honest state against a lockstep honest peer. Duplicate, reorder, and deadline-boundary matrices use hand clocks at −1 ns, exactly, and +1 ns. Stream chunkings and scripted socket-result sequences exercise the transport. Readiness combinations are forced through scripted `WSAPoll`. Router interleavings are forced through the existing pause points and repeated. The oracle checks invariant relationships (terminality, result count, exposure accounting, outputs, honest versus injected input), never a re-implementation of the protocol. A failing sequence is reported with its exact action trace for manual reduction. Method, bounds, and counts: [adversarial sequences](adversarial-sequences.md).
 
+### G. Locked upstream provenance and reachability (added in P5.3)
+
+The resolved graph is rebuilt with `--locked`. Each cached crate archive is checked against its `Cargo.lock` checksum, and the extracted source of the security-relevant crates is compared with the archive byte for byte. Each runtime crypto path is traced from the project call site into the exact locked upstream functions, and only `unsafe` reachable from those paths is audited. Windows API contracts are taken from primary Microsoft documentation and kept separate from empirical OS observations. Test-only independent references (for example a bit-indexed Base64url encoder) are compared with production outputs. Faults are injected only at existing test pause points, and an unwind is caught only in test code. OS-written pointers are range-checked by address arithmetic before any dereference. Memory is never read after drop to "prove" zeroization. Method and results: [deep review](dependency-unsafe-deep-review.md).
+
 ## 4. Attacker and fault models
 
 Taken from the [threat model](../threat-model.md) and P3:

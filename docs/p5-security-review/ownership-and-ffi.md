@@ -47,6 +47,8 @@ Two textual scopes that name one real capability are **two authorities** in the 
 
 **Lifetime:** `info` is not moved or reallocated between `GetTokenInformation` writing the absolute SID pointer and the copy (`truncate` keeps the allocation), so the pointer stays valid. **Range:** nothing checks that `sid` lies inside `info`, or that `sid + len` ends inside `info`. Correctness relies on Windows writing the SID inside the supplied buffer. A malformed OS result would make `IsValidSid` and the slice read out of range. This is [P5-F-004](findings.md#p5-f-004) (INFO). The synthetic unaligned test constructs a well-formed buffer, so it cannot catch this.
 
+**P5.3** ([deep review §6](dependency-unsafe-deep-review.md#6-p5-f-004-token_user-range)): the Microsoft documentation implies but does not state that the SID lies in the returned buffer. On this Windows the SID is at offset 16 and 28 bytes long, ending exactly at the 44 returned bytes (empirical test, with the range proven before any dereference). Unaligned buffer starts are refused with error 998. P5-F-004 is now ACCEPTED-LIMITATION.
+
 The test-only `ownership_probe` copies the header the same way but calls `GetLengthSid` without `IsValidSid`, and indexes SID bytes for display. It is evidence tooling, not production. No finding.
 
 ## 5. Attempt bound, re-derived from code
@@ -80,11 +82,13 @@ All bindings are generated `windows-sys 0.59` declarations, with no handwritten 
 | 8 | `lib.rs:676` | `GetTokenInformation` fill | `info` has exactly `size` bytes, exclusively borrowed | `Vec<u8>` | Call-scoped | Failure → Unavailable; returned size > buffer → Unavailable | Holds |
 | 9 | `lib.rs:696/701` | `GetUserProfileDirectoryW` | Buffer of `chars` `u16`s | `Vec<u16>` | Call-scoped | Failure → Unavailable | Holds |
 | 10 | `lib.rs:720` | `ptr::read_unaligned::<TOKEN_USER>` | `len >= size_of` checked; plain data | `info` | Copy | — | Holds (20.1 fix) |
-| 11 | `lib.rs:724` | `IsValidSid(sid)` | `sid` non-null **and inside `info`** | OS-written pointer | `info` borrowed | Invalid → Unavailable | **Range not checked** → [P5-F-004](findings.md#p5-f-004) |
+| 11 | `lib.rs:724` | `IsValidSid(sid)` | `sid` non-null **and inside `info`** | OS-written pointer | `info` borrowed | Invalid → Unavailable | **Range not checked** → [P5-F-004](findings.md#p5-f-004) (ACCEPTED-LIMITATION, P5.3) |
 | 12 | `lib.rs:728` | `GetLengthSid(sid)` | After `IsValidSid` | Same | — | Out of 8..=68 → Unavailable | Holds given #11 |
-| 13 | `lib.rs:734` | `slice::from_raw_parts(sid, len)` | `[sid, sid+len)` inside `info`; `u8` alignment 1 | Same | Copied while `info` is alive | — | **Range not checked** → [P5-F-004](findings.md#p5-f-004) |
+| 13 | `lib.rs:734` | `slice::from_raw_parts(sid, len)` | `[sid, sid+len)` inside `info`; `u8` alignment 1 | Same | Copied while `info` is alive | — | **Range not checked** → [P5-F-004](findings.md#p5-f-004) (ACCEPTED-LIMITATION, P5.3) |
 | 14 | `windows_owner_loop.rs:719` | `WSAPoll(fds, len, wait)` | Exclusive, initialized slice of at most 17 `WSAPOLLFD`; sockets owned by live adapters and the listener for the whole call; the OS writes only `revents` | `&mut [WSAPOLLFD]` | Call-scoped, single owner thread | `SOCKET_ERROR` → `WSAGetLastError` → loop fails closed (except `WSAEINTR`) | Holds |
 | 15 | `windows_owner_loop.rs:722` | `WSAGetLastError()` | Same thread, immediately after the failure | — | — | — | Holds |
+
+**P5.3 re-enumeration:** 16 production sites. Rows 9 above cover two blocks (`lib.rs:696` and `:701`), so the 15 rows are 15 blocks plus the `unsafe impl`. All `windows-sys 0.59.0` signatures match the documented prototypes. Rows 11 to 13 are sound given the Windows postcondition accepted in [P5-F-004](findings.md#p5-f-004) ([deep review §5](dependency-unsafe-deep-review.md#5-project-unsafe-and-ffi-re-audit)).
 
 Review-only Clippy reported 10 `unsafe` blocks and 1 `unsafe impl` in `lib::os_lock` without `// SAFETY:` comments (only `token_user_sid` and `wsa_poll` have them). That is an assurance-documentation observation and not a defect. No code was changed.
 

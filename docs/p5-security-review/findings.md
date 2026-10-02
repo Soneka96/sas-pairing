@@ -38,11 +38,13 @@ For `FALSE-POSITIVE` entries, severity is the severity the candidate **would hav
 | HIGH | 0 | 5 (P5-F-014, 017, 018, 019, 022) | 0 | 0 |
 | MEDIUM | 1 (P5-F-002) | 3 (P5-F-015, 020, 021) | 0 | 0 |
 | LOW | 2 (P5-F-001, 003) | 1 (P5-F-016) | 0 | 0 |
-| INFO | 4 (P5-F-004, 005, 006, 007) | 0 | 5 (P5-F-008–012) | 0 |
+| INFO | 2 (P5-F-005, 007) | 1 (P5-F-006) | 6 (P5-F-004, 008–012) | 0 |
 
 **No CRITICAL or HIGH finding is confirmed.** Nothing was found that yields pairing success without SAS agreement, exposes secret material remotely, or bypasses the one-owner / one-guard / ten-opportunity accounting under one registration. Across registrations inside one live process the budget does reset, contrary to the current P3 process/session policy; trusted local code, not a remote peer, must trigger it ([P5-F-003](#p5-f-003)).
 
 Not every OPEN finding needs a production change. The INFO findings may close as hardening or documentation decisions in P6.
+
+**P5.3 update** ([dependency, unsafe, and secret-lifetime deep review](dependency-unsafe-deep-review.md)): **no new finding.** Three findings were reclassified or strengthened from locked upstream source, primary Windows documentation, and new deterministic evidence. **P5-F-004** OPEN → ACCEPTED-LIMITATION: the unsafe reads rely on a Windows postcondition that the documented API implies but does not state in words; it holds empirically, and only a compromised OS (out of scope) could break it. **P5-F-006** OPEN → FALSE-POSITIVE: `URL_SAFE_NO_PAD` is the scalar, safe `GeneralPurpose` engine, the `simd-unsafe` engines are unreachable, and the encoder matched an independent reference for every length 0..=65,536. **P5-F-005** strengthened (reproduced through Router, adapter, and owner loop; new availability residue) and still OPEN for the panic-policy decision. **P5-F-010** strengthened (rand `ThreadRng` keeps upstream copies of the ephemeral key) and still accepted. **P5-F-009** unchanged. No severity rose.
 
 **P5.2 update** ([adversarial sequences](adversarial-sequences.md)): bounded generated sequences (36,519 state-machine sequences, plus duplicate, deadline, stream, socket-script, readiness, and Router-race families) produced **no new finding** and no change of severity, status, or counts. P5-F-001 was strengthened: real-Windows matrix, the end-to-end final-ACK reproducer, and two subcases (a discarded buffered suffix; dropped pending output after a peer half-close). P5-F-002 was strengthened with subcases A (first header), B (idle after its run), and C (owner-less retained output), kept as one finding. P5-F-007 was reproduced end to end and its description corrected; it stays INFO.
 
@@ -53,9 +55,9 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 | [P5-F-001](#p5-f-001) | Owner loop discards bytes received before a graceful peer close | LOW | HIGH | OPEN |
 | [P5-F-002](#p5-f-002) | Connections with no frame in progress never expire, so 16 idle peers hold the live-connection cap indefinitely | MEDIUM | HIGH | OPEN |
 | [P5-F-003](#p5-f-003) | In-process re-registration starts a fresh opportunity budget without process replacement | LOW | HIGH | OPEN |
-| [P5-F-004](#p5-f-004) | `token_user_sid` does not bound the OS-written SID to the returned buffer | INFO | HIGH | OPEN |
+| [P5-F-004](#p5-f-004) | `token_user_sid` does not bound the OS-written SID to the returned buffer | INFO | HIGH | ACCEPTED-LIMITATION (P5.3) |
 | [P5-F-005](#p5-f-005) | `Sas::new()` entropy panic leaves Router and adapter state conservatively stuck and escapes owner-loop calls | INFO | HIGH | OPEN |
-| [P5-F-006](#p5-f-006) | `base64`'s default `simd-unsafe` engine encodes every MAC and HKDF input | INFO | HIGH | OPEN |
+| [P5-F-006](#p5-f-006) | `base64`'s default `simd-unsafe` engine encodes every MAC and HKDF input | INFO (if real) | HIGH | FALSE-POSITIVE (P5.3) |
 | [P5-F-007](#p5-f-007) | Reverse asymmetric completion at the Initiator's deadline boundary | INFO | HIGH | OPEN |
 | [P5-F-008](#p5-f-008) | Same-profile attacker can race the lock-path checks (TOCTOU) | INFO | HIGH | ACCEPTED-LIMITATION |
 | [P5-F-009](#p5-f-009) | Fork, snapshot, restore, or duplicated state can repeat ephemeral material | INFO | HIGH | ACCEPTED-LIMITATION |
@@ -150,7 +152,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 <a id="p5-f-004"></a>
 ### P5-F-004 — `token_user_sid` does not bound the OS-written SID to the returned buffer
 
-- **Status:** OPEN
+- **Status:** ACCEPTED-LIMITATION (reclassified from OPEN in P5.3)
 - **Severity:** INFO
 - **Confidence:** HIGH
 - **Affected requirement(s):** Decision 0003 (failure to obtain token identity fails closed); P3 §11.1.2(4).
@@ -162,7 +164,12 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 - **Why existing tests/conformance did not catch or prevent it:** Increment 20.1 targeted alignment, and the range was assumed from the Windows contract.
 - **Recommended remediation:** Before `IsValidSid`, require `info.as_ptr() + size_of::<TOKEN_USER>() ≤ sid < info.as_ptr() + info.len()`. After `GetLengthSid`, require `sid + len ≤ info.as_ptr() + info.len()`. Otherwise return `OwnershipUnavailable`. Add synthetic tests for an out-of-range pointer and an oversized sub-authority count. Optionally add `// SAFETY:` comments to the other `os_lock` blocks ([ownership and FFI §6](ownership-and-ffi.md#6-production-unsafe-inventory)).
 - **P6 disposition:** Optional hardening, low effort.
-- **Evidence:** [ownership and FFI §4, §6](ownership-and-ffi.md#4-increment-201-token_user-re-audit).
+- **P5.3 reclassification** ([deep review §6](dependency-unsafe-deep-review.md#6-p5-f-004-token_user-range)):
+  - **Windows contract (Microsoft Learn, fetched 2026-10-02).** `GetTokenInformation`, `TOKEN_INFORMATION_CLASS`, `TOKEN_USER`, `SID_AND_ATTRIBUTES`, `IsValidSid`, `GetLengthSid`, and the WDK `ZwQueryInformationToken` say the buffer "receives a TOKEN_USER structure", that `ReturnLength` is the size "needed to store the requested information", and that `Sid` is "a pointer to a SID structure". None states in words that the pointer refers into the caller's buffer. That is strongly implied: the buffer is the only output storage, the required size covers the SID (44 bytes, not 16), nothing else is freed, and Microsoft's own sample uses the pointer and then frees only the buffer.
+  - **Empirical, not contract.** `core/tests/p5_review_evidence.rs::p5_f_004_token_user_sid_lies_inside_the_returned_buffer_on_this_windows` (PASSING EVIDENCE TEST, CI) proves by address arithmetic before any dereference that the SID is at offset 16, is 28 bytes, ends exactly at the returned length, and is stable over 100 rounds, exact and oversized buffers, and 4- and 8-aligned starts. Unaligned starts are refused with error 998 (`ERROR_NOACCESS`), which fails closed.
+  - **Rust reasoning.** The reads are sound given the OS postcondition. Only a compromised or hooked API, which the threat model excludes, could break it, and that same API could lie about the identity, which a range check would not detect. The `SAFETY:` wording states the postcondition as fact; it is not unsupported.
+  - **Final:** ACCEPTED-LIMITATION, INFO, HIGH, under the normative baseline (threat model: compromised endpoint/OS out of scope; [assumptions §5](assumptions-and-boundaries.md#environmental-assumptions-the-core-relies-on)). **P6 recommendation:** unchanged and optional. Add the range checks and reword the `SAFETY:` comments to name the OS postcondition.
+- **Evidence:** [ownership and FFI §4, §6](ownership-and-ffi.md#4-increment-201-token_user-re-audit); [deep review §5–§6](dependency-unsafe-deep-review.md#5-project-unsafe-and-ffi-re-audit).
 
 <a id="p5-f-005"></a>
 ### P5-F-005 — `Sas::new()` entropy panic leaves Router and adapter state conservatively stuck and escapes owner-loop calls
@@ -183,14 +190,21 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 - **Why existing tests/conformance did not catch or prevent it:** The P4 hook injects the panic below the Router and adapter, and no test unwinds through them.
 - **Recommended remediation:** Decide the native library's panic policy: `panic = "abort"`, or a `catch_unwind` boundary at the P7 ABI. If unwinding stays, remove an `Admitting` claim with an RAII guard and treat a poisoned run as terminal for teardown, so recovery is bounded.
 - **P6 disposition:** Owner decision on panic policy (together with P7); optional Router hardening.
-- **Evidence:** [state and routing §3](state-and-routing.md#3-router-and-session-isolation); [secrets, panics, dependencies §3](secrets-panics-dependencies.md#3-panic-and-abort-surfaces).
+- **P5.3 (strengthened; INFO, HIGH, OPEN)** ([deep review §7](dependency-unsafe-deep-review.md#7-p5-f-005-entropy-panic)):
+  - **Exact origin.** rand 0.10.3 `ThreadRng` panics on a failed initial seed (`thread.rs:163`) or on a failed reseed after 64 KiB of output per thread (`thread.rs:70`). A caught reseed panic never reuses or extends output. getrandom 0.4.3 `ProcessPrng` is documented upstream as always returning TRUE on Windows 10 and later. A peer can drive reseeds but cannot cause the failure: not remotely triggerable.
+  - **Reproduced deterministically** at the existing P4 pause points, catching the unwind around real calls (PASSING EVIDENCE TESTS `windows_tcp::tests::p5_entropy_panic_review::p5_f005_001..003`, `windows_owner_loop::tests::p5_entropy_panic_loop::p5_f005_004..005`).
+  - **Responder:** an orphan `Admitting` claim; a duplicate START (including the adapter's retained replay) is ignored; a frame for that key marks it conflicted; teardown releases everything.
+  - **Initiator:** the run is poisoned; Busy with the opportunity consumed. The next presentation, deadline poll, inbound frame, close, or owner-loop drive reports `OwnershipUncertain` and the adapter or loop fails closed. Dropping the detached run releases the guard and the request-ID reservation with no refund. **New residue:** one authority-wide live-connection slot and one CLOSING Router session stay held for the life of the registration.
+  - **Security properties hold:** no result, no exposure without consumption, no refund, no premature guard reuse, no stale route accepting input. A future `extern "C"` ABI would abort on an escaping panic (Rust ≥ 1.81), not unwind, unless a binding opts into `C-unwind`.
+  - **P6/P7:** choose `panic = "abort"`, or `catch_unwind` at every export that then discards the authority. Optionally add RAII cleanup of the claim and release transport accounting for a poisoned run.
+- **Evidence:** [state and routing §3](state-and-routing.md#3-router-and-session-isolation); [secrets, panics, dependencies §3](secrets-panics-dependencies.md#3-panic-and-abort-surfaces); [deep review §7](dependency-unsafe-deep-review.md#7-p5-f-005-entropy-panic).
 
 <a id="p5-f-006"></a>
 ### P5-F-006 — `base64`'s default `simd-unsafe` engine encodes every MAC and HKDF input
 
-- **Status:** OPEN
-- **Severity:** INFO
-- **Confidence:** HIGH
+- **Status:** FALSE-POSITIVE (reclassified from OPEN in P5.3)
+- **Severity:** INFO (if real)
+- **Confidence:** HIGH (that it is false)
 - **Affected requirement(s):** P3 §3.2 (strict unpadded Base64url for every SAS, MAC, and CANCEL input); decision 0002 (the reviewed, pinned dependency path); `R-MAC-014`.
 - **Affected code:** `core/Cargo.toml` (`base64 = "0.23"`, default features; vodozemac also enables the defaults); `core/src/crypto.rs:261–285` (`capped_base64url` → `URL_SAFE_NO_PAD.encode`). In `base64` 0.23.1, `default = ["std", "simd-unsafe"]`, which selects AVX2 or NEON `unsafe` encoders at run time.
 - **Threat scenario:** A defect in a SIMD encoder for some length or CPU (AVX2 vs scalar vs NEON on a future mobile peer) would produce a different string for the same frame. Peers on the same CPU class would still agree. Peers on different classes would derive different MAC or HKDF inputs and fail closed. A memory-safety defect in that `unsafe` encoder would sit on attacker-influenced lengths (the bootstrap fields).
@@ -199,8 +213,13 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 - **Security impact:** None demonstrated. There is a fail-closed interoperability risk and an extra upstream `unsafe` surface in the authentication path. Fixture tests exercise only the CI machine's backend and the fixture's lengths.
 - **Why existing tests/conformance did not catch or prevent it:** Feature unification is implicit. P4 recorded the version but not the feature.
 - **Recommended remediation:** An owner decision to accept and record it, or to reduce it (ask vodozemac to allow disabling the feature, or adjust the core's `base64` features where unification allows). Add a test-only reference Base64url encoder compared across every length up to the 65,536-byte cap.
-- **P6 disposition:** Decide; optional test.
-- **Evidence:** [secrets, panics, dependencies §6](secrets-panics-dependencies.md#6-dependencies).
+- **P6 disposition:** Decide; optional test. *Superseded by P5.3: nothing to remediate.*
+- **P5.3 reclassification** ([deep review §8](dependency-unsafe-deep-review.md#8-p5-f-006-base64-simd)):
+  - **The premise is false at the locked version.** `simd-unsafe` is enabled (from `default`, requested by both the core and vodozemac). In base64 0.23.1 it only compiles the separate `Simd`, `Avx2`, and `Neon` engines (`engine/simd.rs`, the crate's only `unsafe`). `URL_SAFE_NO_PAD` is the scalar `GeneralPurpose` engine: its `internal_encode` passes the no-op SIMD prefix `|_, _| (0, 0)` (`general_purpose/mod.rs:85-87`), and `base64::engine::Scalar` is its alias. vodozemac also uses `GeneralPurpose`. No crate in the graph constructs a SIMD engine, and the core never decodes.
+  - **Evidence (`core/src/crypto/tests/p5_dependency_review.rs`):** a dependency-free bit-indexed reference encoder, checked against RFC 4648 vectors. B64-REF-001 (CI): 306 lengths (0..=256 and every boundary ±2 up to 65,538) × 4 patterns, with and without the longest production prefix, and exact cap edges; 0 mismatches, every over-cap input `Oversized`. B64-REF-002 (deep, `#[ignore]`): **every** length 0..=65,536, two patterns, 131,074 independent encodings, 0 mismatches, 48.9 s. B64-ENGINE-001: compile-time proof that the engine is `Scalar`. B64-ENGINE-002: the unused `Simd` engine also matches on this AVX2 host. NEON was source-reviewed only, never executed, and is unreachable.
+  - **Impact had a backend differed:** fail-closed MAC or HKDF mismatch, never false authentication.
+  - **Final:** FALSE-POSITIVE. The unused compiled `unsafe` module is supply-chain footprint only. Keep B64-ENGINE-001 and B64-REF-001 as regression guards for any future `base64` upgrade.
+- **Evidence:** [secrets, panics, dependencies §6](secrets-panics-dependencies.md#6-dependencies); [deep review §8](dependency-unsafe-deep-review.md#8-p5-f-006-base64-simd).
 
 <a id="p5-f-007"></a>
 ### P5-F-007 — Reverse asymmetric completion at the Initiator's deadline boundary
@@ -248,7 +267,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 - **Why existing tests/conformance did not catch or prevent it:** It is a documented limitation (P4 closure "Explicit Limitations").
 - **Recommended remediation:** None for experimental scope. Any supported snapshot deployment needs a verified reseed mechanism first.
 - **P6 disposition:** Keep.
-- **Evidence:** `rand-0.10.3/src/rngs/thread.rs` documents no reseed on fork.
+- **Evidence:** `rand-0.10.3/src/rngs/thread.rs` documents no reseed on fork. **P5.3: unchanged** ([deep review §11](dependency-unsafe-deep-review.md#11-rng-fork-and-snapshot-p5-f-009)). Locked source confirms per-thread ChaCha12 state seeded from `ProcessPrng` and reseeded every 64 KiB of output. A restored or duplicated image replays that state until its next reseed, whatever Windows does for `ProcessPrng` on restore.
 
 <a id="p5-f-010"></a>
 ### P5-F-010 — Secret remanence beyond the x25519-dalek drop boundary
@@ -264,6 +283,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 - **Recommended remediation:** None required.
 - **P6 disposition:** Keep.
 - **Evidence:** [secrets, panics, dependencies §1](secrets-panics-dependencies.md#1-secret-lifetime).
+- **P5.3 (strengthened, still ACCEPTED-LIMITATION, INFO)** ([deep review §10](dependency-unsafe-deep-review.md#10-secret-lifetime-and-zeroization)): the zeroizing drop of `EphemeralSecret` and `SharedSecret` is confirmed at the locked versions. Beyond it, three upstream copies were not recorded in P5.1. (1) The raw ephemeral private-key bytes stay in rand's thread-local `BlockRng` output buffer (not zeroized). (2) Until the next reseed (up to 64 KiB of output per thread) they can be regenerated from the ChaCha12 state (rand documents "no further protections exist to in-memory state"). (3) `mul_clamped` makes a clamped `Scalar` copy that is not zeroized on drop. HKDF, HMAC, and SHA-256 state and the boxed MAC keys are not zeroized (`zeroize` features off). The project itself adds no secret copy. These copies need endpoint memory access, which is out of scope, and P3 §5 already excludes "other copies".
 
 <a id="p5-f-011"></a>
 ### P5-F-011 — Monotonic time across system suspend is unverified
@@ -337,7 +357,7 @@ Each was constructed as a concrete attack and then disproved against source. The
 - **Status:** FALSE-POSITIVE · **Severity (if real):** LOW · **Confidence:** HIGH
 - **Affected code:** `crypto::verify_commitment` (`==`), `receive_completion` (digest), `confirm_initiator_finish_ack_sent` (bytes), `validate_bootstraps`.
 - **Why false:** Every compared value is public or local. MAC tags are compared in constant time by `digest`'s `verify_slice`.
-- **Evidence:** [secrets, panics, dependencies §5](secrets-panics-dependencies.md#5-side-channels-within-realistic-scope).
+- **Evidence:** [secrets, panics, dependencies §5](secrets-panics-dependencies.md#5-side-channels-within-realistic-scope). P5.3 traced the tag comparison through `ctutils` to `cmov`'s x86 `asm!` and classified every project comparison ([deep review §9](dependency-unsafe-deep-review.md#9-side-channels-32)).
 
 <a id="p5-f-017"></a>
 ### P5-F-017 — Request-ID-only authority, or a stale `RunRef` reaching a replacement run

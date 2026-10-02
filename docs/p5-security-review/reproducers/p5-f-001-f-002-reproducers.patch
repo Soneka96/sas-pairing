@@ -36,13 +36,13 @@ index 155353b..31a0c7f 100644
 +    }
  }
 diff --git a/core/src/windows_owner_loop.rs b/core/src/windows_owner_loop.rs
-index aff20aa..a2f5827 100644
+index 16c8012..5b6f726 100644
 --- a/core/src/windows_owner_loop.rs
 +++ b/core/src/windows_owner_loop.rs
-@@ -2670,4 +2670,37 @@ mod tests {
-     /// P5.2 review-only owner-loop evidence (not part of the product); see
-     /// `docs/p5-security-review/adversarial-sequences.md`.
-     mod p5_owner_loop_review;
+@@ -2674,4 +2674,37 @@ mod tests {
+     /// P5.3 review-only entropy-panic unwind evidence (not part of the product); see
+     /// `docs/p5-security-review/dependency-unsafe-deep-review.md`.
+     mod p5_entropy_panic_loop;
 +
 +    /// P5-F-001 reproducer (review-only; NOT part of the product). A peer writes one complete
 +    /// canonical START and then closes gracefully. Windows WSAPoll reports POLLHUP together with

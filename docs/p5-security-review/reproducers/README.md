@@ -22,6 +22,11 @@ Every entry is exactly one of three kinds:
 | [P5-F-007](../findings.md#p5-f-007) | `windows_tcp::tests::p5_transport_review::p5_f007_final_ack_deadline_boundary_end_to_end` | PASSING EVIDENCE TEST | CI | **Passes.** Characterizes the boundary: only "owner check at D−1 ns, confirmation at D" gives the reverse asymmetric outcome. F-007 is classified as intended behavior needing documentation, so this is a normal test, not a reproducer |
 | — (P5.2 coverage) | `p5_sm_*`, `p5_dup_001_*`, `p5_deadline_*`, `p5_router_race_*`, `p5_tcp_*`, `p5_loop_*` | PASSING EVIDENCE TEST | CI | **Pass.** No invariant violation ([adversarial sequences](../adversarial-sequences.md)) |
 | — (P5.2 coverage) | `ceremony::tests::p5_sequence_review::p5_sm_deep_generated_sequences_depth_three_unreduced`, `windows_tcp::tests::p5_transport_review::p5_tcp_rd_deep_read_sequences_length_four` | PASSING EVIDENCE TEST (deep, manual) | manual `--ignored` | **Pass.** 35,684 and 4,680 sequences (2026-10-02) |
+| [P5-F-004](../findings.md#p5-f-004) (P5.3) | `core/tests/p5_review_evidence.rs::p5_f_004_token_user_sid_lies_inside_the_returned_buffer_on_this_windows` | PASSING EVIDENCE TEST (OS observation, not the API contract) | CI (`windows-latest`) | **Passes.** SID at offset 16, length 28, ends at the 44 returned bytes, stable; range proven before any dereference; unaligned starts refused (error 998) |
+| [P5-F-005](../findings.md#p5-f-005) (P5.3) | `windows_tcp::tests::p5_entropy_panic_review::p5_f005_001..003`, `windows_owner_loop::tests::p5_entropy_panic_loop::p5_f005_004..005` | PASSING EVIDENCE TEST (characterization) | CI | **Pass.** Panic injected at the existing P4 pause points and caught around the real Router, adapter, and owner-loop calls. They assert no result, no refund, and no reuse, and record the residue (orphan claim; poisoned Initiator run → uncertain; live slot held) |
+| [P5-F-006](../findings.md#p5-f-006) (P5.3) | `crypto::tests::p5_dependency_review::p5_b64_ref_000..001`, `…p5_b64_engine_001..002` | PASSING EVIDENCE TEST | CI | **Pass.** Independent reference, 306 lengths × 4 patterns, cap edges; scalar engine proven at compile time; unused `Simd` engine agrees on x86_64 |
+| P5-F-006 (P5.3) | `crypto::tests::p5_dependency_review::p5_b64_ref_002_every_length_up_to_the_frame_maximum` | PASSING EVIDENCE TEST (deep, manual) | manual `--ignored` | **Passes.** Every length 0..=65,536, 2 patterns, 131,074 encodings, 48.9 s (2026-10-02) |
+| — (P5.3, F-010 context) | `crypto::tests::p5_dependency_review::p5_secret_type_001_secret_holders_are_not_clone_and_debug_shows_only_public_keys` | PASSING EVIDENCE TEST (compile-time type properties) | CI | **Passes** |
 
 ### Running the P5.2 in-repository reproducers and deep runs
 
@@ -31,6 +36,14 @@ cargo test --manifest-path core/Cargo.toml --lib p5_sm_deep p5_tcp_rd_deep -- --
 ```
 
 The first command runs the four EXPECTED-FAIL reproducers. All four fail today (2026-10-02, Windows 11 Pro 10.0.26200, rustc 1.99.0), with the observations shown in the table. The second command passes.
+
+The P5.3 deep run:
+
+```text
+cargo test --manifest-path core/Cargo.toml --lib p5_b64_ref_002 -- --ignored --nocapture
+```
+
+P5.3 added no EXPECTED-FAIL reproducer: none of its findings is a confirmed defect that a reproducer must keep failing.
 
 ## P5.1 throwaway patch
 
@@ -47,7 +60,7 @@ cargo test --manifest-path ..\sas-pairing-p5-repro\core\Cargo.toml --lib p5_f_00
 git worktree remove --force ..\sas-pairing-p5-repro
 ```
 
-The patch was regenerated in P5.2 so that it applies cleanly to the P5.2 branch head, whose test modules gained one declaration each (checked with `git apply --check`). It changes only `#[cfg(test)]` code. It uses only existing test helpers; the P5-F-001 test adds one 200 ms pause so that the FIN arrives before the loop's next readiness wait. The P5.2 in-repository reproducers replace that pause with a bounded `WSAPoll` wait for hang-up readiness, so they need no sleep. On the P5.2 head the `p5_f_00` filter also selects the four in-repository reproducers. Re-run on 2026-10-02 at `5ca9476` with the patch applied, all six failed as expected.
+The patch was regenerated in P5.2 so that it applies cleanly to the P5.2 branch head, whose test modules gained one declaration each (checked with `git apply --check`). It changes only `#[cfg(test)]` code. It uses only existing test helpers; the P5-F-001 test adds one 200 ms pause so that the FIN arrives before the loop's next readiness wait. The P5.2 in-repository reproducers replace that pause with a bounded `WSAPoll` wait for hang-up readiness, so they need no sleep. On the P5.2 head the `p5_f_00` filter also selects the four in-repository reproducers. Re-run on 2026-10-02 at `5ca9476` with the patch applied, all six failed as expected. P5.3 regenerated it again for its own module declarations: only the context lines changed, and the added lines are identical. It applies to the P5.3 head (`git apply --check`), and with it applied all six still failed as expected (2026-10-02).
 
 ## Recorded output (2026-10-02, Windows 11 Pro 10.0.26200, rustc 1.99.0, base `e21ff0b`)
 
