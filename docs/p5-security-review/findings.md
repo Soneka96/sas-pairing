@@ -28,27 +28,29 @@ For `FALSE-POSITIVE` entries, severity is the severity the candidate **would hav
 
 ### Status
 
-`OPEN` (confirmed, remediation recommended) · `NEEDS-DECISION` (confirmed behavior whose remedy depends on an owner interpretation or value) · `FALSE-POSITIVE` (disproved) · `ACCEPTED-LIMITATION` (already accepted by an owner decision or the normative profile; re-confirmed here) · `OUT-OF-SCOPE` · `DUPLICATE` · `REMEDIATED-IN-P6` (not used in P5).
+`OPEN` (confirmed defect, or confirmed mismatch with the current normative baseline; remediation recommended, even where the remedy's design or values still need an owner decision) · `NEEDS-DECISION` (confirmed behavior where whether the current normative baseline is violated depends on an unresolved owner interpretation; no finding currently has this status) · `FALSE-POSITIVE` (disproved) · `ACCEPTED-LIMITATION` (already accepted by an owner decision or the normative profile; re-confirmed here) · `OUT-OF-SCOPE` · `DUPLICATE` · `REMEDIATED-IN-P6` (not used in P5).
 
 ## Summary
 
-| Severity | Open (incl. NEEDS-DECISION) | False Positive | Accepted Limitation | Out of Scope |
+| Severity | Open | False Positive | Accepted Limitation | Out of Scope |
 |---|---|---|---|---|
 | CRITICAL | 0 | 1 (P5-F-013) | 0 | 0 |
 | HIGH | 0 | 5 (P5-F-014, 017, 018, 019, 022) | 0 | 0 |
-| MEDIUM | 1 (P5-F-002, NEEDS-DECISION) | 3 (P5-F-015, 020, 021) | 0 | 0 |
-| LOW | 2 (P5-F-001; P5-F-003, NEEDS-DECISION) | 1 (P5-F-016) | 0 | 0 |
+| MEDIUM | 1 (P5-F-002) | 3 (P5-F-015, 020, 021) | 0 | 0 |
+| LOW | 2 (P5-F-001, 003) | 1 (P5-F-016) | 0 | 0 |
 | INFO | 4 (P5-F-004, 005, 006, 007) | 0 | 5 (P5-F-008–012) | 0 |
 
-**No CRITICAL or HIGH finding is confirmed.** Nothing was found that yields pairing success without SAS agreement, exposes secret material remotely, or bypasses the one-owner / one-guard / ten-opportunity accounting under one registration.
+**No CRITICAL or HIGH finding is confirmed.** Nothing was found that yields pairing success without SAS agreement, exposes secret material remotely, or bypasses the one-owner / one-guard / ten-opportunity accounting under one registration. Across registrations inside one live process the budget does reset, contrary to the current P3 process/session policy; trusted local code, not a remote peer, must trigger it ([P5-F-003](#p5-f-003)).
+
+Not every OPEN finding needs a production change. The INFO findings may close as hardening or documentation decisions in P6.
 
 ## Finding index
 
 | ID | Title | Severity | Confidence | Status |
 |---|---|---|---|---|
 | [P5-F-001](#p5-f-001) | Owner loop discards bytes received before a graceful peer close | LOW | HIGH | OPEN |
-| [P5-F-002](#p5-f-002) | Connections with no frame in progress never expire, so 16 idle peers hold the live-connection cap indefinitely | MEDIUM | HIGH | NEEDS-DECISION |
-| [P5-F-003](#p5-f-003) | In-process re-registration starts a fresh opportunity budget without process replacement | LOW | HIGH | NEEDS-DECISION |
+| [P5-F-002](#p5-f-002) | Connections with no frame in progress never expire, so 16 idle peers hold the live-connection cap indefinitely | MEDIUM | HIGH | OPEN |
+| [P5-F-003](#p5-f-003) | In-process re-registration starts a fresh opportunity budget without process replacement | LOW | HIGH | OPEN |
 | [P5-F-004](#p5-f-004) | `token_user_sid` does not bound the OS-written SID to the returned buffer | INFO | HIGH | OPEN |
 | [P5-F-005](#p5-f-005) | `Sas::new()` entropy panic leaves Router and adapter state conservatively stuck and escapes owner-loop calls | INFO | HIGH | OPEN |
 | [P5-F-006](#p5-f-006) | `base64`'s default `simd-unsafe` engine encodes every MAC and HKDF input | INFO | HIGH | OPEN |
@@ -95,35 +97,41 @@ For `FALSE-POSITIVE` entries, severity is the severity the candidate **would hav
 <a id="p5-f-002"></a>
 ### P5-F-002 — Connections with no frame in progress never expire, so 16 idle peers hold the live-connection cap indefinitely
 
-- **Status:** NEEDS-DECISION
+- **Status:** OPEN
 - **Severity:** MEDIUM
 - **Confidence:** HIGH
-- **Affected requirement(s):** P3 §11.1.1 "Incoming connections" (the cap of 16 "includes connections that have not sent a frame"), "Incomplete frame reception" ("finite header/whole-frame deadlines plus an idle-read deadline"), and "Lifetime and cleanup" (temporary resources are released on timeout); `R-OWNER-023`, `R-OWNER-026`; the threat model's resource-bounded input.
+- **Classification:** Confirmed implementation gap against P3 §11.1.1. P3 already requires the transport to bound header waiting with finite deadlines; P4 implements no such bound before a frame's first byte.
+- **Required property:** An admitted unauthenticated transport connection cannot hold authority-wide connection capacity indefinitely while it waits for initial header or frame progress.
+- **Affected requirement(s):** P3 §11.1.1, whose controls every implementation "MUST enforce": "Incoming connections" (the cap of 16 "includes connections that have not sent a frame"), "Incomplete frame reception" ("finite header/whole-frame deadlines plus an idle-read deadline"), and "Lifetime and cleanup" (temporary resources are released on timeout). The paragraph after the table says adapters "MUST NOT … omit a required control, make a cap unbounded". Also `R-OWNER-023`, `R-OWNER-026`, and the threat model's resource-bounded input.
 - **Affected code:** `core/src/transport.rs:299–307` (`poll_frame_deadlines` returns at once with no clock read when no frame is partial) and `:370–392` (deadlines exist only for a `Partial`). `core/src/windows_owner_loop.rs:549–569` (the sweep calls only those polls). Neither `windows_tcp.rs` nor `windows_owner_loop.rs` has any connection lifetime or post-ceremony close.
 - **Threat scenario:** A peer that can reach the listener opens 16 TCP connections and sends nothing. Alternatives: it finishes or abandons a ceremony and then stays silent, or it advertises a zero receive window so a retained, owner-less CANCEL never drains. Each connection holds one authority-wide live slot indefinitely. Every later connection to any listener of that authority is accepted and immediately refused (`ResourceLimited`). Honest half-open connections (a peer that vanished without FIN or RST) accumulate the same way, because the adapter enables no TCP keepalive.
 - **Preconditions:** The listener is reachable by the attacker, which depends on the deployment's bind policy. The attacker keeps 16 connections open with no traffic.
 - **Reproduction:** [Reproducer patch](reproducers/README.md), test `transport::tests::p5_f_002_frameless_connections_do_not_hold_the_live_cap_forever`: 16 frameless connections, transport clock advanced 24 h. Every `poll_frame_deadlines()` returns `Ok(())` and the connection is still live. Counts are `(pending 0, live 16, incomplete 0)`. A 17th activation is `ResourceLimited`. Supporting: the existing `transport::tests::sixteen_frameless_connections_fill_the_cap_and_the_seventeenth_is_refused`.
 - **Security impact:** Availability only. Remote pairing for the authority can be locked out persistently, at no cost, until local intervention. No effect on authentication, the SAS budget, the START limiter, or secrets. P3 says the numeric defaults are not DoS guarantees, but without a lifetime the cap can be exhausted permanently with zero ongoing traffic, and non-adversarial half-open sockets exhaust it over time.
-- **Why existing tests/conformance did not catch or prevent it:** P4 read the frame deadlines as starting at a frame's first retained byte, and tested frameless connections only as correctly counted against the cap. No conformance row states a connection lifetime or time-to-first-byte. The owner loop leaves close policy to its owner.
-- **Recommended remediation:** Values are an owner decision. Add a finite, never-refreshed time-to-first-header deadline from activation; a finite idle lifetime for a connection whose session has no live run; and a bound on how long a retained owner-less frame may wait. Each should close through the existing generic teardown, with no limiter, budget, or guard change. Optionally enable TCP keepalive in the adapter. P3 gives no values, so they must be chosen, kept finite, and never allowed to reset an authority control.
-- **P6 disposition:** Owner decision on the P3 interpretation (does a frameless connection have a "header deadline"?) and the values, then remediation in the transport and adapter with the reproducer as a regression test.
+- **Why existing tests/conformance did not catch or prevent it:** P4 started every transport deadline at a frame's first retained byte, and tested frameless connections only as correctly counted against the cap. That reading leaves a connection waiting for its first header with no finite bound, which the §11.1.1 header and idle-read deadlines do not permit. `R-OWNER-023` names only the 10-second whole-frame and 2-second idle values, and no conformance row states a time-to-first-header value, so the P4 PASS for that row did not test this case. The owner loop leaves close policy to its owner.
+- **What is mandatory and what is undecided:** That a finite bound exists is required by current P3 and is not an open question. Its exact shape and values are not frozen. The 10-second whole-frame and 2-second no-progress defaults apply to the incomplete-frame controls. P3 gives no separate value for time to first header or first byte, for a connection's idle lifetime once it has no live run, or for how long a retained owner-less outbound frame may wait. P5 selects none of these values and does not change P3.
+- **Recommended remediation:** In P6, after the owner selects the timer model and values: add a finite, never-refreshed first-header (pre-frame) deadline from activation; decide whether a separate idle deadline is needed for a connection with no live run; and decide a finite bound on a retained owner-less outbound frame where one applies. Each should close through the existing generic teardown, with no limiter, budget, or guard change. Optionally enable TCP keepalive in the adapter. Every chosen value must stay finite and must never reset an authority control.
+- **P6 disposition:** Remediate. The owner selects the narrow finite timer model and values, then P6 changes the transport and adapter and turns the reproducer into a regression test.
 - **Evidence:** as above; [resources, deadlines, and transport §1, §3, §4](resources-deadlines-transport.md).
 
 <a id="p5-f-003"></a>
 ### P5-F-003 — In-process re-registration starts a fresh opportunity budget without process replacement
 
-- **Status:** NEEDS-DECISION
+- **Status:** OPEN
 - **Severity:** LOW
 - **Confidence:** HIGH
-- **Affected requirement(s):** P3 §11.1 ("10 exposed remote SAS opportunities" per owning process/session; "a legitimate process restart starts a new local session budget only after the previous owner has terminated"); P3 §11.1.2(5) ("restarting a frontend while the owning process remains alive does not reset that budget"); `R-OWNER-006`, `R-OWNER-022`, `R-OWNER-038(c)`.
+- **Classification:** Confirmed mismatch with the current P3 owner-session reset policy.
+- **Affected requirement(s):** P3 §11.1 ("The process has at most 10 exposed remote SAS opportunities"; "a legitimate process restart starts a new local session budget only after the previous owner has terminated and exclusive ownership has been safely established"; "A verified replacement owner starts a new session budget after the previous process terminates"). P3 §11.1.2(3) ("The native security core owns one process-wide authority registry"; for each identity it owns the volatile ten-opportunity counter). P3 §11.1.2(5) ("A replacement starts a fresh volatile ten-opportunity process/session budget only after safe exclusive acquisition; restarting a frontend while the owning process remains alive does not reset that budget"). The START limiter's "Lifetime and reset" rule (fresh state only for a new or safely replaced owner session). `R-OWNER-006`, `R-OWNER-022`, `R-OWNER-038(c)`.
 - **Affected code:** `core/src/lib.rs:245–281` (`register_with` creates `Shared { remaining: 10, start_limiter: StartLimiter::new(), … }`), `:200–206` (`State::drop` removes the registry entry), `:311–322` (`release`).
 - **Threat scenario:** Inside one live OS process, trusted code exhausts the budget, then releases the authority (or drops every handle) and calls `TrustedAuthority::register` with the same scope. The registry entry is gone and the process re-acquires the OS lease, so a fresh budget of 10 and a fresh START limiter exist, without any process termination. A future binding that re-registers on a frontend restart, UI reconnect, or error recovery would silently reset the budget while the native process lives.
 - **Preconditions:** Code holding `TrustedAuthority` (trusted local code) releases and re-registers. A remote peer cannot trigger this.
 - **Reproduction:** Existing integration tests: `process_ownership_and_full_reservation_lifecycle` (after 10 reservations and `Exhausted`, `release()` then `register(b"integration-owner")` → `Ready { remaining: 10 }`; `core/tests/security_core.rs:170–175`) and `ownership_is_never_released_while_ceremony_state_remains` (all handles dropped, re-register → `remaining: 10`; lines 315–323).
-- **Security impact:** The numeric 19-pair window is defined per owning-process session. In-process re-registration creates more such windows within one process lifetime. It gives a remote attacker nothing and allows no more than a process restart would, and P3 claims no lifetime bound. The risk is at the integration level: a binding could reset the budget on events P3 says must not reset it.
-- **Why existing tests/conformance did not catch or prevent it:** P4 deliberately defined the owner session as the registration lifetime (closure note on `R-OWNER-006`: "Only a new `TrustedAuthority`, after the OS lease is acquired, has fresh state") and tested it as correct replacement. `R-OWNER-022` evidence covers only the owner loop.
-- **Recommended remediation:** An owner decision between (a) ratifying "owner session = registration lifetime" in P3 or decision text and requiring P7 bindings never to re-register except on genuine owner replacement, and (b) making the core refuse a second registration of an identity within one process lifetime (a process-lifetime tombstone), so that only a new process starts a fresh budget.
-- **P6 disposition:** Owner decision, then either a documentation correction or a core change with tests.
+- **Security impact:** Remote input cannot trigger the reset, so severity stays LOW. The numeric 19-pair window is defined per owning-process session. In-process re-registration creates more ten-opportunity windows within one live native process, which current P3 does not allow. A future binding that re-registers on a frontend restart, UI reconnect, or error recovery would multiply those windows by accident, on events P3 says must not reset the budget. P3 claims no lifetime bound, and a genuine process replacement would also start a fresh budget.
+- **Why existing tests/conformance did not catch or prevent it:** P4 used "owner session = `TrustedAuthority` registration lifetime" as its implementation model (closure note on `R-OWNER-006`: "Only a new `TrustedAuthority`, after the OS lease is acquired, has fresh state") and tested in-process re-registration as a correct replacement. That model is weaker than the current P3 process/session wording, which ties a fresh budget to termination of the previous owning process. The P4 PASS verdicts for `R-OWNER-006` and `R-OWNER-022` rest on it; `R-OWNER-022` evidence covers only the owner loop. P4 having chosen this model does not make it conformant.
+- **Recommended remediation:** In P6, one of two paths:
+  - **Default: keep the current P3 semantics and change the implementation.** A same-process release and re-registration must not silently start a fresh budget or START limiter for the same authority. P6 chooses the design.
+  - **Alternative: change the policy.** The owner explicitly decides to revise P3 so that the owner session is the `TrustedAuthority` registration lifetime. This is a policy change, not a documentation clarification of the current baseline. It requires re-analyzing exposure accounting, updating P3, the conformance cases, and the security argument, and then aligning the implementation and the P7 binding rules.
+- **P6 disposition:** Remediate under the default path unless the owner explicitly chooses the policy revision.
 - **Evidence:** as above; [ownership and FFI §2, §5](ownership-and-ffi.md#2-lease-lifecycle).
 
 <a id="p5-f-004"></a>

@@ -4,7 +4,7 @@
 
 ## Status
 
-**P5 REVIEW IN PROGRESS — FINDINGS RECORDED.** Increment P5.1 set up the review method and completed one broad adversarial pass over every major P4 surface. P5 is not complete. Remediation belongs to [P6](../../roadmap/P6-review-remediation-and-protocol-freeze.md); P5 changes no production behavior.
+**P5 REVIEW IN PROGRESS — FINDINGS RECORDED.** Increment P5.1 set up the review method and completed one broad adversarial pass over every major P4 surface. Increment P5.1.1 reclassified P5-F-002 and P5-F-003 from NEEDS-DECISION to OPEN against the current P3 text. P5 is not complete. Remediation belongs to [P6](../../roadmap/P6-review-remediation-and-protocol-freeze.md); P5 changes no production behavior.
 
 ## Review target
 
@@ -22,7 +22,7 @@ The [authoritative P3 profile](../p3-vodozemac-ceremony-profile-draft.md), the [
 
 ## Relationship to P4 conformance closure
 
-The [P4 conformance closure](../p4-conformance-closure.md) asked whether evidence shows each of the 92 current normative rows is implemented. P5 does not re-run that table. It asks whether the implementation is structurally sound, internally coherent, and resistant to misuse, races, and error paths, including where no conformance row exists. Two P5 findings ([P5-F-001](findings.md#p5-f-001), [P5-F-002](findings.md#p5-f-002)) lie in such gaps: stream semantics at the real socket, and a connection lifetime that no row specifies. One ([P5-F-003](findings.md#p5-f-003)) questions an interpretation that P4 adopted deliberately. Nothing in P5 contradicts a P4 PASS verdict for its row as written.
+The [P4 conformance closure](../p4-conformance-closure.md) asked whether evidence shows each of the 92 current normative rows is implemented. P5 does not re-run that table. It asks whether the implementation is structurally sound, internally coherent, and resistant to misuse, races, and error paths, including where no conformance row exists. [P5-F-001](findings.md#p5-f-001) lies in such a gap: stream semantics at the real socket. Two findings show that a P4 PASS rested on a reading narrower than the current P3 text. [P5-F-002](findings.md#p5-f-002): P3 §11.1.1 requires finite header waiting, but P4 started its transport deadlines only at a frame's first byte (`R-OWNER-023`). [P5-F-003](findings.md#p5-f-003): P3 §11.1 and §11.1.2 tie a fresh budget to replacement of the owning process, but P4 treated each registration as a new owner session (`R-OWNER-006`, `R-OWNER-022`). P5 does not edit the frozen P4 closure; P6 remediation re-verifies those rows.
 
 ## Method in brief
 
@@ -38,7 +38,7 @@ Specification-to-code tracing; adversarial reasoning across 34 axes and 12 attac
 
 ## Current finding counts
 
-| Severity | Open (incl. NEEDS-DECISION) | False positive | Accepted limitation | Out of scope |
+| Severity | Open | False positive | Accepted limitation | Out of scope |
 |---|---|---|---|---|
 | CRITICAL | 0 | 1 | 0 | 0 |
 | HIGH | 0 | 5 | 0 | 0 |
@@ -46,7 +46,13 @@ Specification-to-code tracing; adversarial reasoning across 34 axes and 12 attac
 | LOW | 2 | 1 | 0 | 0 |
 | INFO | 4 | 0 | 5 | 0 |
 
-There is no confirmed CRITICAL or HIGH finding. Open findings: one MEDIUM availability finding (P5-F-002, NEEDS-DECISION), two LOW findings (P5-F-001 OPEN; P5-F-003 NEEDS-DECISION), and four INFO findings (P5-F-004 to P5-F-007). False-positive severities are what each candidate would have been if real. Details: [findings.md](findings.md).
+There is no confirmed CRITICAL or HIGH finding. Confirmed OPEN findings, in order of severity:
+
+- **MEDIUM:** P5-F-002, a gap against P3 §11.1.1: admitted connections have no finite first-header wait, so 16 idle peers hold the live-connection cap. A finite bound is required; the timer design and values are left to P6.
+- **LOW:** P5-F-001, the owner loop discards readable bytes on hang-up. P5-F-003, in-process re-registration starts a fresh budget, a mismatch with the current P3 process/session policy.
+- **INFO:** P5-F-004 to P5-F-007, defense-in-depth, panic, dependency, and deadline-boundary observations. These may close as hardening or documentation decisions rather than production changes.
+
+No finding is currently NEEDS-DECISION. False-positive severities are what each candidate would have been if real. Details: [findings.md](findings.md).
 
 ## Package contents
 

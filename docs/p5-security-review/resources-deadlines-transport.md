@@ -6,7 +6,7 @@ Reviewed source: `core/src/lib.rs`, `start_limiter.rs`, `deadline.rs`, `transpor
 
 | Resource | Max | Owner | Acquired | Released | Uncertainty | Queue | Peer-controlled amplification |
 |---|---|---|---|---|---|---|---|
-| SAS opportunities | 10 per registration | `Shared::remaining` | `reserve` (atomic with guard) | Never | Poisoned → fail closed | None | None: needs local authorization |
+| SAS opportunities | 10 per registration (P3: per owning process; [P5-F-003](findings.md#p5-f-003)) | `Shared::remaining` | `reserve` (atomic with guard) | Never | Poisoned → fail closed | None | None: needs local authorization |
 | Exposed-ceremony guard | 1 | `Shared::active` | `reserve` | `terminate` / `Ceremony::drop` after state drop | Poisoned → held | None | None |
 | START limiter | Burst 4, 1 per 5 s; 12 per rolling 60 s | `Shared::start_limiter` | `admit_start` under `shared` | Time only | Unsafe clock → refuse, no mutation | None | A peer can consume all admission ([P5-F-012](findings.md#p5-f-012), by design) |
 | Pending Responders | 4 | `Shared::pending_responders` | `admit_pending_responder` | Exposure, terminal, or drop (`Option` taken once) | Poisoned → held | None | A peer can hold each for ≤ 60 s |
@@ -51,10 +51,11 @@ State: whole `tokens ∈ 0..=4`, `remainder ∈ [0, 5 s)` (0 when full), `last`,
 | Ceremony absolute | 5 min | I: local creation; R: pending admission | Never | `total ≥ 5 min` | Reported over inactivity when both expired |
 | Ceremony inactivity | 60 s | Same | `step()` when `progress_point` changes (new state, recorded authorization, verified peer MAC) | `idle ≥ 60 s` and state `Running` | Suspended only in `AwaitLocalApproval`. Restarts at approval |
 | Pending pre-exposure | 60 s fixed | R pending admission (clock read before slot) | Never | `held ≥ 60 s` | Ends when R crosses exposure |
-| Transport frame | 10 s whole / 2 s no progress | First retained byte | Retained-byte progress (idle only) | `≥` | Only while a frame is incomplete. **No deadline for a connection with no frame in progress** ([P5-F-002](findings.md#p5-f-002)) |
+| Transport frame | 10 s whole / 2 s no progress | First retained byte | Retained-byte progress (idle only) | `≥` | Only while a frame is incomplete. **No deadline for a connection with no frame in progress**, although P3 §11.1.1 requires finite header waiting ([P5-F-002](findings.md#p5-f-002)) |
 | Owner-loop wait | ≤ 250 ms | — | — | — | Scheduling only. A wake is not progress |
 | START limiter clock | Authority-scoped | Registration | — | Inside the `shared` lock | Independent of ceremony clocks |
 
+- **Header waiting before a frame:** P3 §11.1.1 makes finite header and idle-read deadlines mandatory, and its live-connection cap counts connections that have not sent a frame. A bound on waiting for the first header is therefore required, not optional. P3 freezes the 10 s / 2 s values only for incomplete frames. It gives no value for time to first header, for the idle lifetime of a connection with no live run, or for a retained owner-less frame. P6 selects the timer design and values ([P5-F-002](findings.md#p5-f-002)).
 - **Duplicates, junk, polls, presentation, and UI activity** refresh nothing (`progress_point` unchanged; `presentation` uses read-only `evaluate`).
 - **Clock failure:** missing or backwards readings → `ClockUnavailable` (ceremony), `UnsafeClock` (limiter), or `ClockUnavailable` (transport), each fail-closed with no timeout claim and no mutation.
 - **Pending-output preflight:** before each write of a frame owned by a live run, the adapter polls that exact run's deadlines. An unsent frame of an ended run is discarded (its timeout CANCEL may take the slot). A partly sent one closes the connection with nothing appended (`AbandonedPartialFrame`), so a truncated frame is never followed by another frame.

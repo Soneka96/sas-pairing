@@ -30,7 +30,7 @@ Reviewed source: `core/src/lib.rs` (production part) and `core/src/bin/ownership
 | `release()` refused (`Busy`) | The consumed `TrustedAuthority` is gone, but the `State` lives on in other handles | The lease stays held until the last `Arc<State>` drops. Nobody can authorize after that, because no `TrustedAuthority` remains. |
 | Last handle dropped | `State::drop` removes the registry entry, then fields drop (the `File` closes and the OS releases the lock) | A concurrent in-process `register` in that window gets `ERROR_LOCK_VIOLATION` (the old handle still holds the lock) → `OwnershipUnavailable`. Transient and fail-closed. No overlap of two live owners is possible. |
 | Process crash | The OS closes the handle and releases the lock (`LockFileEx` semantics; release timing is OS-dependent) | A replacement acquires only once the OS reports the range free. Nothing is persisted, so nothing resumes. |
-| In-process replacement | After the old `State` is gone, `register` of the same scope succeeds with a **fresh 10-opportunity budget and START limiter** | Behavior as designed and tested in P4. Whether this matches P3's "process/session" budget is [P5-F-003](findings.md#p5-f-003). |
+| In-process replacement | After the old `State` is gone, `register` of the same scope succeeds with a **fresh 10-opportunity budget and START limiter** | Designed and tested this way in P4. Current P3 (§11.1, §11.1.2(3, 5)) starts a fresh budget only when the previous owning process is replaced. The implementation also resets on in-process re-registration. [P5-F-003](findings.md#p5-f-003) records the mismatch. |
 
 ## 3. Authority scope (attack on aliasing)
 
@@ -60,7 +60,7 @@ Claim: under one registration (`State`), at most 10 public contributions are rel
 - **Duplicates and replays** of `INITIATOR_KEY`, `ACCEPT`, `START`, or `RESPONDER_KEY` are ignored or terminal and never re-emit a contribution. `expose_key` twice → the second call is `MissingAuthorization` and the run fails.
 - **Panic or unwind:** the opportunity is consumed before generation. `Ceremony::drop` releases only the guard, never the count.
 - **Owner-loop, connection, or router restart:** none creates a `State`. Only `register` does.
-- **Process replacement:** needs the OS lease (§2). **In-process re-registration** after full teardown also yields a fresh 10 ([P5-F-003](findings.md#p5-f-003)).
+- **Process replacement:** needs the OS lease (§2). **In-process re-registration** after full teardown also yields a fresh 10, which current P3 does not allow without replacement of the owning process ([P5-F-003](findings.md#p5-f-003)).
 
 Attempted construction of 11 or more contributions under one live `State` failed on every path above. This is recorded as the false positive [P5-F-013](findings.md#p5-f-013). Guard plus budget is one critical section, and the race test `it::shared_guard_race_has_one_winner` exercises it.
 
