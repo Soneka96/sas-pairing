@@ -10,6 +10,10 @@
 //! what the next operation does. These are PASSING EVIDENCE TESTS: they characterize current
 //! behavior, assert the security properties that must hold (no output, no result, no refund,
 //! no reuse), and record the availability effects without asserting them as desirable.
+//!
+//! P6.4 (decision P6-D-004) adds test-only assertions that a same-process re-registration after
+//! the caught panic never yields fresh accounting: it continues the process session (Responder)
+//! or fails closed with `OwnershipUncertain` (Initiator).
 use super::*;
 use crate::{
     router::StartRouting,
@@ -84,7 +88,16 @@ fn p5_f005_001_router_responder_admission_panic_leaves_only_an_orphan_claim() {
     assert_eq!((r.routes(), r.sessions()), (0, 0));
     assert_eq!(r.counts(), (0, 0, 0, 0));
     assert_eq!(r.status(), Status::Ready { remaining: 10 });
+    // P6.4 (P6-D-004): with nothing left held, the same process may register the authority
+    // again, but that continues the same process session: the START charges, including the
+    // panicked admission's, are kept, never a fresh limiter (P6-D-002).
+    let limiter = r.charged();
+    assert_ne!(limiter, (4, 0));
     r.release();
+    let again = Node::new("p5-f005-001");
+    assert_eq!(again.status(), Status::Ready { remaining: 10 });
+    assert_eq!(again.charged(), limiter);
+    again.release();
 }
 
 /// `F005-002`. The same panic reached from a socket read through the TCP adapter. The adapter
@@ -193,5 +206,28 @@ fn p5_f005_003_adapter_initiator_exposure_panic_poisons_the_run() {
             "{next:?}: held past the adapter's drop"
         );
         assert_eq!(i.status(), Status::Ready { remaining: 9 });
+        re_registration_fails_closed(i, &format!("p5-f005-003-i-{next:?}"));
     }
+}
+
+/// P6.4 (P6-D-004): drops every handle of an authority whose caught Initiator panic left its
+/// process session non-quiescent (one live slot held), then registers the same authority again
+/// in this process. It fails closed, every time; it never yields fresh accounting
+/// (`Ready { remaining: 10 }`) or a fresh START limiter, and the spent opportunity stays spent.
+fn re_registration_fails_closed(node: Node, scope: &str) {
+    let shared = node.executor.0.shared.clone();
+    drop(node);
+    for _ in 0..2 {
+        assert_eq!(
+            TrustedAuthority::register(scope.as_bytes()).unwrap_err(),
+            crate::Error::OwnershipUncertain,
+            "{scope}"
+        );
+    }
+    let shared = shared.lock().unwrap();
+    assert_eq!(
+        (shared.remaining, shared.live_connections),
+        (9, 1),
+        "{scope}"
+    );
 }
