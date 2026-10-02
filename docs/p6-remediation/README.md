@@ -2,6 +2,10 @@
 
 > **Pre-alpha. Not production approval.** P6 remediates and dispositions the findings of the internal, AI-assisted P5 review and then decides whether a protocol candidate can be frozen. Nothing here is a professional audit, formal verification, certification, or production-security or release approval.
 
+## Status
+
+**P6 COMPLETE — PROTOCOL CANDIDATE FROZEN** (P6.6). The experimental remote protocol candidate `sas-pairing-vodozemac-profile-draft-01`, version 1, together with owner decisions P6-D-001 to P6-D-005 and the amended normative conformance cases, is frozen for P7 native-ABI work. This is an experimental protocol-candidate freeze only, not production approval, professional security audit, or formal verification. Closure summary, freeze decision, and P7 handoff: **[final closure](final-closure.md)**. Next: [P7 — Native ABI](../../roadmap/P7-native-abi.md), only after the P6 pull request is reviewed and merged.
+
 ## Target
 
 | Item | Value |
@@ -25,7 +29,7 @@ P5 closed with five OPEN findings ([P5 findings](../p5-security-review/findings.
 | [P5-F-005](../p5-security-review/findings.md#p5-f-005) | INFO | **DISPOSITIONED-IN-P6** (P6.4) — mandatory P7 ABI containment requirement; no production change | [P6-D-004](decisions.md#p6-d-004--native-panic-containment-policy) | [p5-f-005.md](p5-f-005.md) |
 | [P5-F-007](../p5-security-review/findings.md#p5-f-007) | INFO | **DISPOSITIONED-IN-P6** (P6.5) — current conservative completion boundary retained and documented; no production change | [P6-D-005](decisions.md#p6-d-005--local-completion-and-final-ack-deadline-boundary) | [p5-f-007.md](p5-f-007.md) |
 
-**No P5 OPEN finding remains unresolved:** all five were remediated or dispositioned. **P6 is not complete:** the protocol-candidate freeze and the final P6 closure have not been performed, and no freeze is claimed.
+**No OPEN P5 handoff finding remains:** all five were remediated or dispositioned, and P6.6 froze the protocol candidate ([final closure](final-closure.md)).
 
 The six accepted limitations (P5-F-004, P5-F-008 to P5-F-012) and eleven false positives stay as P5 recorded them.
 
@@ -39,7 +43,7 @@ The six accepted limitations (P5-F-004, P5-F-008 to P5-F-012) and eleven false p
 | P6.4 | Decide and disposition P5-F-005 entropy-panic / ABI policy under owner decision P6-D-004 | **Complete:** P5-F-005 dispositioned ([record](p5-f-005.md)); P7 owns the ABI containment implementation |
 | P6.4.1 | Correct P6-D-004's panic-payload disposal: a caught payload must not run an uncontained destructor (item 14); add the Drop-panicking-payload P7 exit test | **Complete:** policy correction only; no new finding, decision ID, or production change ([record §8.1](p5-f-005.md#81-panic-payload-disposal-p641)) |
 | P6.5 | Disposition P5-F-007 reverse asymmetric completion semantics under owner decision P6-D-005 | **Complete:** P5-F-007 dispositioned ([record](p5-f-007.md)); confirmation-time boundary kept, both asymmetric directions documented in P3; no production change |
-| P6.6 | Protocol candidate freeze and final P6 closure | Next |
+| P6.6 | Final cross-check, protocol candidate freeze, and final P6 closure | **Complete:** candidate frozen for P7 ([final closure](final-closure.md)); documentation and status only, no production change |
 
 ## Remediation rule
 

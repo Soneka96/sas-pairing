@@ -13,6 +13,8 @@ All five increments are complete. P5.1 set up the review method and completed on
 - **Remediation:** none. P5 changed no production behavior; the five OPEN findings are handed to [P6](../../roadmap/P6-review-remediation-and-protocol-freeze.md).
 - **Next phase:** P6 — Review Remediation + Protocol Freeze.
 
+> **Since P5 (forward link only; the summary above is the P5 closure snapshot):** P6 remediated or dispositioned all five OPEN findings and froze the experimental protocol candidate ([P6 final closure](../p6-remediation/final-closure.md)).
+
 ## Review target
 
 | Item | Value |

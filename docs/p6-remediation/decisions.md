@@ -2,6 +2,16 @@
 
 Stable owner decisions taken during P6. IDs `P6-D-NNN` are never reused. A decision records policy and values; the remediation record of each finding traces how it was implemented and verified.
 
+**Frozen at P6.6.** This set is final for the frozen experimental protocol candidate ([final closure](final-closure.md)). Every decision below is decided; no alternative is pending, and no further P6 decision was needed (there is no P6-D-006). Implementation notes inside a decision ("a later P6 increment", "P6.1 records the decision only") are the history of when it was taken; each entry's status lines give its final state.
+
+| Decision | Final state |
+|---|---|
+| P6-D-001 — connection lifetime | Decided P6.1; implemented (`1ce0753`); P5-F-002 REMEDIATED-IN-P6 |
+| P6-D-002 — process-session accounting | Decided P6.1; implemented in P6.3 (`5aa1b15`); P5-F-003 REMEDIATED-IN-P6 |
+| P6-D-003 — graceful TCP hang-up | Decided P6.2; implemented (`c4212f2`); P5-F-001 REMEDIATED-IN-P6 |
+| P6-D-004 — native panic containment | Decided P6.4, clarified P6.4.1 (item 14); no core change; P5-F-005 DISPOSITIONED-IN-P6; implementation is a mandatory P7 obligation |
+| P6-D-005 — local completion / final-ACK boundary | Decided P6.5 (option A); no implementation change; P5-F-007 DISPOSITIONED-IN-P6 |
+
 ## P6-D-001 — F-002 connection lifetime
 
 - **Finding:** [P5-F-002](../p5-security-review/findings.md#p5-f-002) (MEDIUM): an admitted connection with no frame in progress had no finite lifetime.

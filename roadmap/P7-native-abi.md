@@ -2,7 +2,7 @@
 
 ## Status
 
-🟡 Planned; gated on a reviewed, sufficiently stable native implementation.
+🔵 **NEXT — unlocked after the final P6 pull request is reviewed and merged.** Not started. Prerequisites: the P6 protocol candidate is frozen ([P6 final closure](../docs/p6-remediation/final-closure.md): `sas-pairing-vodozemac-profile-draft-01`, version 1, with owner decisions P6-D-001 to P6-D-005), and the final P6 pull request is merged into `main`. P7 must not start from the unmerged P6 branch.
 
 ## Goal
 
@@ -14,7 +14,7 @@ Future language wrappers need to call the same security implementation without d
 
 ## Inputs / prerequisites
 
-P4 implementation and P6 review/remediation gate; a stable core boundary supported by the reviewed implementation.
+P4 implementation and the completed P6 review/remediation gate (the frozen experimental protocol candidate and its merged P6 pull request); a stable core boundary supported by the reviewed implementation. P7 wraps the frozen candidate and does not change its wire bytes, cryptography, ceremony authentication, result semantics, or security accounting; any such change needs an owner decision and reopens the relevant earlier gate. The process-session accounting of [P6-D-002](../docs/p6-remediation/decisions.md#p6-d-002--f-003-owner-session-policy) and the local-completion result semantics of [P6-D-005](../docs/p6-remediation/decisions.md#p6-d-005--local-completion-and-final-ack-deadline-boundary) (either side may be the only `PairingResult` holder; a result is not a bilateral commit) must be preserved and documented across the boundary.
 
 ### P6 handoff requirements (mandatory)
 

@@ -12,6 +12,8 @@ Review infrastructure only. Nothing here changes production behavior, and nothin
 
 > **P6 update (P6.5):** P5-F-007 was dispositioned under decision P6-D-005 ([record](../../p6-remediation/p5-f-007.md)): the owner kept the confirmation-time rule, so `p5_f007_final_ack_deadline_boundary_end_to_end` stays a PASSING EVIDENCE TEST, unchanged, and its crossing row stays "R result only". F-007 never had an EXPECTED-FAIL reproducer.
 
+> **P6 update (P6.6):** P6 closed ([final closure](../../p6-remediation/final-closure.md)). No reproducer changed in P6.6. No EXPECTED-FAIL reproducer remains in the repository; the P5.1 throwaway patch stays historical and unapplied.
+
 Every entry is exactly one of three kinds:
 
 - **PASSING EVIDENCE TEST:** runs in CI and passes. It pins an OS fact, characterizes current behavior, or asserts only properties that must stay true after P6 too. It never asserts a known bug as desired behavior.
