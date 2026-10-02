@@ -21,7 +21,7 @@ jobs:
       # P7 native ABI: lint, test (in-process and subprocess-isolated), and build the supported
       # release artifact.
       - run: cargo clippy --manifest-path core/Cargo.toml --all-targets --all-features -- -D warnings
-      - run: cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::
+      - run: cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests
       - run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
       - name: Check native ABI artifact
         shell: bash
@@ -43,7 +43,7 @@ jobs:
       # The native ABI compiles here too; this is not a claim of platform support (pairing
       # operations, added later, still fail closed on unsupported platforms).
       - run: cargo clippy --manifest-path core/Cargo.toml --all-targets --all-features -- -D warnings
-      - run: cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::
+      - run: cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests
       - run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
       - name: Native ABI refuses panic = "abort"
         shell: bash

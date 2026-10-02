@@ -230,7 +230,7 @@ cargo fmt --manifest-path core/Cargo.toml -- --check
 cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path core/Cargo.toml
 cargo clippy --manifest-path core/Cargo.toml --all-targets --all-features -- -D warnings
-cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::
+cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests
 cargo build --manifest-path core/Cargo.toml --release --features native-abi
 ```
 
