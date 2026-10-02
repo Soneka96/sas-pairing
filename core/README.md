@@ -217,6 +217,10 @@ The trusted application/configuration boundary keeps `TrustedAuthority`. Only it
 
 Authorization is ceremony-specific and consumed by every valid reservation attempt. Stale, missing, cross-ceremony and terminal authorization cannot reserve. The executor atomically acquires the single shared guard and consumes the opportunity. Reservation is never refunded after failure or termination. Initiator and Responder use the same guard and budget.
 
+## Native ABI (P7, in progress)
+
+The `native-abi` feature compiles the crate-private `abi` module, the language-neutral C boundary for the future Dart and .NET wrappers, into the same crate, so the wrappers stay callers of this one implementation. The crate builds `rlib` and `cdylib`; ABI symbols are exported only with the feature. P7.1 provides the foundation only: `sas_pairing_abi_version` (ABI version `1`, distinct from the profile version), `sas_pairing_runtime_create`, and `sas_pairing_runtime_destroy`, with one runtime per process, opaque never-reused `uint64_t` handles, and frozen `int32_t` status codes. No pairing operation is exposed yet, and runtime creation registers no authority. Every export runs inside one central panic-containment boundary: a caught panic permanently marks the process's native ABI state fatal, the panic payload's destructor never runs, and `SAS_PAIRING_FATAL` is returned (P6-D-004, [P7-D-001](../docs/p7-native-abi/decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit)). The release profile pins `panic = "unwind"`, and the module refuses to compile under `panic = "abort"`. Contract: [ABI contract](../docs/p7-native-abi/abi-contract.md) and [`include/sas_pairing.h`](include/sas_pairing.h).
+
 ## Checks
 
 On Windows, run from the repository root:
@@ -225,6 +229,9 @@ On Windows, run from the repository root:
 cargo fmt --manifest-path core/Cargo.toml -- --check
 cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path core/Cargo.toml
+cargo clippy --manifest-path core/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::
+cargo build --manifest-path core/Cargo.toml --release --features native-abi
 ```
 
 The Windows suite uses the real file lock. It covers contention, a synchronized simultaneous two-process acquisition, forced termination, normal release and replacement, roles sharing the guard and budget, authorization lifecycle, and ten successful reservations followed by rejection of the eleventh. The simultaneous test uses two child processes held at an explicit stdin barrier and bounded output waits. Codec unit tests use the authoritative remote frame vectors for bootstrap, START, ACCEPT, key exchange, approval MAC, finish messages, and both authenticated CANCEL frames. Malformed frame tests cover bad headers, unsupported versions, unknown types, missing/extra fields, truncation, invalid profile, and oversize declarations. Non-Windows builds return `UnsupportedPlatform`; no in-process fallback is provided.

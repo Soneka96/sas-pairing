@@ -8,6 +8,8 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "native-abi")]
+mod abi;
 mod ceremony;
 mod crypto;
 mod deadline;

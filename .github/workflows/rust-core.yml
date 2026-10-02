@@ -18,6 +18,17 @@ jobs:
       - run: cargo fmt --manifest-path core/Cargo.toml -- --check
       - run: cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path core/Cargo.toml
+      # P7 native ABI: lint, test (in-process and subprocess-isolated), and build the supported
+      # release artifact.
+      - run: cargo clippy --manifest-path core/Cargo.toml --all-targets --all-features -- -D warnings
+      - run: cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::
+      - run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
+      - name: Check native ABI artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s core/target/release/sas_pairing_core.dll
+          test -s core/target/release/sas_pairing_core.dll.lib
 
   unsupported-platform-fails-closed:
     runs-on: ubuntu-latest
@@ -29,3 +40,18 @@ jobs:
       - run: cargo fmt --manifest-path core/Cargo.toml -- --check
       - run: cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path core/Cargo.toml
+      # The native ABI compiles here too; this is not a claim of platform support (pairing
+      # operations, added later, still fail closed on unsupported platforms).
+      - run: cargo clippy --manifest-path core/Cargo.toml --all-targets --all-features -- -D warnings
+      - run: cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::
+      - run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
+      - name: Native ABI refuses panic = "abort"
+        shell: bash
+        run: |
+          set -uo pipefail
+          if CARGO_PROFILE_RELEASE_PANIC=abort cargo build --manifest-path core/Cargo.toml \
+              --release --features native-abi > abort-build.log 2>&1; then
+            echo "native-abi built with panic = abort; the containment guard is missing"
+            exit 1
+          fi
+          grep -F 'the `native-abi` feature requires panic = "unwind"' abort-build.log
