@@ -32,7 +32,7 @@ For `FALSE-POSITIVE` entries, severity is the severity the candidate **would hav
 
 ## Summary
 
-**P6 status update (P6.1, 2026-10-02):** [P5-F-002](#p5-f-002) is **REMEDIATED-IN-P6** under owner decision P6-D-001 ([remediation record](../p6-remediation/p5-f-002.md)). Four findings stay OPEN: P5-F-001, P5-F-003 (owner decision P6-D-002 taken; implementation later), P5-F-005, and P5-F-007. Current remediation status lives in the [P6 remediation package](../p6-remediation/README.md); the summary table and closure note below are the P5 closure snapshot and are left as P5 recorded them.
+**P6 status update (P6.2, 2026-10-02):** [P5-F-002](#p5-f-002) is **REMEDIATED-IN-P6** under owner decision P6-D-001 ([remediation record](../p6-remediation/p5-f-002.md)), and [P5-F-001](#p5-f-001) is **REMEDIATED-IN-P6** under owner decision P6-D-003 ([remediation record](../p6-remediation/p5-f-001.md)). Three findings stay OPEN: P5-F-003 (owner decision P6-D-002 taken; implementation later), P5-F-005, and P5-F-007. Current remediation status lives in the [P6 remediation package](../p6-remediation/README.md); the summary table and closure note below are the P5 closure snapshot and are left as P5 recorded them.
 
 | Severity | Open | False Positive | Accepted Limitation | Out of Scope |
 |---|---|---|---|---|
@@ -56,7 +56,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 
 | ID | Title | Severity | Confidence | Status |
 |---|---|---|---|---|
-| [P5-F-001](#p5-f-001) | Owner loop discards bytes received before a graceful peer close | LOW | HIGH | OPEN |
+| [P5-F-001](#p5-f-001) | Owner loop discards bytes received before a graceful peer close | LOW | HIGH | REMEDIATED-IN-P6 (P6.2; OPEN at P5 closure) |
 | [P5-F-002](#p5-f-002) | Connections with no frame in progress never expire, so 16 idle peers hold the live-connection cap indefinitely | MEDIUM | HIGH | REMEDIATED-IN-P6 (P6.1; OPEN at P5 closure) |
 | [P5-F-003](#p5-f-003) | In-process re-registration starts a fresh opportunity budget without process replacement | LOW | HIGH | OPEN |
 | [P5-F-004](#p5-f-004) | `token_user_sid` does not bound the OS-written SID to the returned buffer | INFO | HIGH | ACCEPTED-LIMITATION (P5.3) |
@@ -84,7 +84,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 <a id="p5-f-001"></a>
 ### P5-F-001 — Owner loop discards bytes received before a graceful peer close
 
-- **Status:** OPEN
+- **Status:** REMEDIATED-IN-P6 (P6.2). OPEN at P5 closure; the P5 record below is unchanged and the P6 note is appended at the end of this entry.
 - **Severity:** LOW
 - **Confidence:** HIGH
 - **Affected requirement(s):** P3 §9 (the Responder's result follows verification of INITIATOR_FINISH_ACK); P3 §3.1 and `R-WIRE-025` (received input is assembled into frames); `R-MAC-012`.
@@ -104,6 +104,13 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 - **Recommended remediation:** Treat `POLLHUP` without `POLLERR`/`POLLNVAL` as "readable until EOF": keep serving `on_readable` (retained suffix, then socket) one bounded operation per drive, and close only on `read() == 0` or an error. While a frame is retained, keep serving `on_writable` on writable readiness, because a half-closed peer still receives. Keep `POLLERR`/`POLLNVAL` as immediate close. A peer that never sends EOF stays bounded by the transport and ceremony deadlines (and by the P5-F-002 lifetime once remediated). Regression tests: enable the three P5.2 `#[ignore]` reproducers (complete frames before close or half-close, the loop-as-Responder final ACK, and pending output after a half-close).
 - **P6 disposition:** Remediate (adapter-only, no protocol change). Enable the P5.2 EXPECTED-FAIL reproducers as regression tests. The OS-fact test and LOOP-HUP-001..003 stay as durable evidence.
 - **Evidence:** the tests above; [adversarial sequences §4–§5](adversarial-sequences.md#4-owner-loop); [resources, deadlines, and transport §5–§6](resources-deadlines-transport.md#5-owner-loop); [reproducers](reproducers/README.md).
+- **P6 remediation (appended in P6.2; the P5 record above is unchanged):**
+  - **Decision:** [P6-D-003](../p6-remediation/decisions.md#p6-d-003--graceful-tcp-hang-up-handling): on an established connection `POLLERR` and `POLLNVAL` stay hard failures that close before any I/O; `POLLHUP` alone is a graceful peer FIN, drained toward EOF one operation per drive, and never suppresses a retained frame's write. Listener readiness is unchanged.
+  - **Remediation commit:** `c4212f201540e537e95a04233b19bf47e5df1b3f` (`fix: drain graceful hang-up before close`) on `feature/p6-review-remediation-protocol-freeze`. Owner-loop readiness classification only (`CONNECTION_FAILED`, `READABLE`, `LISTENER_FAILED`); the adapter, the P6-D-001 lifetime that bounds a half-closed peer, and every wire, crypto, and accounting rule are unchanged.
+  - **Regressions:** the three P5.2 `#[ignore]` reproducers now pass as normal tests (`…dispatches_complete_frames_before_graceful_close`, with one documented qualification for a full close after two frames, where the closed peer's reset is a hard failure; `…responder_loses_final_ack_before_graceful_close`; `…writes_pending_output_after_peer_half_close`); new permanent tests in `windows_owner_loop::tests::graceful_hang_up`, including the readiness precedence matrix and real-loopback close and `shutdown(Send)` cases. The P4 readiness test is split into its hard-failure meaning. The OS-fact test and LOOP-HUP-001..003 stay as evidence.
+  - **Normative sync:** no P3 change needed; `R-WIRE-025` and `R-MAC-012` amended in place.
+  - **CI:** Repository consistency, `windows-core`, and `unsupported-platform-fails-closed` SUCCESS at `c4212f2`.
+  - **P6 review evidence:** readiness model, follow-up adversarial review, and verification in the [remediation record](../p6-remediation/p5-f-001.md).
 
 <a id="p5-f-002"></a>
 ### P5-F-002 — Connections with no frame in progress never expire, so 16 idle peers hold the live-connection cap indefinitely

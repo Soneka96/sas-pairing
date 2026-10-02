@@ -2,12 +2,13 @@
 
 ## Status
 
-🟠 **IN PROGRESS.** Latest increment: **P6.1 — F-002 remediation**, complete: P5-F-002 is REMEDIATED-IN-P6 under owner decision P6-D-001, and owner decision P6-D-002 (P5-F-003) is recorded. Next: P6.2 — P5-F-001 graceful hang-up handling. All P6 work happens on the one branch `feature/p6-review-remediation-protocol-freeze`, with one pull request at P6 closure. Tracking package: [docs/p6-remediation](../docs/p6-remediation/README.md).
+🟠 **IN PROGRESS.** Latest increment: **P6.2 — F-001 remediation**, complete: P5-F-001 is REMEDIATED-IN-P6 under owner decision P6-D-003. P6.1 remediated P5-F-002 (P6-D-001) and recorded owner decision P6-D-002 (P5-F-003). Next: P6.3 — P5-F-003 process-session accounting reset. No protocol freeze is claimed yet. All P6 work happens on the one branch `feature/p6-review-remediation-protocol-freeze`, with one pull request at P6 closure. Tracking package: [docs/p6-remediation](../docs/p6-remediation/README.md).
 
 | Increment | Scope | State |
 |---|---|---|
 | P6.1 | P6 package and owner decisions; remediate P5-F-002; record the P5-F-003 decision (implementation later) | Complete ([P5-F-002 record](../docs/p6-remediation/p5-f-002.md)) |
-| P6.2 | Remediate P5-F-001 graceful hang-up handling | Next |
+| P6.2 | Remediate P5-F-001 graceful hang-up handling | Complete ([P5-F-001 record](../docs/p6-remediation/p5-f-001.md)) |
+| P6.3 | Remediate P5-F-003 process-session accounting reset (P6-D-002) | Next |
 
 ## P5 handoff
 
@@ -21,7 +22,7 @@ The [P5 final review synthesis](../docs/p5-security-review/final-synthesis.md#10
 | [P5-F-005](../docs/p5-security-review/findings.md#p5-f-005) | INFO | Entropy-panic policy and unwind behavior across the Router, adapter, owner loop, and future ABI | Panic policy, with P7 |
 | [P5-F-007](../docs/p5-security-review/findings.md#p5-f-007) | INFO | Reverse asymmetric completion at the Initiator's deadline boundary; documentation | Optional boundary rule |
 
-Owner decisions so far: [P6-D-001](../docs/p6-remediation/decisions.md#p6-d-001--f-002-connection-lifetime) (P5-F-002 timer model and values) and [P6-D-002](../docs/p6-remediation/decisions.md#p6-d-002--f-003-owner-session-policy) (P5-F-003: keep current P3 semantics and fix the implementation later).
+Owner decisions so far: [P6-D-001](../docs/p6-remediation/decisions.md#p6-d-001--f-002-connection-lifetime) (P5-F-002 timer model and values) [P6-D-002](../docs/p6-remediation/decisions.md#p6-d-002--f-003-owner-session-policy) (P5-F-003: keep current P3 semantics and fix the implementation later), and [P6-D-003](../docs/p6-remediation/decisions.md#p6-d-003--graceful-tcp-hang-up-handling) (P5-F-001 graceful hang-up handling).
 
 Recommended order: P5-F-002, then P5-F-001 (together with or after P5-F-002), then P5-F-003 (with its owner decision taken early), P5-F-005, and P5-F-007. The P5 expected-fail reproducers for P5-F-001 and P5-F-002 become regression tests as fixes land. The accepted limitations (P5-F-004, P5-F-008 to P5-F-012) stay accepted; P5-F-004 has optional hardening.
 
