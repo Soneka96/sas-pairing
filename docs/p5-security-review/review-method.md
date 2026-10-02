@@ -41,6 +41,10 @@ Tables are rebuilt from source, not copied from P4: the MAC domain-separation ta
 
 Every candidate MEDIUM or higher finding needs a concrete reproducer where possible (§6). Lower findings are reproduced when that is cheap.
 
+### F. Generated deterministic sequences (added in P5.2)
+
+Bounded, deterministic exploration with no randomness and no new dependency. Generated action sequences run from every honest state against a lockstep honest peer. Duplicate, reorder, and deadline-boundary matrices use hand clocks at −1 ns, exactly, and +1 ns. Stream chunkings and scripted socket-result sequences exercise the transport. Readiness combinations are forced through scripted `WSAPoll`. Router interleavings are forced through the existing pause points and repeated. The oracle checks invariant relationships (terminality, result count, exposure accounting, outputs, honest versus injected input), never a re-implementation of the protocol. A failing sequence is reported with its exact action trace for manual reduction. Method, bounds, and counts: [adversarial sequences](adversarial-sequences.md).
+
 ## 4. Attacker and fault models
 
 Taken from the [threat model](../threat-model.md) and P3:
@@ -83,7 +87,7 @@ A suspicious pattern is not a finding. Disproved candidates are recorded with st
 
 ## 7. Phase boundary
 
-P5 is review, not remediation. Production behavior is not changed in P5. Allowed P5 changes are review documents, review-only evidence tests that do not touch production code, reproducers, and status wording. A reproducer that demonstrates a defect must not make CI red. Reproducers here are either a passing test that pins an external precondition, or a patch applied only to a disposable worktree ([reproducers](reproducers/README.md)). Remediation belongs to [P6](../../roadmap/P6-review-remediation-and-protocol-freeze.md).
+P5 is review, not remediation. Production behavior is not changed in P5. Allowed P5 changes are review documents, review-only evidence tests that do not change production behavior, reproducers, and status wording. Review tests that need crate-private code may live inside existing `#[cfg(test)]` modules (P5.2: one module declaration per file, the code in separate test files), but production visibility is never widened. A reproducer that demonstrates a defect must not make CI red. Each reproducer is exactly one of: a passing evidence test (an OS fact, a characterization, or properties that must stay true after remediation); an `#[ignore]`d expected-fail known-bug reproducer that states the desired invariant; or a patch applied only to a disposable worktree ([reproducers](reproducers/README.md)). Remediation belongs to [P6](../../roadmap/P6-review-remediation-and-protocol-freeze.md).
 
 ## 8. Stop rule
 

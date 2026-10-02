@@ -4,7 +4,7 @@
 
 ## Status
 
-**P5 REVIEW IN PROGRESS — FINDINGS RECORDED.** Increment P5.1 set up the review method and completed one broad adversarial pass over every major P4 surface. Increment P5.1.1 reclassified P5-F-002 and P5-F-003 from NEEDS-DECISION to OPEN against the current P3 text. P5 is not complete. Remediation belongs to [P6](../../roadmap/P6-review-remediation-and-protocol-freeze.md); P5 changes no production behavior.
+**P5 REVIEW IN PROGRESS — P5.2 ACCEPTED.** Increment P5.1 set up the review method and completed one broad adversarial pass over every major P4 surface. Increment P5.1.1 reclassified P5-F-002 and P5-F-003 from NEEDS-DECISION to OPEN against the current P3 text. Increment P5.2 completed the [state-machine and transport adversarial sequence review](adversarial-sequences.md), summarized below. P5 is not complete. Remediation belongs to [P6](../../roadmap/P6-review-remediation-and-protocol-freeze.md); P5 changes no production behavior.
 
 ## Review target
 
@@ -15,6 +15,16 @@
 | Review branch | `feature/p5-security-review` (single branch and single PR for all of P5) |
 | Toolchain | `rustc 1.99.0 (b940084d7 2026-09-28)`, Windows 11 Pro 10.0.26200 |
 | Date | 2026-10-02 |
+
+## P5.2 summary
+
+- **Generated state-machine sequences:** 835 in CI (honest prefixes × suffix ≤ 2, with verified no-op reduction) and 35,684 in the manual deep run (suffix ≤ 3, unreduced), for both roles over a 25-action alphabet. No invariant failed: terminal irreversibility, one result, exposure only after authorization, guard, request and session isolation, stale callbacks, authentication ordering, duplicates, and wrong-state input. Also the 55-cell duplicate/reorder matrix and 292 ceremony deadline-boundary cases at −1 ns, exactly, and +1 ns.
+- **Transport sequence families:** 95 chunking and concatenation patterns, 10 truncation-then-EOF cases, 584 (CI) and 4,680 (manual) read-result sequences, 399 + 56 write-result sequences, 24 frame-deadline boundary cases, a 33-case owner-loop readiness matrix, deadline-versus-readiness precedence, and real-Windows graceful-close cases.
+- **Concurrency review:** nine Router race scenarios. Every linearization point is forced in both orders and repeated 25–100 times, plus barrier races. No deadlock, leak, double result, double guard release, or refund.
+- **New findings:** none.
+- **Changed findings:** P5-F-001 strengthened (real end-to-end final-ACK loss; buffered-suffix and pending-output subcases); P5-F-002 strengthened (subcases A first header, B idle after its run, C owner-less retained output, kept as one finding); P5-F-007 reproduced end to end and its description corrected. No severity, status, or count changed.
+- **Coverage:** state machine (#16) and Router concurrency (#19) are now `COMPLETE`. Side channels (#32) and dependency assumptions (#33) remain `PARTIAL`.
+- **Production behavior:** unchanged. The review tests sit inside existing `#[cfg(test)]` modules (one declaration each in `ceremony.rs`, `router.rs`, `windows_tcp.rs`, `windows_owner_loop.rs`); a non-test build never compiles them.
 
 ## Normative baseline
 
@@ -31,8 +41,8 @@ Specification-to-code tracing; adversarial reasoning across 34 axes and 12 attac
 ## Assurance limitations
 
 - AI-assisted reading can miss defects. Absence of a finding is not proof of absence.
-- The first pass is broad. The state machine, Router concurrency, side channels, and dependency internals are `PARTIAL` ([coverage](coverage.md)).
-- No fuzzing, property testing, formal model, or measurement was performed.
+- The first pass is broad. Side channels and dependency internals remain `PARTIAL` ([coverage](coverage.md)). The state machine and Router concurrency were deepened by P5.2's bounded generated sequences and forced interleavings, which are not exhaustive.
+- No fuzzing, randomized property testing, formal model, loom-style interleaving exploration, or measurement was performed.
 - Windows only. Linux results come from CI (`unsupported-platform-fails-closed`).
 - Upstream crates (vodozemac, x25519-dalek, rand, getrandom, hkdf, hmac, sha2, base64) were trusted beyond the touchpoints read.
 
@@ -67,8 +77,9 @@ No finding is currently NEEDS-DECISION. False-positive severities are what each 
 | [state-and-routing.md](state-and-routing.md) | State transition table, duplicates, Router, Host |
 | [resources-deadlines-transport.md](resources-deadlines-transport.md) | Resource table, limiter math, deadlines, TCP adapter, owner loop |
 | [secrets-panics-dependencies.md](secrets-panics-dependencies.md) | Secret lifetime, logging, panics, allocation, side channels, dependencies, static analysis |
-| [reproducers/](reproducers/README.md) | Reproducer patch and the in-repository evidence test |
+| [adversarial-sequences.md](adversarial-sequences.md) | P5.2 generated state-machine, transport, readiness, deadline, and Router-race sequences; F-001, F-002, F-007 evidence |
+| [reproducers/](reproducers/README.md) | Passing evidence tests, expected-fail known-bug reproducers, and the throwaway patch, each classified |
 
 ## Next increment
 
-Recommended P5.2 (not yet started): **State-machine and transport adversarial sequence review.** It would cover generated message, action, and deadline sequences over `RemoteCeremony`, and a stream model (chunking, EOF, and hang-up placement) over the transport, TCP adapter, and owner loop. This targets the `PARTIAL` state-machine surface and the stream-semantics gap that produced P5-F-001 and P5-F-002.
+Recommended P5.3 (not yet started): **Dependency, unsafe/FFI, and secret-lifetime deep review.** Coverage surfaces #32 (side channels) and #33 (dependency assumptions) are the remaining `PARTIAL` surfaces. P5-F-004 (`token_user_sid` bounds), P5-F-005 (panic policy across the Router, adapter, and a future ABI), and P5-F-006 (`base64` SIMD engine) all sit at upstream or `unsafe` boundaries that P5.1 read only at their touchpoints. P5.3 would review the locked upstream crates' `unsafe` and constant-time claims at the exact versions, the `base64` encoder against a reference across every length up to the cap, the Win32 FFI boundaries, and the zeroization boundary.

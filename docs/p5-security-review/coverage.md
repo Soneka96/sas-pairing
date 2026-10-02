@@ -1,12 +1,12 @@
 # P5 Review Coverage
 
-Status of the P5.1 first broad pass over the frozen P4 core (`e21ff0b`).
+Status of the P5.1 first broad pass over the frozen P4 core (`e21ff0b`), as deepened by P5.2 ([adversarial sequences](adversarial-sequences.md)).
 
 - **COMPLETE:** the surface was reviewed end to end against production source with the stated method, and no first-pass work on it is outstanding. Deeper techniques may still be worthwhile; see "Open questions".
 - **PARTIAL:** reviewed, but part of the surface was covered by reasoning over representative cases, or relies on unexamined upstream code.
 - **NOT-STARTED:** not reviewed.
 
-Methods: **S** = specification-to-code tracing, **A** = adversarial reasoning against the [attacker models](review-method.md#4-attacker-and-fault-models), **T** = derived table, **R** = executed reproducer, **D** = dependency source inspection, **X** = tooling (Clippy review lints, advisory query).
+Methods: **S** = specification-to-code tracing, **A** = adversarial reasoning against the [attacker models](review-method.md#4-attacker-and-fault-models), **T** = derived table, **R** = executed reproducer, **D** = dependency source inspection, **X** = tooling (Clippy review lints, advisory query), **G** = generated deterministic sequences or forced interleavings (P5.2).
 
 Test references are P4 test names (`module::name` = `core/src/module.rs` tests; `it::` = `core/tests/security_core.rs`), consulted as evidence only.
 
@@ -27,16 +27,16 @@ Test references are P4 test names (`module::name` = `core/src/module.rs` tests; 
 | 13 | Approval MAC | COMPLETE | S A T | §8 | `crypto.rs`, `ceremony.rs` | `ceremony::peer_mac_binds_identity_sas_sender_bootstrap_roles_and_purpose` | F-022 (FP) | — |
 | 14 | Completion MACs | COMPLETE | S A T | §9 | same | `ceremony::finish_macs_bind_type_purpose_direction_and_identity` | F-007 | — |
 | 15 | Authenticated CANCEL | COMPLETE | S A T | §11.3 | same | `ceremony::cancel_mac_binds_frozen_types_purpose_roles_identity_and_reason`, `ceremony::cancel_before_sas_establishment_is_invalid_input_without_mac_work` | F-022 (FP) | — |
-| 16 | State machine | PARTIAL | S A T | §6, §10 | `ceremony.rs` | `ceremony::*` (ordering, duplicates, terminal) | — | Table derived and asymmetries checked. Exhaustive generated message/action sequences not explored (recommended P5.2) |
-| 17 | Duplicate semantics | COMPLETE | S T | §6, §11.2 | `ceremony.rs` `duplicate`; `router.rs` `classify_start` | `ceremony::exact_duplicate_is_idempotent_and_changed_duplicate_is_terminal`, `router::exact_duplicate_starts_are_ignored_without_charge_output_or_new_state` | — | — |
-| 18 | Timeout and deadline semantics | COMPLETE | S A T | §11.3, §11.1.1 | `deadline.rs`, `ceremony.rs`, `transport.rs` | `deadline::*`, `ceremony::large_monotonic_jumps_never_extend_a_ceremony` | F-002, F-007, F-011 (AL) | — |
-| 19 | Router and session isolation | PARTIAL | S A | §4, §11.2 | `router.rs` | `router::closing_during_*`, `host::a_local_action_and_a_session_close_linearize_at_the_session_lease` | F-005, F-017 (FP) | Lock order and linearization reviewed by reading. Interleavings beyond the P4 pause-point tests not explored (concurrency stress recommended) |
-| 20 | Transport framing and resource controls | COMPLETE | S A R | §11.1.1 | `transport.rs` | `transport::*` | F-002 | — |
+| 16 | State machine | COMPLETE (P5.2) | S A T G | §6, §10, §11.3 | `ceremony.rs` | `ceremony::*`; P5.2 SM-I/SM-R (835 CI + 35,684 deep sequences), DUP-001, DEADLINE-001..004 | F-007 | Bounded: honest prefixes × suffix ≤ 3 over a 25-action alphabet, both roles, every invariant held. No exhaustive model of unbounded sequences |
+| 17 | Duplicate semantics | COMPLETE | S T G | §6, §11.2 | `ceremony.rs` `duplicate`; `router.rs` `classify_start` | `ceremony::exact_duplicate_is_idempotent_and_changed_duplicate_is_terminal`, `router::exact_duplicate_starts_are_ignored_without_charge_output_or_new_state`; P5.2 DUP-001 (55 cells), ROUTER-RACE-004 | — | — |
+| 18 | Timeout and deadline semantics | COMPLETE | S A T G | §11.3, §11.1.1 | `deadline.rs`, `ceremony.rs`, `transport.rs` | `deadline::*`, `ceremony::large_monotonic_jumps_never_extend_a_ceremony`; P5.2 DEADLINE-001..004, TCP-DEADLINE-001, F007, LOOP-DEADLINE-001 | F-002, F-007, F-011 (AL) | — |
+| 19 | Router and session isolation | COMPLETE (P5.2) | S A G | §4, §11.2 | `router.rs` | `router::closing_during_*`, `host::a_local_action_and_a_session_close_linearize_at_the_session_lease`; P5.2 ROUTER-RACE-001..009 | F-005, F-017 (FP) | Every linearization point forced in both orders, repeated (25–100 iterations), plus barrier races. No loom-style exhaustive interleaving |
+| 20 | Transport framing and resource controls | COMPLETE | S A R G | §11.1.1 | `transport.rs` | `transport::*`; P5.2 TCP-STREAM-001..003, TCP-RD-001/002 | F-002 | — |
 | 21 | Host facade | COMPLETE | S | §11.2 | `host.rs` | `host::*` | — | — |
 | 22 | Local callback targeting | COMPLETE | S A | §7, §10 | `router.rs` `with_exact_run`; `ceremony.rs` `live_session` | `host::a_stale_run_ref_or_identity_never_reaches_a_replacement_under_a_reused_request_id` | F-017 (FP) | — |
 | 23 | Send-confirmation boundary | COMPLETE | S A | §9 | `host.rs` `FinalAck`; `windows_tcp.rs` `confirm` | `host::an_unconfirmed_final_ack_never_becomes_success`, `windows_tcp::a_scripted_ceremony_confirms_the_final_ack_only_after_its_last_byte_is_written` | F-007, F-019 (FP) | — |
-| 24 | Windows TCP adapter | COMPLETE | S A T R | §3.1, §9, §11.1.1 | `windows_tcp.rs` | `windows_tcp::*` | F-001, F-002 | — |
-| 25 | Owner-loop readiness and fairness | COMPLETE | S A R | §11.1.1 | `windows_owner_loop.rs` | `windows_owner_loop::*` | F-001, F-002 | — |
+| 24 | Windows TCP adapter | COMPLETE | S A T R G | §3.1, §9, §11.1.1 | `windows_tcp.rs` | `windows_tcp::*`; P5.2 TCP-W-001/002, F007, F002-001, TCP-OUT-001 | F-001, F-002, F-007 | — |
+| 25 | Owner-loop readiness and fairness | COMPLETE | S A R G | §11.1.1 | `windows_owner_loop.rs` | `windows_owner_loop::*`; P5.2 LOOP-READY-001, LOOP-DEADLINE-001, LOOP-HUP-001..003, F001-001 | F-001, F-002 | Real-socket facts from one Windows build and CI |
 | 26 | Shutdown and teardown | COMPLETE | S A | §11.1.2(5), §11.2 | `router.rs` `teardown`; `transport.rs`; `windows_tcp.rs`; `windows_owner_loop.rs` `shut_all` | `router::uncertain_session_teardown_fails_closed_and_never_reopens` | F-005 | — |
 | 27 | Uncertain ownership cleanup | COMPLETE | S A T | §11.1.2(4–5) | `lib.rs`, `router.rs`, `transport.rs` | `windows_tests::poisoned_shared_state_fails_closed`, `ceremony::sas_is_invalidated_even_when_guard_release_is_uncertain` | — | — |
 | 28 | Unsafe Rust / Win32 FFI | COMPLETE | S A T X | §11.1.2 | `lib.rs` `os_lock`; `windows_owner_loop.rs` `wsa_poll` | `windows_tests::token_user_parsing_does_not_assume_buffer_alignment` | F-004 | Upstream `unsafe` (dependencies) not audited |
@@ -58,15 +58,15 @@ Test references are P4 test names (`module::name` = `core/src/module.rs` tests; 
 | Static analysis | COMPLETE | fmt and Clippy pass on both targets; review lints triaged ([secrets §7](secrets-panics-dependencies.md#7-static-analysis)) |
 | Advisory scan | COMPLETE | OSV, 96 crates, no advisories (2026-10-02) |
 
-## Recommended review harnesses (not introduced in P5.1)
+## Recommended review harnesses (from P5.1; status after P5.2)
 
-| Harness | Reason | Target | Expected value |
-|---|---|---|---|
-| Generated message/action sequences against `RemoteCeremony` (both roles, every state, exact or changed duplicates, reorders, local actions, deadline advances) | Surface 16 is PARTIAL. The hand-derived table may miss cross-state interactions | `ceremony.rs` | High: checks I1/I2, no second output, and no result before its conditions, for every sequence up to a bounded length |
-| Parser property tests (arbitrary bytes, mutated canonical frames, decode/encode round trip, `wire_frame_extent` agreement with `decode`) | Surface 7 was reviewed manually only | `protocol.rs`, `transport.rs` | Medium: the codec is small and well tested, so this mostly guards regressions |
-| Transport fragmentation model (random chunking, concatenation, EOF and hang-up placement) | F-001 shows adapter-level stream semantics were under-tested | `transport.rs`, `windows_tcp.rs`, owner loop | High for the adapter |
-| Router concurrency stress (threads racing START, deliver, local actions, close, deadline polls) | Surface 19 is PARTIAL | `router.rs` | Medium |
-| Deadline boundary generation (± 1 ns around every deadline, for every state and clock fault) | Exact-boundary behavior is safety-relevant (F-007) | `deadline.rs`, `ceremony.rs`, `windows_tcp.rs` | Medium |
-| Reference Base64url comparison across all lengths up to the cap | F-006 | `crypto.rs` | Low to medium |
+| Harness | Reason | Target | Expected value | P5.2 status |
+|---|---|---|---|---|
+| Generated message/action sequences against `RemoteCeremony` (both roles, every state, exact or changed duplicates, reorders, local actions, deadline advances) | Surface 16 was PARTIAL in P5.1. The hand-derived table may miss cross-state interactions | `ceremony.rs` | High: checks I1/I2, no second output, and no result before its conditions, for every sequence up to a bounded length | Done: SM-I/SM-R, DUP-001 |
+| Parser property tests (arbitrary bytes, mutated canonical frames, decode/encode round trip, `wire_frame_extent` agreement with `decode`) | Surface 7 was reviewed manually only | `protocol.rs`, `transport.rs` | Medium: the codec is small and well tested, so this mostly guards regressions | Not done (codec only; stays a recommendation) |
+| Transport fragmentation model (random chunking, concatenation, EOF and hang-up placement) | F-001 shows adapter-level stream semantics were under-tested | `transport.rs`, `windows_tcp.rs`, owner loop | High for the adapter | Done (deterministic, not random): TCP-STREAM, TCP-RD, LOOP-HUP |
+| Router concurrency stress (threads racing START, deliver, local actions, close, deadline polls) | Surface 19 was PARTIAL in P5.1 | `router.rs` | Medium | Done: ROUTER-RACE-001..009 |
+| Deadline boundary generation (± 1 ns around every deadline, for every state and clock fault) | Exact-boundary behavior is safety-relevant (F-007) | `deadline.rs`, `ceremony.rs`, `windows_tcp.rs` | Medium | Done: DEADLINE-001..004, TCP-DEADLINE-001, F007 |
+| Reference Base64url comparison across all lengths up to the cap | F-006 | `crypto.rs` | Low to medium | Not done (F-006; outside P5.2) |
 
-No fuzzing framework or new dependency was introduced.
+No fuzzing framework or new dependency was introduced, in P5.1 or P5.2. Surfaces still `PARTIAL` after P5.2: side channels (#32) and dependency assumptions (#33), which need measurement or upstream review that sequence generation does not provide.

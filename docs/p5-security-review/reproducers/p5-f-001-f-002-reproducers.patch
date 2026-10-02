@@ -36,13 +36,13 @@ index 155353b..31a0c7f 100644
 +    }
  }
 diff --git a/core/src/windows_owner_loop.rs b/core/src/windows_owner_loop.rs
-index 7ad4730..476d0d1 100644
+index aff20aa..a2f5827 100644
 --- a/core/src/windows_owner_loop.rs
 +++ b/core/src/windows_owner_loop.rs
-@@ -2666,4 +2666,37 @@ mod tests {
-         drop(owner);
-         r.release();
-     }
+@@ -2670,4 +2670,37 @@ mod tests {
+     /// P5.2 review-only owner-loop evidence (not part of the product); see
+     /// `docs/p5-security-review/adversarial-sequences.md`.
+     mod p5_owner_loop_review;
 +
 +    /// P5-F-001 reproducer (review-only; NOT part of the product). A peer writes one complete
 +    /// canonical START and then closes gracefully. Windows WSAPoll reports POLLHUP together with
