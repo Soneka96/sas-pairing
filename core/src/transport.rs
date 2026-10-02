@@ -30,15 +30,30 @@
 //! before any new byte is accepted, and are evaluated against one injected monotonic clock that
 //! is never a ceremony or START-limiter clock.
 //!
-//! Teardown. A framing error, frame or idle deadline, unusable clock, incomplete-slot refusal,
-//! or explicit close or drop all take one path: stop accepting input, destroy the partial frame
-//! and release its slot, close the Router session through `Router::close_session_settled`
-//! (synchronous; every run ends through the existing session teardown, with no CANCEL, no
-//! result, no limiter refund, and consumed opportunities kept), and only once that session is
-//! established CLOSED release the live-connection count. If Router cleanup is uncertain the
-//! count is never released, so uncertain work can never be replaced by new connections.
-//! Transport failure never touches the START limiter, the opportunity budget, the guard, the
-//! ownership lease, or another connection.
+//! Connection lifetime (P6-D-001, remediating P5-F-002). Outside an incomplete frame a live
+//! connection is governed by exactly one `Lifetime`, re-derived at every evaluation from what it
+//! holds, never from socket activity: while its session has a live run, that run's own ceremony
+//! deadlines govern and no connection timer runs; before its first frame it has 10 seconds from
+//! activation; with no live run, no frame in progress, and no retained outbound frame it is
+//! quiescent for at most 10 seconds; and a retained outbound frame no live run owns has 10
+//! seconds in all and 2 seconds without write progress. Only a change of what the connection
+//! holds (a live run ending, retained output appearing or leaving) moves an origin. A frame that
+//! leaves no live run behind moves none, and readiness, WouldBlock, empty polls, refused or
+//! duplicate frames, and local read-only calls refresh nothing. While a frame is incomplete its
+//! own frame deadlines govern instead, so a first byte accepted before expiry gets the full
+//! frame window. The adapter reports whether it retains an outbound frame (`OutboundState`) and
+//! its write progress, which only it knows; it reads nothing while it retains a frame, so `feed`
+//! always runs with none retained. Every expiry is the same one teardown below.
+//!
+//! Teardown. A framing error, frame, idle, or connection deadline, unusable clock, incomplete-slot
+//! refusal, or explicit close or drop all take one path: stop accepting input, destroy the partial
+//! frame and release its slot, close the Router session through `Router::close_session_settled`
+//! (synchronous; every run ends through the existing session teardown, with no CANCEL, no result,
+//! no limiter refund, and consumed opportunities kept), and only once that session is established
+//! CLOSED release the live-connection count. If Router cleanup is uncertain the count is never
+//! released, so uncertain work can never be replaced by new connections. Transport failure never
+//! touches the START limiter, the opportunity budget, the guard, the ownership lease, or another
+//! connection.
 //!
 //! Lock order: run mutex -> router table mutex -> session lifecycle mutex (leaf), with the
 //! authority shared mutex taken by ceremony work under a run mutex or with nothing held. This
@@ -70,6 +85,16 @@ const _: () = assert!(MAX_INCOMPLETE_FRAMES_PER_CONNECTION == 1);
 pub(crate) const WHOLE_FRAME_DEADLINE: Duration = Duration::from_secs(10);
 /// Longest wait for the next byte of a retained incomplete frame.
 pub(crate) const IDLE_READ_DEADLINE: Duration = Duration::from_secs(2);
+/// P6-D-001 (P3 §11.1.1): from activation to the first byte of the first frame; never extended.
+pub(crate) const FIRST_FRAME_DEADLINE: Duration = Duration::from_secs(10);
+/// P6-D-001 (P3 §11.1.1): longest a connection stays open with no live run, no frame in
+/// progress, and no retained outbound frame.
+pub(crate) const QUIESCENT_DEADLINE: Duration = Duration::from_secs(10);
+/// P6-D-001 (P3 §11.1.1): absolute lifetime of a retained outbound frame no live run owns;
+/// never extended, not even by write progress.
+pub(crate) const RETAINED_OUTPUT_DEADLINE: Duration = Duration::from_secs(10);
+/// P6-D-001 (P3 §11.1.1): longest such a frame may wait for write progress.
+pub(crate) const RETAINED_OUTPUT_IDLE_DEADLINE: Duration = Duration::from_secs(2);
 
 /// Narrow local transport outcomes. None says anything about peer authentication, an SAS,
 /// compromise, or the opportunity budget, and none is a protocol message.
@@ -83,6 +108,14 @@ pub(crate) enum TransportError {
     FrameTooLarge,
     WholeFrameTimeout,
     IdleTimeout,
+    /// No frame began within `FIRST_FRAME_DEADLINE` of activation.
+    FirstFrameTimeout,
+    /// No live run, frame, or retained output for `QUIESCENT_DEADLINE`.
+    QuiescentTimeout,
+    /// A retained outbound frame no live run owns outlived `RETAINED_OUTPUT_DEADLINE`.
+    RetainedOutputTimeout,
+    /// That frame made no write progress for `RETAINED_OUTPUT_IDLE_DEADLINE`.
+    RetainedOutputIdleTimeout,
     /// The transport clock gave no value or went backwards.
     ClockUnavailable,
     /// The connection already ended; nothing was done.
@@ -141,11 +174,14 @@ impl<'r> AcceptPermit<'r> {
     /// live (`ResourceLimited`: no session, protocol state, limiter charge, or opportunity
     /// change), the live count is taken; the cap is checked here, never at `begin`. Only then is
     /// the session opened; if that fails the live count is released again, since no session
-    /// exists to clean up.
+    /// exists to clean up. The activation instant starts the first-frame deadline; a clock with
+    /// no value refuses before any count is taken (`ClockUnavailable`, permit released).
     pub(crate) fn activate_with_clock(
         mut self,
         clock: Clock,
     ) -> Result<TransportConnection<'r>, TransportError> {
+        // The first-frame deadline's origin; with no usable clock nothing becomes live.
+        let activated = clock.now().ok_or(TransportError::ClockUnavailable)?;
         {
             let mut shared = accounts(self.router)?;
             shared.pending_accepts -= 1;
@@ -160,8 +196,9 @@ impl<'r> AcceptPermit<'r> {
                 router: self.router,
                 session,
                 clock,
-                observed: Duration::ZERO,
+                observed: activated,
                 partial: None,
+                lifetime: Lifetime::FirstFrame { since: activated },
                 ended: false,
             }),
             Err(_) => {
@@ -252,6 +289,93 @@ pub(crate) struct Fed {
     pub(crate) frame: Option<Vec<u8>>,
 }
 
+/// Whether the adapter retains an outbound frame it has not finished writing. Only the adapter
+/// knows; it reports this at every connection-deadline evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutboundState {
+    Empty,
+    Retained,
+}
+
+/// What governs a live connection outside an incomplete inbound frame (P6-D-001, P5-F-002). An
+/// incomplete frame is governed by its own `Partial` deadlines instead; the state underneath is
+/// still re-derived meanwhile, so its origins stay exact, but it is not enforced.
+///
+/// | Holds | State | Deadline |
+/// |---|---|---|
+/// | nothing yet since activation | `FirstFrame` | 10 s from activation |
+/// | a live run (an installed `RemoteCeremony`) | `LiveRun` | that run's ceremony deadlines |
+/// | no live run, no output | `Quiescent` | 10 s from losing its run or output |
+/// | retained output, no live run | `OwnerlessOutput` | 10 s absolute, 2 s without progress |
+///
+/// `settle` is the whole transition table; nothing else changes the state except `frame_begun`
+/// (first frame: `FirstFrame` becomes `Quiescent` with the same origin) and write progress
+/// (the no-progress origin only).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lifetime {
+    FirstFrame { since: Duration },
+    LiveRun,
+    Quiescent { since: Duration },
+    OwnerlessOutput { since: Duration, progress: Duration },
+}
+
+impl Lifetime {
+    /// The state for what the connection holds at `now`. A live run always governs. An origin
+    /// moves only when what is held changes: output appearing without a live run starts both
+    /// output timers; losing the last run or the output starts the quiescent timer. A frame
+    /// that left no live run behind keeps the earlier origin, so frames that create no live
+    /// work can never extend the connection.
+    fn settle(self, now: Duration, live_run: bool, outbound: OutboundState) -> Self {
+        match (self, live_run, outbound) {
+            (_, true, _) => Self::LiveRun,
+            (Self::OwnerlessOutput { .. }, false, OutboundState::Retained) => self,
+            (_, false, OutboundState::Retained) => Self::OwnerlessOutput {
+                since: now,
+                progress: now,
+            },
+            (Self::FirstFrame { .. } | Self::Quiescent { .. }, false, OutboundState::Empty) => self,
+            (Self::LiveRun | Self::OwnerlessOutput { .. }, false, OutboundState::Empty) => {
+                Self::Quiescent { since: now }
+            }
+        }
+    }
+
+    /// The first frame began: no longer waiting for it, with the same origin.
+    fn frame_begun(self) -> Self {
+        match self {
+            Self::FirstFrame { since } => Self::Quiescent { since },
+            other => other,
+        }
+    }
+
+    /// The expired deadline at `now`, if any (`elapsed >= deadline`; for owner-less output the
+    /// absolute deadline is reported first when both have expired, with identical effect).
+    fn check(self, now: Duration) -> Result<(), TransportError> {
+        let elapsed = |origin: Duration| {
+            now.checked_sub(origin)
+                .ok_or(TransportError::ClockUnavailable)
+        };
+        let expired = match self {
+            Self::LiveRun => None,
+            Self::FirstFrame { since } => (elapsed(since)? >= FIRST_FRAME_DEADLINE)
+                .then_some(TransportError::FirstFrameTimeout),
+            Self::Quiescent { since } => {
+                (elapsed(since)? >= QUIESCENT_DEADLINE).then_some(TransportError::QuiescentTimeout)
+            }
+            Self::OwnerlessOutput { since, progress } => {
+                if elapsed(since)? >= RETAINED_OUTPUT_DEADLINE {
+                    Some(TransportError::RetainedOutputTimeout)
+                } else if elapsed(progress)? >= RETAINED_OUTPUT_IDLE_DEADLINE {
+                    Some(TransportError::RetainedOutputIdleTimeout)
+                } else {
+                    None
+                }
+            }
+        };
+        expired.map_or(Ok(()), Err)
+    }
+}
+
 /// One live unauthenticated transport connection: exactly one Router session for its whole
 /// life, one live-connection count, and at most one incomplete frame. It never switches or
 /// reuses a session. Ending it (any failure, `close`, or drop) is one synchronous teardown.
@@ -262,6 +386,8 @@ pub(crate) struct TransportConnection<'r> {
     /// Latest clock reading accepted; an earlier one is a backwards clock.
     observed: Duration,
     partial: Option<Partial<'r>>,
+    /// What governs the connection outside an incomplete frame (P6-D-001).
+    lifetime: Lifetime,
     /// Teardown has begun: no input, poll, or second teardown is accepted.
     ended: bool,
 }
@@ -293,17 +419,28 @@ impl<'r> TransportConnection<'r> {
         self.step(input).map_err(|error| self.fail(error))
     }
 
-    /// Enforces the frame deadlines without input, for a host that must expire an idle frame
-    /// when no bytes arrive. It never refreshes anything. With no frame in progress it does
-    /// nothing and reads no clock.
-    pub(crate) fn poll_frame_deadlines(&mut self) -> Result<(), TransportError> {
+    /// Enforces this connection's deadlines without input, for a host that must expire it when
+    /// no bytes arrive: the frame deadlines of an incomplete frame, otherwise the connection
+    /// lifetime (P6-D-001) for what it holds now, with `outbound` the adapter's retained-output
+    /// state. It never refreshes anything; it only observes a change of what is held.
+    pub(crate) fn poll_connection_deadlines(
+        &mut self,
+        outbound: OutboundState,
+    ) -> Result<(), TransportError> {
         if self.ended {
             return Err(TransportError::Closed);
         }
-        if self.partial.is_none() {
-            return Ok(());
+        self.evaluate(outbound).map_err(|error| self.fail(error))
+    }
+
+    /// Meaningful write progress (at least one byte) of the retained outbound frame, made right
+    /// after the `poll_connection_deadlines` that found the connection live: restarts only the
+    /// no-progress deadline of owner-less output, at that check's instant, never its absolute
+    /// deadline. Nothing changes in any other state.
+    pub(crate) fn record_output_progress(&mut self) {
+        if let Lifetime::OwnerlessOutput { progress, .. } = &mut self.lifetime {
+            *progress = self.observed;
         }
-        self.now().map(drop).map_err(|error| self.fail(error))
     }
 
     /// Explicit local close: the same synchronous teardown as a failure. `Ok(())` means the
@@ -327,6 +464,10 @@ impl<'r> TransportConnection<'r> {
             if input.is_empty() {
                 return Ok(Fed::default());
             }
+            // A new frame begins: an expired connection deadline wins before any byte is taken.
+            // The adapter reads nothing while it retains output, so none is retained here.
+            self.evaluate(OutboundState::Empty)?;
+            self.lifetime = self.lifetime.frame_begun();
             if let Extent::Frame(total) = protocol::wire_frame_extent(input)?
                 && total <= input.len()
             {
@@ -389,6 +530,27 @@ impl<'r> TransportConnection<'r> {
         }
         self.observed = now;
         Ok(now)
+    }
+
+    /// The connection deadlines now: the lifetime settled for what the connection holds
+    /// (`outbound`, and whether its session has a live run), then an incomplete frame's own
+    /// deadlines (`now`) or else the lifetime's. With a live run and no incomplete frame the run's
+    /// ceremony deadlines govern, so no transport reading is taken, as before P6.
+    fn evaluate(&mut self, outbound: OutboundState) -> Result<(), TransportError> {
+        let live_run = self
+            .router
+            .session_has_live_run(self.session)
+            .map_err(|_| TransportError::OwnershipUncertain)?;
+        if live_run && self.partial.is_none() {
+            self.lifetime = Lifetime::LiveRun;
+            return Ok(());
+        }
+        let now = self.now()?;
+        self.lifetime = self.lifetime.settle(now, live_run, outbound);
+        if self.partial.is_none() {
+            self.lifetime.check(now)?;
+        }
+        Ok(())
     }
 
     /// The one failure path: tear down, then report `error`, or `OwnershipUncertain` if the
@@ -953,7 +1115,10 @@ mod tests {
         a.feed(&start(4)[..20]).unwrap();
         // The transport clock is not the limiter clock: advancing it refills nothing.
         clock.advance(IDLE_READ_DEADLINE);
-        assert_eq!(a.poll_frame_deadlines(), Err(IdleTimeout));
+        assert_eq!(
+            a.poll_connection_deadlines(OutboundState::Empty),
+            Err(IdleTimeout)
+        );
         assert_closed(&router, sa);
         assert_eq!((r.counts(), r.pending_responders()), ((0, 1, 0), 1));
         assert_eq!((r.limiter(), r.permits()), (exhausted, 0));
@@ -1010,7 +1175,10 @@ mod tests {
         assert_closed(&r2, se);
         assert_eq!(a.counts(), (0, 4, 4));
         assert_eq!(e.feed(&start[5..]), Err(Closed));
-        assert_eq!(e.poll_frame_deadlines(), Err(Closed));
+        assert_eq!(
+            e.poll_connection_deadlines(OutboundState::Empty),
+            Err(Closed)
+        );
         drop(e);
         assert_eq!(a.counts(), (0, 4, 4));
         for conn in &held {
@@ -1218,14 +1386,14 @@ mod tests {
         let mut conn = connect(&router, &clock);
         let session = conn.session();
         assert_eq!(conn.feed(&[]).unwrap(), Fed::default());
-        assert_eq!(conn.poll_frame_deadlines(), Ok(()));
+        assert_eq!(conn.poll_connection_deadlines(OutboundState::Empty), Ok(()));
         assert!(conn.partial.is_none());
         assert_eq!(a.counts(), (0, 1, 0));
         let ik = wire(&["INITIATOR_KEY"]);
         conn.feed(&ik[..4]).unwrap();
         clock.advance(Duration::from_secs(1));
         assert_eq!(conn.feed(&[]).unwrap(), Fed::default());
-        assert_eq!(conn.poll_frame_deadlines(), Ok(()));
+        assert_eq!(conn.poll_connection_deadlines(OutboundState::Empty), Ok(()));
         clock.advance(Duration::from_secs(1) - NS);
         assert_eq!(conn.feed(&[]).unwrap(), Fed::default());
         assert_eq!(retained(&conn).unwrap().3, Duration::ZERO);
@@ -1249,7 +1417,7 @@ mod tests {
         let mut conn = connect(&router, &clock);
         conn.feed(&ik[..1]).unwrap();
         clock.advance(IDLE_READ_DEADLINE - NS);
-        assert_eq!(conn.poll_frame_deadlines(), Ok(()));
+        assert_eq!(conn.poll_connection_deadlines(OutboundState::Empty), Ok(()));
         assert_eq!(conn.feed(&ik[1..2]).unwrap().consumed, 1);
         // Progress restarts only the idle deadline.
         let (_, _, started, progress) = retained(&conn).unwrap();
@@ -1258,9 +1426,12 @@ mod tests {
             (Duration::ZERO, IDLE_READ_DEADLINE - NS)
         );
         clock.advance(IDLE_READ_DEADLINE - NS);
-        assert_eq!(conn.poll_frame_deadlines(), Ok(()));
+        assert_eq!(conn.poll_connection_deadlines(OutboundState::Empty), Ok(()));
         clock.advance(NS);
-        assert_eq!(conn.poll_frame_deadlines(), Err(IdleTimeout));
+        assert_eq!(
+            conn.poll_connection_deadlines(OutboundState::Empty),
+            Err(IdleTimeout)
+        );
         assert_closed(&router, conn.session());
         assert_eq!(a.counts(), (0, 0, 0));
         // A byte arriving at exactly two seconds is too late and is not taken.
@@ -1312,7 +1483,10 @@ mod tests {
         let mut conn = connect(&router, &clock);
         conn.feed(&ik[..1]).unwrap();
         clock.set(WHOLE_FRAME_DEADLINE);
-        assert_eq!(conn.poll_frame_deadlines(), Err(WholeFrameTimeout));
+        assert_eq!(
+            conn.poll_connection_deadlines(OutboundState::Empty),
+            Err(WholeFrameTimeout)
+        );
         assert_closed(&router, conn.session());
         assert_eq!(a.counts(), (0, 0, 0));
         drop(conn);
@@ -1342,7 +1516,10 @@ mod tests {
         let mut conn = connect(&router, &clock);
         conn.feed(&ik[..3]).unwrap();
         clock.fail();
-        assert_eq!(conn.poll_frame_deadlines(), Err(ClockUnavailable));
+        assert_eq!(
+            conn.poll_connection_deadlines(OutboundState::Empty),
+            Err(ClockUnavailable)
+        );
         assert_eq!(a.counts(), (0, 0, 0));
         // Unavailable when a frame would begin: nothing is retained and no slot is taken.
         let clock = ManualClock::new();
@@ -1364,14 +1541,16 @@ mod tests {
         clock.set(five - MS);
         assert_eq!(conn.feed(&ik[..3]), Err(ClockUnavailable));
         assert_eq!(a.counts(), (0, 0, 0));
-        // A frame complete within one input has no timer and reads no clock.
+        // A frame complete within one input has no frame timer, but before P6 it read no clock
+        // at all. P6-D-001 (P5-F-002 remediation): a beginning frame first checks the
+        // connection deadline, so without a usable clock nothing is dispatched.
         let clock = ManualClock::new();
         drop(conn);
 
         let mut conn = connect(&router, &clock);
         clock.fail();
-        assert_eq!(conn.feed(&ik).unwrap().frame, Some(ik.clone()));
-        assert_eq!(a.counts(), (0, 1, 0));
+        assert_eq!(conn.feed(&ik), Err(ClockUnavailable));
+        assert_eq!(a.counts(), (0, 0, 0));
         drop(conn);
         drop(router);
         a.release();
@@ -1525,7 +1704,10 @@ mod tests {
         // A transport failure charges and refunds nothing.
         conn.feed(&start[..30]).unwrap();
         clock.advance(IDLE_READ_DEADLINE);
-        assert_eq!(conn.poll_frame_deadlines(), Err(IdleTimeout));
+        assert_eq!(
+            conn.poll_connection_deadlines(OutboundState::Empty),
+            Err(IdleTimeout)
+        );
         assert_eq!((a.charged(), a.pending_responders()), ((2, 2), 0));
         assert_eq!(a.status(), Status::Ready { remaining: 10 });
         drop(conn);
@@ -1681,4 +1863,6 @@ mod tests {
         drop(router);
         a.release();
     }
+
+    mod connection_lifetime;
 }

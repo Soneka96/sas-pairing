@@ -7,8 +7,9 @@
 //! authorization, routing, limiter, or accounting decision.
 //!
 //! One `drive_once` is bounded synchronous work, with no thread, timer, sleep, or queue:
-//! 1. a deadline sweep: per live connection at most one transport frame-deadline poll and one
-//!    bounded ceremony-deadline poll (itself at most `MAX_CEREMONY_POLLS_PER_CALL` routes);
+//! 1. a deadline sweep: per live connection at most one transport connection-deadline poll
+//!    (frame deadlines, or the P6-D-001 connection lifetime) and one bounded ceremony-deadline
+//!    poll (itself at most `MAX_CEREMONY_POLLS_PER_CALL` routes);
 //! 2. at most one `WSAPoll` over at most `MAX_POLL_SOCKETS` (1 listener + 16 connections) sockets,
 //!    waiting at most `OWNER_LOOP_MAX_WAIT` (not at all if step 1 produced an event). That wait is
 //!    scheduling plumbing only: not a protocol deadline, and a wake (or a zero return) is not
@@ -544,8 +545,8 @@ impl<'r, L: Listen> WindowsOwnerLoop<'r, L> {
             .ok_or(OwnerLoopError::UnknownConnection)
     }
 
-    /// One bounded deadline pass: per connection without an event yet, one frame-deadline poll
-    /// and one ceremony-deadline poll. An event marks the connection served for this drive.
+    /// One bounded deadline pass: per connection without an event yet, one connection-deadline
+    /// poll and one ceremony-deadline poll. An event marks the connection served for this drive.
     fn sweep(&mut self, step: &mut OwnerStep) {
         for index in 0..self.connections.len() {
             let live = &mut self.connections[index];
@@ -554,7 +555,7 @@ impl<'r, L: Listen> WindowsOwnerLoop<'r, L> {
             }
             let outcome = live
                 .tcp
-                .poll_frame_deadlines()
+                .poll_connection_deadlines()
                 .and_then(|_| live.tcp.poll_ceremony_deadlines());
             if matches!(&outcome, Ok(polled) if polled.event.is_none() && polled.result.is_none()) {
                 continue;
@@ -2666,6 +2667,9 @@ mod tests {
         drop(owner);
         r.release();
     }
+
+    /// P6-D-001 connection-lifetime regressions (P5-F-002 remediation).
+    mod connection_lifetime;
 
     /// P5.2 review-only owner-loop evidence (not part of the product); see
     /// `docs/p5-security-review/adversarial-sequences.md`.

@@ -461,6 +461,24 @@ impl Router {
         }
     }
 
+    /// Whether `session` has a live run: an installed `RemoteCeremony`, whose own ceremony
+    /// deadlines then govern its connection (P6-D-001). A START still being admitted is not one
+    /// yet; a finished run is never routed. Read-only: one table critical section, one ordered-
+    /// map seek, stopping at the session's first installed run (only claims still being
+    /// admitted, at most one per concurrent caller, can precede it).
+    pub(crate) fn session_has_live_run(&self, session: SessionHandle) -> Result<bool, RouteError> {
+        let table = self.table()?;
+        let first = RoutingKey {
+            session,
+            request_id: Vec::new(),
+        };
+        Ok(table
+            .routes
+            .range(first..)
+            .take_while(|(key, _)| key.session == session)
+            .any(|(_, route)| matches!(route, Route::Active(_))))
+    }
+
     /// The pairing authority this router belongs to.
     pub(crate) fn authority(&self) -> &CeremonyExecutor {
         &self.executor

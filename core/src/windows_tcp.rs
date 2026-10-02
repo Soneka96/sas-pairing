@@ -23,7 +23,10 @@
 //!   ordinary frames are never confirmed, and the Initiator's `FinalAck` goes to
 //!   `HostConnection::confirm_sent` only then, so its `PairingResult` exists only after the
 //!   complete local write. Written locally is never peer receipt.
-//! - `poll_frame_deadlines` and `poll_ceremony_deadlines`: exactly one host poll each.
+//! - `poll_connection_deadlines` and `poll_ceremony_deadlines`: exactly one host poll each. The
+//!   first reports whether a frame is retained, so the transport's P6-D-001 connection lifetime
+//!   also bounds a retained frame no live run owns (10 s in all, 2 s without write progress);
+//!   `on_writable` makes the same check before writing and reports each write's progress.
 //!
 //! Backpressure: at most ONE outbound frame is ever retained (one `Option`). While it is, the
 //! socket is not read, no inbound frame is dispatched, and every mutating local action is refused
@@ -56,7 +59,7 @@ use crate::{
     },
     protocol::Bootstrap,
     router::{DeadlineEnded, RouteError, RunRef, SessionHandle},
-    transport::{AcceptPermit, TransportConnection, TransportError},
+    transport::{AcceptPermit, OutboundState, TransportConnection, TransportError},
 };
 #[cfg(test)]
 use crate::{deadline::Clock, request_id::RequestIdGenerator};
@@ -407,6 +410,10 @@ impl<'r, S: SocketIo> WindowsTcpConnection<'r, S> {
     /// where the fair deadline cursor stands. If the owner ended (deadline, or a stale
     /// reference), nothing is written by this call: unsent, the frame is discarded (a timeout
     /// CANCEL may take the slot); partially written, the connection closes with nothing appended.
+    /// Then the connection deadlines are checked (P6-D-001: for a frame no live run owns, its
+    /// absolute and no-progress deadlines), and an expiry ends the connection unwritten. A write
+    /// of at least one byte that does not finish the frame restarts only its no-progress
+    /// deadline; WouldBlock and Interrupted restart nothing.
     pub(crate) fn on_writable(&mut self) -> Result<TcpStep, TcpError> {
         let Some(host) = self.host.as_mut() else {
             return Err(TcpError::Closed);
@@ -423,6 +430,12 @@ impl<'r, S: SocketIo> WindowsTcpConnection<'r, S> {
                 Err(error) => return Err(self.end(TcpError::Host(error))),
             }
         }
+        if self.pending.is_none() {
+            return Ok(self.step(None, None));
+        }
+        if let Err(error) = host.poll_connection_deadlines(OutboundState::Retained) {
+            return Err(self.end(TcpError::Host(error)));
+        }
         let Some(pending) = self.pending.as_mut() else {
             return Ok(self.step(None, None));
         };
@@ -435,6 +448,7 @@ impl<'r, S: SocketIo> WindowsTcpConnection<'r, S> {
             }
             Ok(written) if written < remaining => {
                 pending.offset += written;
+                host.record_output_progress();
                 Ok(self.step(None, None))
             }
             Ok(_) => match self.pending.take() {
@@ -450,13 +464,19 @@ impl<'r, S: SocketIo> WindowsTcpConnection<'r, S> {
         }
     }
 
-    /// The transport frame-deadline poll, also while a write is retained; expiry ends the
+    /// The transport connection-deadline poll (an incomplete frame's deadlines, otherwise the
+    /// P6-D-001 lifetime), also while a write is retained, which it reports; expiry ends the
     /// connection and discards the retained frame.
-    pub(crate) fn poll_frame_deadlines(&mut self) -> Result<TcpStep, TcpError> {
+    pub(crate) fn poll_connection_deadlines(&mut self) -> Result<TcpStep, TcpError> {
         let Some(host) = self.host.as_mut() else {
             return Err(TcpError::Closed);
         };
-        match host.poll_frame_deadlines() {
+        let outbound = if self.pending.is_some() {
+            OutboundState::Retained
+        } else {
+            OutboundState::Empty
+        };
+        match host.poll_connection_deadlines(outbound) {
             Ok(()) => Ok(self.step(None, None)),
             Err(error) => Err(self.end(TcpError::Host(error))),
         }
@@ -1548,10 +1568,10 @@ pub(crate) mod tests {
         io.read(ReadStep::Fail(Interrupted));
         assert_eq!(ra.on_readable(), Ok(TcpStep::default()));
         assert_eq!(ra.on_readable(), Ok(TcpStep::default()));
-        assert_eq!(ra.poll_frame_deadlines(), Ok(TcpStep::default()));
+        assert_eq!(ra.poll_connection_deadlines(), Ok(TcpStep::default()));
         tc.advance(NS);
         assert_eq!(
-            ra.poll_frame_deadlines(),
+            ra.poll_connection_deadlines(),
             Err(TcpError::Host(HostError::Transport(
                 TransportError::IdleTimeout
             )))
@@ -1767,7 +1787,7 @@ pub(crate) mod tests {
         assert_eq!(pending(&s.r), Some((rkey.clone(), 0, false)));
         assert_eq!(s.r.presentation(&run.r), Ok(Ok(Some(shown))));
         // Both deadline polls still run.
-        assert_eq!(s.r.poll_frame_deadlines(), Ok(BUSY));
+        assert_eq!(s.r.poll_connection_deadlines(), Ok(BUSY));
         assert_eq!(s.r.poll_ceremony_deadlines(), Ok(BUSY));
         // Once the frame is written, actions and input resume.
         s.rio.with(|script| script.reads.clear());
@@ -2438,10 +2458,10 @@ pub(crate) mod tests {
         tc.advance(IDLE_READ_DEADLINE - NS);
         // A blocked write is not input progress.
         assert_eq!(ra.on_writable(), Ok(BUSY));
-        assert_eq!(ra.poll_frame_deadlines(), Ok(BUSY));
+        assert_eq!(ra.poll_connection_deadlines(), Ok(BUSY));
         tc.advance(NS);
         assert_eq!(
-            ra.poll_frame_deadlines(),
+            ra.poll_connection_deadlines(),
             Err(TcpError::Host(HostError::Transport(
                 TransportError::IdleTimeout
             )))
@@ -2548,7 +2568,7 @@ pub(crate) mod tests {
         assert_eq!(a.close(), Err(TcpError::Closed));
         assert_eq!(a.on_readable(), Err(TcpError::Closed));
         assert_eq!(a.on_writable(), Err(TcpError::Closed));
-        assert_eq!(a.poll_frame_deadlines(), Err(TcpError::Closed));
+        assert_eq!(a.poll_connection_deadlines(), Err(TcpError::Closed));
         assert_eq!(a.poll_ceremony_deadlines(), Err(TcpError::Closed));
         assert_eq!(a.presentation(&run), Err(TcpError::Closed));
         assert_eq!(a.emit_initiator_finish(&run), Err(TcpError::Closed));
@@ -2769,4 +2789,7 @@ pub(crate) mod tests {
     /// P5.3 review-only entropy-panic unwind evidence (not part of the product); see
     /// `docs/p5-security-review/dependency-unsafe-deep-review.md`.
     mod p5_entropy_panic_review;
+
+    /// P6-D-001 connection-lifetime regressions (P5-F-002 remediation).
+    mod connection_lifetime;
 }
