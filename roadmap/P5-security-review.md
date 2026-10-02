@@ -2,7 +2,7 @@
 
 ## Status
 
-🔵 Next; not started. The P4 experimental native security core is complete and frozen for review.
+🔵 **IN PROGRESS.** The P4 experimental native security core is complete and frozen for review. Increment P5.1 established the review method and completed one broad adversarial pass of the frozen core; findings and coverage are recorded in the [P5 review package](../docs/p5-security-review/README.md). P5 is not complete, and production behavior is not remediated in P5 (that is P6). All P5 work stays on the single branch `feature/p5-security-review` and its one pull request. This is an internal, AI-assisted review, not a professional audit, formal verification, certification, or production-security approval.
 
 ## Goal
 
