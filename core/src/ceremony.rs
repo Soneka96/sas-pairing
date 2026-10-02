@@ -8685,4 +8685,8 @@ mod tests {
         drop(executor);
         authority.release().unwrap();
     }
+
+    /// P5.2 review-only generated sequence evidence (not part of the product); see
+    /// `docs/p5-security-review/adversarial-sequences.md`.
+    mod p5_sequence_review;
 }
