@@ -10,6 +10,8 @@ Review infrastructure only. Nothing here changes production behavior, and nothin
 
 > **P6 update (P6.4):** P5-F-005 was dispositioned under decision P6-D-004 ([record](../../p6-remediation/p5-f-005.md)); ABI panic containment is a mandatory P7 requirement. `p5_f005_001..005` stay PASSING EVIDENCE TESTS with their P5 assertions unchanged. P6.4 appended test-only assertions: after the caught Initiator panic (F005-003, F005-005), a same-process re-registration of the same authority fails closed with `OwnershipUncertain` and never yields fresh accounting; after the Responder panic (F005-001), re-registration continues the same START limiter. F-005 never had an EXPECTED-FAIL reproducer.
 
+> **P6 update (P6.5):** P5-F-007 was dispositioned under decision P6-D-005 ([record](../../p6-remediation/p5-f-007.md)): the owner kept the confirmation-time rule, so `p5_f007_final_ack_deadline_boundary_end_to_end` stays a PASSING EVIDENCE TEST, unchanged, and its crossing row stays "R result only". F-007 never had an EXPECTED-FAIL reproducer.
+
 Every entry is exactly one of three kinds:
 
 - **PASSING EVIDENCE TEST:** runs in CI and passes. It pins an OS fact, characterizes current behavior, or asserts only properties that must stay true after P6 too. It never asserts a known bug as desired behavior.

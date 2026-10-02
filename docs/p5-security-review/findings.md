@@ -28,11 +28,11 @@ For `FALSE-POSITIVE` entries, severity is the severity the candidate **would hav
 
 ### Status
 
-`OPEN` (confirmed defect, or confirmed mismatch with the current normative baseline; remediation recommended, even where the remedy's design or values still need an owner decision) · `NEEDS-DECISION` (confirmed behavior where whether the current normative baseline is violated depends on an unresolved owner interpretation; no finding currently has this status) · `FALSE-POSITIVE` (disproved) · `ACCEPTED-LIMITATION` (already accepted by an owner decision or the normative profile; re-confirmed here) · `OUT-OF-SCOPE` · `DUPLICATE` · `REMEDIATED-IN-P6` (not used in P5; set by P6 only after its closure bar is met, with the P5 entry otherwise preserved) · `DISPOSITIONED-IN-P6` (not used in P5; set by P6 when the core behavior was reviewed and accepted and an owner decision assigns a mandatory implementation obligation to a later owning phase, which has not yet been met).
+`OPEN` (confirmed defect, or confirmed mismatch with the current normative baseline; remediation recommended, even where the remedy's design or values still need an owner decision) · `NEEDS-DECISION` (confirmed behavior where whether the current normative baseline is violated depends on an unresolved owner interpretation; no finding currently has this status) · `FALSE-POSITIVE` (disproved) · `ACCEPTED-LIMITATION` (already accepted by an owner decision or the normative profile; re-confirmed here) · `OUT-OF-SCOPE` · `DUPLICATE` · `REMEDIATED-IN-P6` (not used in P5; set by P6 only after its closure bar is met, with the P5 entry otherwise preserved) · `DISPOSITIONED-IN-P6` (not used in P5; not a remediation claim; set by P6 when the reviewed behavior needs no P6 production fix and an owner decision either (A) accepts the current behavior and makes all required protocol and documentation semantics explicit, as for P5-F-007, or (B) accepts the current core behavior and assigns a mandatory implementation obligation to the later phase that owns the affected interface, as for P5-F-005).
 
 ## Summary
 
-**P6 status update (P6.4, 2026-10-02):** [P5-F-002](#p5-f-002) is **REMEDIATED-IN-P6** under owner decision P6-D-001 ([remediation record](../p6-remediation/p5-f-002.md)), [P5-F-001](#p5-f-001) is **REMEDIATED-IN-P6** under owner decision P6-D-003 ([remediation record](../p6-remediation/p5-f-001.md)), and [P5-F-003](#p5-f-003) is **REMEDIATED-IN-P6** under owner decision P6-D-002 ([remediation record](../p6-remediation/p5-f-003.md)). [P5-F-005](#p5-f-005) is **DISPOSITIONED-IN-P6 (P6.4) — mandatory P7 ABI containment requirement** under owner decision P6-D-004 ([disposition record](../p6-remediation/p5-f-005.md)). One finding stays OPEN: P5-F-007. Current remediation status lives in the [P6 remediation package](../p6-remediation/README.md); the summary table and closure note below are the P5 closure snapshot and are left as P5 recorded them.
+**P6 status update (P6.5, 2026-10-02):** [P5-F-002](#p5-f-002) is **REMEDIATED-IN-P6** under owner decision P6-D-001 ([remediation record](../p6-remediation/p5-f-002.md)), [P5-F-001](#p5-f-001) is **REMEDIATED-IN-P6** under owner decision P6-D-003 ([remediation record](../p6-remediation/p5-f-001.md)), and [P5-F-003](#p5-f-003) is **REMEDIATED-IN-P6** under owner decision P6-D-002 ([remediation record](../p6-remediation/p5-f-003.md)). [P5-F-005](#p5-f-005) is **DISPOSITIONED-IN-P6 (P6.4) — mandatory P7 ABI containment requirement** under owner decision P6-D-004 ([disposition record](../p6-remediation/p5-f-005.md)). [P5-F-007](#p5-f-007) is **DISPOSITIONED-IN-P6 (P6.5) — current conservative completion boundary retained and documented** under owner decision P6-D-005 ([disposition record](../p6-remediation/p5-f-007.md)). No finding that P5 handed to P6 as OPEN remains OPEN. Current remediation status lives in the [P6 remediation package](../p6-remediation/README.md); the summary table and closure note below are the P5 closure snapshot and are left as P5 recorded them.
 
 | Severity | Open | False Positive | Accepted Limitation | Out of Scope |
 |---|---|---|---|---|
@@ -62,7 +62,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 | [P5-F-004](#p5-f-004) | `token_user_sid` does not bound the OS-written SID to the returned buffer | INFO | HIGH | ACCEPTED-LIMITATION (P5.3) |
 | [P5-F-005](#p5-f-005) | `Sas::new()` entropy panic leaves Router and adapter state conservatively stuck and escapes owner-loop calls | INFO | HIGH | DISPOSITIONED-IN-P6 (P6.4; mandatory P7 ABI containment requirement; OPEN at P5 closure) |
 | [P5-F-006](#p5-f-006) | `base64`'s default `simd-unsafe` engine encodes every MAC and HKDF input | INFO (if real) | HIGH | FALSE-POSITIVE (P5.3) |
-| [P5-F-007](#p5-f-007) | Reverse asymmetric completion at the Initiator's deadline boundary | INFO | HIGH | OPEN |
+| [P5-F-007](#p5-f-007) | Reverse asymmetric completion at the Initiator's deadline boundary | INFO | HIGH | DISPOSITIONED-IN-P6 (P6.5; conservative completion boundary retained and documented; OPEN at P5 closure) |
 | [P5-F-008](#p5-f-008) | Same-profile attacker can race the lock-path checks (TOCTOU) | INFO | HIGH | ACCEPTED-LIMITATION |
 | [P5-F-009](#p5-f-009) | Fork, snapshot, restore, or duplicated state can repeat ephemeral material | INFO | HIGH | ACCEPTED-LIMITATION |
 | [P5-F-010](#p5-f-010) | Secret remanence beyond the x25519-dalek drop boundary | INFO | HIGH | ACCEPTED-LIMITATION |
@@ -259,7 +259,7 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 <a id="p5-f-007"></a>
 ### P5-F-007 — Reverse asymmetric completion at the Initiator's deadline boundary
 
-- **Status:** OPEN
+- **Status:** DISPOSITIONED-IN-P6 (P6.5) — current conservative completion boundary retained and documented; no production change required. OPEN at P5 closure; the P5 record below is unchanged and the P6 note is appended at the end of this entry.
 - **Severity:** INFO
 - **Confidence:** HIGH
 - **Affected requirement(s):** P3 §9 (result conditions; asymmetric observation); P3 §11.3 (expiry produces no success).
@@ -273,6 +273,13 @@ Not every OPEN finding needs a production change. The INFO findings may close as
 - **Recommended remediation:** State in P3 §9 and the consumer guidance that either side may hold the only result, and that R's connection may end on I's following timeout CANCEL. Optionally (owner decision), judge the confirmation against the instant the last byte was written rather than the confirmation instant. If chosen, the P5.2 test's crossing row would change to "both results".
 - **P6 disposition:** Documentation; optional decision. The P5.2 boundary test is a passing characterization; P6 updates its expected rows only if the owner changes the boundary rule.
 - **Evidence:** [protocol composition §7](protocol-composition.md#7-completion-and-pairingresult); [resources, deadlines, and transport §3](resources-deadlines-transport.md#3-deadlines); [adversarial sequences §6](adversarial-sequences.md#6-p5-f-007-evidence-f007-001002).
+- **P6 disposition (appended in P6.5; the P5 record above is unchanged):**
+  - **Decision:** [P6-D-005 — Local Completion and Final-ACK Deadline Boundary](../p6-remediation/decisions.md#p6-d-005--local-completion-and-final-ack-deadline-boundary), option A. The Initiator's success stays judged when its final-ACK send is confirmed while the ceremony is live, never backdated to the last-byte instant. Either side may be the only result holder; I-only (lost final ACK) and R-only (this finding) are both valid profile outcomes, and two successful results can never conflict. The timeout `CANCEL` that ends R's session after its result stays under the current P3 §11.2 routing; a returned result is never revoked. The optional last-byte rule suggested above was considered and not selected.
+  - **Implementation re-check:** the source at `3b8bf43` matches this record (preflight in `on_writable`, write, then `confirm_sent` → `confirm_initiator_finish_ack_sent` inside `step`, which checks deadlines first). No production change.
+  - **Documentation:** P3 §9 (both asymmetric directions; local result is not bilateral commit), §10 (`AwaitResponderFinish` success only after a live send confirmation; `AwaitInitiatorFinishAck` independent of I's result), and §11.3 (a complete write earns no deadline exemption) were clarified. Conformance rows `R-OWNER-007`, `R-MAC-012`, `R-RESOURCE-006`, and `R-RESOURCE-007` were amended in place (still 92 normative rows). The core README states the reverse direction.
+  - **Evidence:** `p5_f007_final_ack_deadline_boundary_end_to_end` passes unchanged; its crossing row stays R-only.
+  - **Not:** REMEDIATED-IN-P6 (no defect fixed), FALSE-POSITIVE (the asymmetry is real), or ACCEPTED-LIMITATION (it is now an explicitly selected protocol semantic). It does not block the protocol freeze.
+  - **P6 record:** [p5-f-007.md](../p6-remediation/p5-f-007.md).
 
 <a id="p5-f-008"></a>
 ### P5-F-008 — Same-profile attacker can race the lock-path checks (TOCTOU)
