@@ -9,8 +9,8 @@ Stable owner decisions taken during P7. IDs `P7-D-NNN` are never reused. A decis
 | [P7-D-003 — Authority handles, ownership, and lifecycle](#p7-d-003--authority-handles-ownership-and-lifecycle) | Decided P7.2; implemented in P7.2 |
 | [P7-D-004 — Stable core error mapping](#p7-d-004--stable-core-error-mapping) | Decided P7.2; implemented in P7.2 |
 | [P7-D-005 — Hosting context ownership and Router lifetime](#p7-d-005--hosting-context-ownership-and-router-lifetime) | Decided P7.3; implemented in P7.3 |
-| [P7-D-006 — Windows listener ownership and Responder configuration](#p7-d-006--windows-listener-ownership-and-responder-configuration) | Decided P7.4 |
-| [P7-D-007 — Owner-loop / Router lifetime bridge](#p7-d-007--owner-loop--router-lifetime-bridge) | Decided P7.4 |
+| [P7-D-006 — Windows listener ownership and Responder configuration](#p7-d-006--windows-listener-ownership-and-responder-configuration) | Decided P7.4; implemented in P7.4 |
+| [P7-D-007 — Owner-loop / Router lifetime bridge](#p7-d-007--owner-loop--router-lifetime-bridge) | Decided P7.4; implemented in P7.4 |
 
 ## P7-D-001 — Native Runtime, Handle, and Fatal Containment Unit
 
@@ -121,7 +121,7 @@ Not to be confused with P6-D-004 (native panic containment).
   16. **No drive, connection, run, result, or outbound-byte API.** P7.4 adds no drive, poll, or recheck export, no connection or run handle, no event array, and no result access, so it cannot produce, and therefore cannot lose, a `PairingResult`. It adds no outbound buffer or send API: the TCP adapter owns and writes its outbound frame, and P7.5 keeps that architecture unless a real blocker is found. No handle is derived from a socket value, request ID, Router session, or address.
 - **Why:** an in/out slot makes ownership observable on every status, so no wrapper can double-close a socket or leak one. Validating everything that can fail before adoption, and making adoption itself infallible, leaves exactly one owner at every instant, including under a caught panic. Reusing the reviewed constructor and `Bootstrap::new` keeps one implementation of setup and validation.
 - **Unchanged:** `windows_owner_loop.rs`, `windows_tcp.rs`, `host.rs`, `transport.rs`, `router.rs`, `protocol.rs`, the ceremony, cryptography, deadlines, and process-session accounting; ABI version `1` and every earlier value and signature. P7-D-002 still applies: listeners and owner loops are module state of the one resident image.
-- **Status:** decided by the owner for P7.4, 2026-10-03; normative in the [ABI contract](abi-contract.md#17-windows-listener-ownership).
+- **Status:** decided by the owner for P7.4, 2026-10-03; normative in the [ABI contract](abi-contract.md#17-windows-listener-ownership); implemented in `core/src/abi/listener.rs`, `core/src/abi/hosting.rs`, and `core/src/abi/mod.rs`.
 
 ## P7-D-007 — Owner-Loop / Router Lifetime Bridge
 
@@ -137,4 +137,4 @@ Not to be confused with P6-D-004 (native panic containment).
   7. **Scope.** The bridge is within the one-image loader invariant (P7-D-002): no self-pinning, no duplicate-image handling, no reload recovery.
 - **Why:** the transport stack is reviewed and frozen with plain borrows; one audited extension contained in the type that owns both sides keeps it so, with no leak and no dependency. Boxing host contexts keeps the borrowed router box from ever being moved or passed by value, which avoids depending on unsettled details of Rust's aliasing model for moved boxes.
 - **Unchanged:** every core networking file, the router's semantics, ABI version `1`. The aliasing argument is reasoned, not machine-checked: Miri cannot run this WinSock path.
-- **Status:** decided by the owner for P7.4, 2026-10-03; normative in the [ABI contract](abi-contract.md#177-owner-loop-lifetime-bridge).
+- **Status:** decided by the owner for P7.4, 2026-10-03; normative in the [ABI contract](abi-contract.md#177-owner-loop-lifetime-bridge); implemented in `core/src/abi/hosting.rs` and `core/src/abi/runtime.rs`.

@@ -17,7 +17,7 @@ P5 ✅ Implementation + Protocol Security Review (complete; internal, AI-assiste
  ↓
 P6 ✅ Review Remediation + Protocol Freeze (complete: P5-F-002, P5-F-001, P5-F-003 remediated; P5-F-005, P5-F-007 dispositioned; experimental protocol candidate frozen for P7; not production-security approved)
  ↓
-P7 🔵 Native ABI (in progress: P7.1 ABI foundation + runtime/panic containment complete, accepted after the P7.1.1 loader-lifetime correction; P7.2 authority lifecycle + core error mapping complete; P7.3 hosting context foundation + Router lifetime complete; P7.4 Windows listener + owner loop + bounded drive/event ABI next)
+P7 🔵 Native ABI (in progress: P7.1 ABI foundation + runtime/panic containment complete, accepted after the P7.1.1 loader-lifetime correction; P7.2 authority lifecycle + core error mapping complete; P7.3 hosting context foundation + Router lifetime complete; P7.4 Windows listener ownership + owner-loop lifetime bridge complete; P7.5 bounded network drive + connection/run/event/result ABI next)
  ↓
 P8 🟡 Dart Package
  ↓

@@ -42,23 +42,6 @@ jobs:
             done < <(grep -aE 'FAILED|panicked at' abi-failure.txt | head -n 8)
           fi
           exit "$status"
-      # TEMPORARY diagnostic: repeat the native ABI tests to capture an intermittent failure.
-      - name: Native ABI test repetition (diagnostic)
-        shell: bash
-        run: |
-          set +e
-          for i in 1 2 3 4 5 6; do
-            cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests \
-              > rep.log 2>&1
-            status=$?
-            echo "repetition $i: $status" | tee -a "$GITHUB_STEP_SUMMARY"
-            if [ "$status" -ne 0 ]; then
-              { echo '```'; grep -aE 'FAILED|panicked at|left:|right:|^child |exit code|error|assert' rep.log \
-                | head -n 60 | tr -d '\r'; echo '--- tail ---'; tail -n 40 rep.log | tr -d '\r'; echo '```'; } \
-                >> "$GITHUB_STEP_SUMMARY"
-            fi
-          done
-          exit 0
       - run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
       - name: Check native ABI artifact
         shell: bash
