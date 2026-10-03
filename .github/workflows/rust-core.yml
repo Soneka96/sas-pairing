@@ -116,6 +116,17 @@ jobs:
             abi::tests::network::driving_fails_closed_on_unsupported_platforms \
             -- --exact | tee unsupported-drive.log
           grep -F 'test result: ok. 1 passed' unsupported-drive.log
+      # P7.6: every trusted local ceremony action and the SAS presentation fail closed with
+      # SAS_PAIRING_UNSUPPORTED_PLATFORM after their structural checks, with zeroed outputs and
+      # no handle issued; no ceremony or presentation is faked.
+      - name: Native ABI ceremony control fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib \
+            abi::tests::control::local_actions_fail_closed_on_unsupported_platforms \
+            -- --exact | tee unsupported-control.log
+          grep -F 'test result: ok. 1 passed' unsupported-control.log
       - run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
       - name: Native ABI refuses panic = "abort"
         shell: bash

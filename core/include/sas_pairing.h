@@ -3,12 +3,14 @@
  *
  * Experimental, pre-alpha, not production-security approved. Exposes the version query, the
  * runtime lifecycle, the authority lifecycle (P7.2), hosting contexts (P7.3), Windows listener
- * ownership for a host (P7.4), and the bounded network drive with its connection, run, event, and
- * result representation (P7.5). No local ceremony action (Initiator START, authorization, key
- * exposure, SAS presentation or decision, own MAC or finish) is exposed yet.
+ * ownership for a host (P7.4), the bounded network drive with its connection, run, event, and
+ * result representation (P7.5), and the trusted local ceremony actions with SAS presentation
+ * (P7.6): local Initiator start, exposure authorization, key exposure, presentation, MATCH, own
+ * BOOTSTRAP_MAC, REJECT, CANCEL, and INITIATOR_FINISH. No protocol byte ever crosses this
+ * boundary: the library writes every frame itself.
  *
  * Contract: docs/p7-native-abi/abi-contract.md. Decisions: docs/p7-native-abi/decisions.md
- * (P7-D-001 to P7-D-010). Kept in sync with core/src/abi by the abi::tests::header consistency
+ * (P7-D-001 to P7-D-012). Kept in sync with core/src/abi by the abi::tests::header consistency
  * test.
  *
  * LIBRARY LIFETIME (P7-D-002): supported use loads exactly one image of this library per OS
@@ -69,6 +71,35 @@ typedef int32_t sas_pairing_status_t;
 #define SAS_PAIRING_TERMINATED 202
 /* The supplied Bootstrap configuration failed the core's own Bootstrap validation. */
 #define SAS_PAIRING_INVALID_BOOTSTRAP 203
+/* Trusted local actions (P7-D-011, P7-D-012). RUN_ENDED: the run handle named an exact run that
+ * is no longer live; the handle is invalid from then on. WRITE_PENDING: the action did not run
+ * because the connection still holds one outbound frame; drive the host, then retry. */
+#define SAS_PAIRING_RUN_ENDED 204
+#define SAS_PAIRING_WRITE_PENDING 205
+/* Run-local ceremony refusals of a trusted local action, one per core ceremony error. Local
+ * operation outcomes only: never by themselves evidence of an attack, a malicious peer, a
+ * compromise, or an identity failure. */
+#define SAS_PAIRING_CEREMONY_INVALID_STATE 206
+#define SAS_PAIRING_NO_LIVE_SAS 207
+#define SAS_PAIRING_CEREMONY_IDENTITY_MISMATCH 208
+#define SAS_PAIRING_NOT_LOCALLY_APPROVED 209
+#define SAS_PAIRING_UNEXPECTED_SENDER_ROLE 210
+#define SAS_PAIRING_INVALID_REQUEST_ID 211
+#define SAS_PAIRING_REQUEST_ID_GENERATION_FAILED 212
+#define SAS_PAIRING_REQUEST_ID_MISMATCH 213
+#define SAS_PAIRING_SHARED_CONTEXT_MISMATCH 214
+#define SAS_PAIRING_EXPECTED_PEER_MISMATCH 215
+#define SAS_PAIRING_APPROVALS_NOT_AUTHENTICATED 216
+#define SAS_PAIRING_NOT_INITIATOR 217
+#define SAS_PAIRING_TRANSCRIPT_MISMATCH 218
+#define SAS_PAIRING_COMPLETED 219
+#define SAS_PAIRING_NO_PENDING_FINAL_ACK 220
+#define SAS_PAIRING_FINAL_ACK_MISMATCH 221
+#define SAS_PAIRING_CEREMONY_TIMED_OUT 222
+#define SAS_PAIRING_CEREMONY_CLOCK_UNAVAILABLE 223
+#define SAS_PAIRING_PENDING_EXPIRED 224
+#define SAS_PAIRING_CEREMONY_CODEC_ERROR 225
+#define SAS_PAIRING_CEREMONY_CRYPTO_ERROR 226
 /* 300-399: buffers and data results. A caller buffer is too small: nothing was copied or
  * driven, and the required size was reported. */
 #define SAS_PAIRING_BUFFER_TOO_SMALL 300
@@ -78,8 +109,12 @@ typedef int32_t sas_pairing_status_t;
 #define SAS_PAIRING_LISTENER_NOT_ATTACHED 402
 #define SAS_PAIRING_OWNER_LOOP_CLOSED 403
 #define SAS_PAIRING_NETWORK_POLL_FAILED 404
+/* A trusted local action's connection ended during the call: the connection handle and every run
+ * handle of it are invalid. Lifecycle only, never a security verdict. */
+#define SAS_PAIRING_CONNECTION_ENDED 405
 /* A Rust panic was contained. The native ABI state of this process is permanently fatal:
- * every later create and normal operation (including drive and recheck) returns this without
+ * every later create and normal operation (including drive, recheck, and every trusted local
+ * ceremony action and presentation) returns this without
  * entering the core; runtime destroy, authority release, host destroy, listener detach, and
  * connection close still work as cleanup, and existing results stay readable and destroyable;
  * only a new OS process recovers (a library reload is not recovery). */
@@ -246,7 +281,9 @@ typedef uint32_t sas_pairing_cancel_reason_t;
 
 /* Event flag bits. WRITE_PENDING: the connection's adapter still holds one outbound frame (it
  * writes it itself on a later drive). RUN_UNTRACKED: the event names a live run that got no run
- * handle because its connection already holds SAS_PAIRING_MAX_RUNS_PER_CONNECTION. */
+ * handle because its connection already holds SAS_PAIRING_MAX_RUNS_PER_CONNECTION; no trusted
+ * local action can target that run, so wrappers SHOULD close the connection
+ * (sas_pairing_connection_close). The library does not close it itself. */
 typedef uint32_t sas_pairing_event_flags_t;
 
 #define SAS_PAIRING_EVENT_FLAG_WRITE_PENDING ((sas_pairing_event_flags_t)0x1)
@@ -302,6 +339,59 @@ typedef struct sas_pairing_result_info {
     uint32_t shared_context_len;
     uint32_t profile_identifier_len;
 } sas_pairing_result_info_t;
+
+/* What one trusted local action did (P7-D-011). */
+typedef uint32_t sas_pairing_local_event_t;
+
+#define SAS_PAIRING_LOCAL_EVENT_INVALID ((sas_pairing_local_event_t)0)
+#define SAS_PAIRING_LOCAL_EVENT_INITIATOR_STARTED ((sas_pairing_local_event_t)1)
+#define SAS_PAIRING_LOCAL_EVENT_EXPOSURE_AUTHORIZED ((sas_pairing_local_event_t)2)
+#define SAS_PAIRING_LOCAL_EVENT_KEY_EXPOSED ((sas_pairing_local_event_t)3)
+#define SAS_PAIRING_LOCAL_EVENT_SAS_APPROVED ((sas_pairing_local_event_t)4)
+#define SAS_PAIRING_LOCAL_EVENT_SAS_ALREADY_APPROVED ((sas_pairing_local_event_t)5)
+#define SAS_PAIRING_LOCAL_EVENT_BOOTSTRAP_MAC_EMITTED ((sas_pairing_local_event_t)6)
+#define SAS_PAIRING_LOCAL_EVENT_BOOTSTRAP_MAC_ALREADY_EMITTED ((sas_pairing_local_event_t)7)
+#define SAS_PAIRING_LOCAL_EVENT_INITIATOR_FINISH_EMITTED ((sas_pairing_local_event_t)8)
+#define SAS_PAIRING_LOCAL_EVENT_INITIATOR_FINISH_ALREADY_EMITTED ((sas_pairing_local_event_t)9)
+#define SAS_PAIRING_LOCAL_EVENT_SAS_REJECTED ((sas_pairing_local_event_t)10)
+#define SAS_PAIRING_LOCAL_EVENT_SAS_CANCELLED ((sas_pairing_local_event_t)11)
+#define SAS_PAIRING_LOCAL_EVENT_DEADLINE ((sas_pairing_local_event_t)12)
+
+/* Action flag bits. WRITE_PENDING: the connection now holds one outbound frame (this action's,
+ * or a timeout CANCEL); the library writes it on a later drive. */
+typedef uint32_t sas_pairing_action_flags_t;
+
+#define SAS_PAIRING_ACTION_FLAG_WRITE_PENDING ((sas_pairing_action_flags_t)0x1)
+
+/* The outcome of one trusted local action: 24 bytes, aligned to 8, no padding, integers only (it
+ * owns nothing and carries no protocol byte). Zeroed on entry; filled only on SAS_PAIRING_OK.
+ * deadline_kind: set only for SAS_PAIRING_LOCAL_EVENT_DEADLINE (the run's own deadline ended it
+ * first and the requested action did not happen). run: the run handle still live afterwards (the
+ * handle the call named, or a new one for a started Initiator), 0 once the run is terminal (its
+ * handle is then invalid). reserved is always 0. */
+typedef struct sas_pairing_action {
+    sas_pairing_local_event_t event;
+    sas_pairing_deadline_kind_t deadline_kind;
+    sas_pairing_action_flags_t flags;
+    uint32_t reserved;
+    sas_pairing_run_t run;
+} sas_pairing_action_t;
+
+/* The core's decimal SAS display: exactly "NNNN NNNN NNNN" in ASCII, no terminator. */
+#define SAS_PAIRING_SAS_DECIMAL_LEN ((size_t)14)
+
+/* One live SAS for local comparison: 56 bytes, aligned to 4, no padding. Display data only: it
+ * authorizes, approves, and proves nothing. available is 1 when a live SAS was presented, else 0
+ * with every other byte 0. ceremony_identity: the exact 32-byte identity a MATCH, REJECT, or
+ * CANCEL decision must name. decimal: the comparison value; the raw SAS bytes are never exposed.
+ * reserved and reserved_tail are always 0. */
+typedef struct sas_pairing_sas_presentation {
+    uint32_t available;
+    uint32_t reserved;
+    uint8_t ceremony_identity[32];
+    uint8_t decimal[SAS_PAIRING_SAS_DECIMAL_LEN];
+    uint8_t reserved_tail[2];
+} sas_pairing_sas_presentation_t;
 
 /* Returns SAS_PAIRING_ABI_VERSION. Returns 0 only if the query itself failed. */
 uint32_t sas_pairing_abi_version(void);
@@ -445,6 +535,81 @@ sas_pairing_status_t sas_pairing_result_copy(sas_pairing_runtime_t runtime, sas_
 /* Destroys a result; its handle is invalid forever afterwards. Allowed in the fatal state (no core
  * work). Returns SAS_PAIRING_OK, SAS_PAIRING_INVALID_HANDLE, or SAS_PAIRING_FATAL. */
 sas_pairing_status_t sas_pairing_result_destroy(sas_pairing_runtime_t runtime, sas_pairing_result_t result);
+
+/* TRUSTED LOCAL CEREMONY ACTIONS (P7-D-011, P7-D-012). Each call makes exactly one local step of
+ * the reviewed core and never chains another: authorization does not expose a key, MATCH does not
+ * emit BOOTSTRAP_MAC, and BOOTSTRAP_MAC does not emit INITIATOR_FINISH. A run is named by its
+ * connection and an exact run handle of THAT connection, never by request ID. Any frame an action
+ * produces is kept and written by the library on a later drive; no protocol byte is returned. The
+ * final ACK is confirmed by the library after its complete local write; there is no confirmation
+ * call.
+ *
+ * Every mutating action: out_action must be non-null and aligned, and no input may overlap it
+ * (SAS_PAIRING_INVALID_ARGUMENT, nothing written); then *out_action is zeroed and filled only on
+ * SAS_PAIRING_OK. Refusals: SAS_PAIRING_UNSUPPORTED_PLATFORM (not Windows), SAS_PAIRING_FATAL
+ * (nothing entered), SAS_PAIRING_INVALID_HANDLE (a runtime, host, connection, or run handle that
+ * does not name a live object of exactly that parent), SAS_PAIRING_LISTENER_NOT_ATTACHED,
+ * SAS_PAIRING_WRITE_PENDING (one outbound frame is still retained: nothing ran; drive, then retry),
+ * SAS_PAIRING_RUN_ENDED (the exact run is no longer live; its handle is now invalid), a core error
+ * (100-107, 200-202) or ceremony refusal (206-226) of the run, SAS_PAIRING_CONNECTION_ENDED (the
+ * connection ended during the call: it and its run handles are invalid),
+ * SAS_PAIRING_OWNERSHIP_UNCERTAIN or SAS_PAIRING_OWNER_LOOP_CLOSED (the host's owner loop failed
+ * closed: every connection and run handle of the host is invalid). A ceremony refusal may have
+ * ended the run in the core; a later call then reports SAS_PAIRING_RUN_ENDED. */
+
+/* Starts an honest local Initiator on the connection from the explicit trusted local
+ * configuration local (required; not the host's Responder Bootstrap) and the exact expected peer
+ * Bootstrap expected (or NULL for none); both are copied. The core generates the request ID. On
+ * SAS_PAIRING_OK: SAS_PAIRING_LOCAL_EVENT_INITIATOR_STARTED, a new run handle, and
+ * SAS_PAIRING_ACTION_FLAG_WRITE_PENDING (START is kept for writing). Also
+ * SAS_PAIRING_INVALID_BOOTSTRAP, SAS_PAIRING_RESOURCE_LIMITED (the connection already holds
+ * SAS_PAIRING_MAX_RUNS_PER_CONNECTION run handles: nothing starts), or
+ * SAS_PAIRING_HANDLES_EXHAUSTED (nothing starts). A local Initiator always gets a run handle. */
+sas_pairing_status_t sas_pairing_connection_start_initiator(sas_pairing_runtime_t runtime, sas_pairing_host_t host, sas_pairing_connection_t connection, const sas_pairing_bootstrap_view_t *local, const sas_pairing_bootstrap_view_t *expected, sas_pairing_action_t *out_action);
+
+/* Records fresh, ceremony-specific exposure authorization for the run from the host's own
+ * authority. Exposes, reserves, spends, and sends nothing:
+ * SAS_PAIRING_LOCAL_EVENT_EXPOSURE_AUTHORIZED. */
+sas_pairing_status_t sas_pairing_run_authorize_exposure(sas_pairing_runtime_t runtime, sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, sas_pairing_action_t *out_action);
+
+/* THE SECURITY-SPENDING STEP: the core consumes the run's fresh authorization and atomically
+ * reserves the authority's guard and one opportunity, then produces this role's key, kept for
+ * writing: SAS_PAIRING_LOCAL_EVENT_KEY_EXPOSED with WRITE_PENDING. Without a fresh authorization:
+ * SAS_PAIRING_MISSING_AUTHORIZATION; also SAS_PAIRING_BUSY or SAS_PAIRING_EXHAUSTED. Nothing ever
+ * refunds a spent opportunity. */
+sas_pairing_status_t sas_pairing_run_expose_key(sas_pairing_runtime_t runtime, sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, sas_pairing_action_t *out_action);
+
+/* Reads the run's live SAS: out_presentation must be non-null and aligned (else
+ * SAS_PAIRING_INVALID_ARGUMENT, nothing written); it is zeroed on entry. Read-only: changes no
+ * state, refreshes no deadline, sends nothing, and also works while a write is pending. OK with
+ * available = 0 when the live run presents no SAS (not established yet, already decided, or
+ * expiring); SAS_PAIRING_RUN_ENDED for a run that is no longer live. The user's decision must
+ * name exactly the presented ceremony_identity. */
+sas_pairing_status_t sas_pairing_run_presentation(sas_pairing_runtime_t runtime, sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, sas_pairing_sas_presentation_t *out_presentation);
+
+/* Local MATCH for exactly the 32 bytes at ceremony_identity (required; copied): SAS_APPROVED or
+ * SAS_ALREADY_APPROVED; nothing is sent, and BOOTSTRAP_MAC is not emitted. Another identity:
+ * SAS_PAIRING_CEREMONY_IDENTITY_MISMATCH, and nothing changes. */
+sas_pairing_status_t sas_pairing_run_approve_sas(sas_pairing_runtime_t runtime, sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, const uint8_t *ceremony_identity, sas_pairing_action_t *out_action);
+
+/* Produces this run's own BOOTSTRAP_MAC once, after MATCH: BOOTSTRAP_MAC_EMITTED with
+ * WRITE_PENDING; a repeat is BOOTSTRAP_MAC_ALREADY_EMITTED with nothing new. INITIATOR_FINISH is
+ * not emitted. */
+sas_pairing_status_t sas_pairing_run_emit_bootstrap_mac(sas_pairing_runtime_t runtime, sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, sas_pairing_action_t *out_action);
+
+/* Local MISMATCH for exactly the 32 bytes at ceremony_identity: SAS_REJECTED, run 0 (the run is
+ * terminal, its handle invalid, no result, its opportunity kept); WRITE_PENDING when a
+ * best-effort authenticated CANCEL (reason 0x01) is kept for writing. */
+sas_pairing_status_t sas_pairing_run_reject_sas(sas_pairing_runtime_t runtime, sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, const uint8_t *ceremony_identity, sas_pairing_action_t *out_action);
+
+/* Local CANCEL: as sas_pairing_run_reject_sas, with SAS_CANCELLED and CANCEL reason 0x02. */
+sas_pairing_status_t sas_pairing_run_cancel_sas(sas_pairing_runtime_t runtime, sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, const uint8_t *ceremony_identity, sas_pairing_action_t *out_action);
+
+/* Produces the Initiator's INITIATOR_FINISH once, after both approvals are authenticated:
+ * INITIATOR_FINISH_EMITTED with WRITE_PENDING; a repeat is INITIATOR_FINISH_ALREADY_EMITTED. A
+ * Responder run gives SAS_PAIRING_NOT_INITIATOR. The Initiator's result appears in a later drive
+ * (SAS_PAIRING_STEP_CONFIRMED), only after the library wrote the whole final ACK. */
+sas_pairing_status_t sas_pairing_run_emit_initiator_finish(sas_pairing_runtime_t runtime, sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, sas_pairing_action_t *out_action);
 
 #ifdef __cplusplus
 }

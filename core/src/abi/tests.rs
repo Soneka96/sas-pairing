@@ -1,6 +1,7 @@
 //! Native ABI tests (P7.1 foundation; the P7.2 authority lifecycle is in `authority`, the P7.3
 //! hosting contexts in `host`, the P7.4 listener ownership and owner-loop lifetime in
-//! `listener`, the P7.5 network drive, connection, run, event, and result ABI in `network`).
+//! `listener`, the P7.5 network drive, connection, run, event, and result ABI in `network`, the
+//! P7.6 trusted local ceremony actions and SAS presentation in `control`).
 //!
 //! Logic tests use test-local `AbiState`/`FatalState` instances. Tests of the real exports and
 //! the process-global state run in isolated child processes (this test binary re-run with one
@@ -27,6 +28,7 @@ use super::{
         AuthorityHandle, CORE_ENTRIES, SAS_PAIRING_AUTHORITY_BUSY, SAS_PAIRING_AUTHORITY_EXHAUSTED,
         SAS_PAIRING_AUTHORITY_READY, SAS_PAIRING_AUTHORITY_STATE_INVALID,
     },
+    control::{self as control_abi, Action, Presentation},
     dispatch,
     hosting::{HostHandle, ROUTER_CONSTRUCTIONS},
     listener::{SAS_PAIRING_SOCKET_INVALID, SocketHandle},
@@ -36,15 +38,21 @@ use super::{
     runtime::{AbiState, HandleCounter},
     sas_pairing_abi_version, sas_pairing_authority_register, sas_pairing_authority_release,
     sas_pairing_authority_status, sas_pairing_connection_close,
-    sas_pairing_host_attach_windows_listener, sas_pairing_host_create, sas_pairing_host_destroy,
-    sas_pairing_host_detach_listener, sas_pairing_host_drive,
-    sas_pairing_host_recheck_after_resume, sas_pairing_result_copy, sas_pairing_result_destroy,
-    sas_pairing_result_info, sas_pairing_runtime_create, sas_pairing_runtime_destroy,
+    sas_pairing_connection_start_initiator, sas_pairing_host_attach_windows_listener,
+    sas_pairing_host_create, sas_pairing_host_destroy, sas_pairing_host_detach_listener,
+    sas_pairing_host_drive, sas_pairing_host_recheck_after_resume, sas_pairing_result_copy,
+    sas_pairing_result_destroy, sas_pairing_result_info, sas_pairing_run_approve_sas,
+    sas_pairing_run_authorize_exposure, sas_pairing_run_cancel_sas,
+    sas_pairing_run_emit_bootstrap_mac, sas_pairing_run_emit_initiator_finish,
+    sas_pairing_run_expose_key, sas_pairing_run_presentation, sas_pairing_run_reject_sas,
+    sas_pairing_runtime_create, sas_pairing_runtime_destroy,
     status::*,
 };
 
 /// P7.2 authority lifecycle, error mapping, concurrency, and real-core panic tests.
 mod authority;
+/// P7.6 trusted local ceremony actions, SAS presentation, local-action statuses, races.
+mod control;
 /// P7.3 hosting contexts: host lifecycle, cascades, accounting neutrality, races.
 mod host;
 /// P7.4 Windows listener ownership, socket adoption, owner-loop lifetime bridge, races.
@@ -54,9 +62,10 @@ mod network;
 
 const HEADER: &str = include_str!("../../include/sas_pairing.h");
 const MANIFEST: &str = include_str!("../../Cargo.toml");
-const ABI_SOURCES: [(&str, &str); 9] = [
+const ABI_SOURCES: [(&str, &str); 10] = [
     ("mod.rs", include_str!("mod.rs")),
     ("authority.rs", include_str!("authority.rs")),
+    ("control.rs", include_str!("control.rs")),
     ("hosting.rs", include_str!("hosting.rs")),
     ("listener.rs", include_str!("listener.rs")),
     ("network.rs", include_str!("network.rs")),
@@ -65,7 +74,7 @@ const ABI_SOURCES: [(&str, &str); 9] = [
     ("runtime.rs", include_str!("runtime.rs")),
     ("status.rs", include_str!("status.rs")),
 ];
-const STATUSES: [(&str, i32); 24] = [
+const STATUSES: [(&str, i32); 48] = [
     ("SAS_PAIRING_OK", SAS_PAIRING_OK),
     ("SAS_PAIRING_INVALID_ARGUMENT", SAS_PAIRING_INVALID_ARGUMENT),
     ("SAS_PAIRING_INVALID_HANDLE", SAS_PAIRING_INVALID_HANDLE),
@@ -110,6 +119,80 @@ const STATUSES: [(&str, i32); 24] = [
         "SAS_PAIRING_INVALID_BOOTSTRAP",
         SAS_PAIRING_INVALID_BOOTSTRAP,
     ),
+    ("SAS_PAIRING_RUN_ENDED", SAS_PAIRING_RUN_ENDED),
+    ("SAS_PAIRING_WRITE_PENDING", SAS_PAIRING_WRITE_PENDING),
+    (
+        "SAS_PAIRING_CEREMONY_INVALID_STATE",
+        SAS_PAIRING_CEREMONY_INVALID_STATE,
+    ),
+    ("SAS_PAIRING_NO_LIVE_SAS", SAS_PAIRING_NO_LIVE_SAS),
+    (
+        "SAS_PAIRING_CEREMONY_IDENTITY_MISMATCH",
+        SAS_PAIRING_CEREMONY_IDENTITY_MISMATCH,
+    ),
+    (
+        "SAS_PAIRING_NOT_LOCALLY_APPROVED",
+        SAS_PAIRING_NOT_LOCALLY_APPROVED,
+    ),
+    (
+        "SAS_PAIRING_UNEXPECTED_SENDER_ROLE",
+        SAS_PAIRING_UNEXPECTED_SENDER_ROLE,
+    ),
+    (
+        "SAS_PAIRING_INVALID_REQUEST_ID",
+        SAS_PAIRING_INVALID_REQUEST_ID,
+    ),
+    (
+        "SAS_PAIRING_REQUEST_ID_GENERATION_FAILED",
+        SAS_PAIRING_REQUEST_ID_GENERATION_FAILED,
+    ),
+    (
+        "SAS_PAIRING_REQUEST_ID_MISMATCH",
+        SAS_PAIRING_REQUEST_ID_MISMATCH,
+    ),
+    (
+        "SAS_PAIRING_SHARED_CONTEXT_MISMATCH",
+        SAS_PAIRING_SHARED_CONTEXT_MISMATCH,
+    ),
+    (
+        "SAS_PAIRING_EXPECTED_PEER_MISMATCH",
+        SAS_PAIRING_EXPECTED_PEER_MISMATCH,
+    ),
+    (
+        "SAS_PAIRING_APPROVALS_NOT_AUTHENTICATED",
+        SAS_PAIRING_APPROVALS_NOT_AUTHENTICATED,
+    ),
+    ("SAS_PAIRING_NOT_INITIATOR", SAS_PAIRING_NOT_INITIATOR),
+    (
+        "SAS_PAIRING_TRANSCRIPT_MISMATCH",
+        SAS_PAIRING_TRANSCRIPT_MISMATCH,
+    ),
+    ("SAS_PAIRING_COMPLETED", SAS_PAIRING_COMPLETED),
+    (
+        "SAS_PAIRING_NO_PENDING_FINAL_ACK",
+        SAS_PAIRING_NO_PENDING_FINAL_ACK,
+    ),
+    (
+        "SAS_PAIRING_FINAL_ACK_MISMATCH",
+        SAS_PAIRING_FINAL_ACK_MISMATCH,
+    ),
+    (
+        "SAS_PAIRING_CEREMONY_TIMED_OUT",
+        SAS_PAIRING_CEREMONY_TIMED_OUT,
+    ),
+    (
+        "SAS_PAIRING_CEREMONY_CLOCK_UNAVAILABLE",
+        SAS_PAIRING_CEREMONY_CLOCK_UNAVAILABLE,
+    ),
+    ("SAS_PAIRING_PENDING_EXPIRED", SAS_PAIRING_PENDING_EXPIRED),
+    (
+        "SAS_PAIRING_CEREMONY_CODEC_ERROR",
+        SAS_PAIRING_CEREMONY_CODEC_ERROR,
+    ),
+    (
+        "SAS_PAIRING_CEREMONY_CRYPTO_ERROR",
+        SAS_PAIRING_CEREMONY_CRYPTO_ERROR,
+    ),
     ("SAS_PAIRING_BUFFER_TOO_SMALL", SAS_PAIRING_BUFFER_TOO_SMALL),
     (
         "SAS_PAIRING_LISTENER_ALREADY_ATTACHED",
@@ -131,6 +214,7 @@ const STATUSES: [(&str, i32); 24] = [
         "SAS_PAIRING_NETWORK_POLL_FAILED",
         SAS_PAIRING_NETWORK_POLL_FAILED,
     ),
+    ("SAS_PAIRING_CONNECTION_ENDED", SAS_PAIRING_CONNECTION_ENDED),
     ("SAS_PAIRING_FATAL", SAS_PAIRING_FATAL),
 ];
 const AUTHORITY_STATES: [(&str, u32); 4] = [
@@ -146,8 +230,10 @@ const AUTHORITY_STATES: [(&str, u32); 4] = [
     ),
 ];
 
-/// Every typed P7.5 event and result constant: `(header name, C typedef, Rust value)`.
+/// Every typed event, result, and local-action constant (P7.5, P7.6): `(header name, C typedef,
+/// Rust value)`.
 fn typed_constants() -> Vec<(&'static str, &'static str, u32)> {
+    use control_abi::*;
     use drive_abi::*;
     use result_abi::*;
     let kinds = [
@@ -395,6 +481,64 @@ fn typed_constants() -> Vec<(&'static str, &'static str, u32)> {
             SAS_PAIRING_RESULT_FIELD_PROFILE_IDENTIFIER,
         ),
     ];
+    let local_events = [
+        (
+            "SAS_PAIRING_LOCAL_EVENT_INVALID",
+            SAS_PAIRING_LOCAL_EVENT_INVALID,
+        ),
+        (
+            "SAS_PAIRING_LOCAL_EVENT_INITIATOR_STARTED",
+            SAS_PAIRING_LOCAL_EVENT_INITIATOR_STARTED,
+        ),
+        (
+            "SAS_PAIRING_LOCAL_EVENT_EXPOSURE_AUTHORIZED",
+            SAS_PAIRING_LOCAL_EVENT_EXPOSURE_AUTHORIZED,
+        ),
+        (
+            "SAS_PAIRING_LOCAL_EVENT_KEY_EXPOSED",
+            SAS_PAIRING_LOCAL_EVENT_KEY_EXPOSED,
+        ),
+        (
+            "SAS_PAIRING_LOCAL_EVENT_SAS_APPROVED",
+            SAS_PAIRING_LOCAL_EVENT_SAS_APPROVED,
+        ),
+        (
+            "SAS_PAIRING_LOCAL_EVENT_SAS_ALREADY_APPROVED",
+            SAS_PAIRING_LOCAL_EVENT_SAS_ALREADY_APPROVED,
+        ),
+        (
+            "SAS_PAIRING_LOCAL_EVENT_BOOTSTRAP_MAC_EMITTED",
+            SAS_PAIRING_LOCAL_EVENT_BOOTSTRAP_MAC_EMITTED,
+        ),
+        (
+            "SAS_PAIRING_LOCAL_EVENT_BOOTSTRAP_MAC_ALREADY_EMITTED",
+            SAS_PAIRING_LOCAL_EVENT_BOOTSTRAP_MAC_ALREADY_EMITTED,
+        ),
+        (
+            "SAS_PAIRING_LOCAL_EVENT_INITIATOR_FINISH_EMITTED",
+            SAS_PAIRING_LOCAL_EVENT_INITIATOR_FINISH_EMITTED,
+        ),
+        (
+            "SAS_PAIRING_LOCAL_EVENT_INITIATOR_FINISH_ALREADY_EMITTED",
+            SAS_PAIRING_LOCAL_EVENT_INITIATOR_FINISH_ALREADY_EMITTED,
+        ),
+        (
+            "SAS_PAIRING_LOCAL_EVENT_SAS_REJECTED",
+            SAS_PAIRING_LOCAL_EVENT_SAS_REJECTED,
+        ),
+        (
+            "SAS_PAIRING_LOCAL_EVENT_SAS_CANCELLED",
+            SAS_PAIRING_LOCAL_EVENT_SAS_CANCELLED,
+        ),
+        (
+            "SAS_PAIRING_LOCAL_EVENT_DEADLINE",
+            SAS_PAIRING_LOCAL_EVENT_DEADLINE,
+        ),
+    ];
+    let action_flags = [(
+        "SAS_PAIRING_ACTION_FLAG_WRITE_PENDING",
+        SAS_PAIRING_ACTION_FLAG_WRITE_PENDING,
+    )];
     let mut all = Vec::new();
     for (typedef, table) in [
         ("sas_pairing_event_kind_t", &kinds[..]),
@@ -407,11 +551,15 @@ fn typed_constants() -> Vec<(&'static str, &'static str, u32)> {
         ("sas_pairing_event_flags_t", &flags[..]),
         ("sas_pairing_role_t", &roles[..]),
         ("sas_pairing_result_field_t", &fields[..]),
+        ("sas_pairing_local_event_t", &local_events[..]),
+        ("sas_pairing_action_flags_t", &action_flags[..]),
     ] {
         // Each enumeration is dense from its first value and has no duplicate.
         let values: Vec<u32> = table.iter().map(|(_, value)| *value).collect();
         if typedef == "sas_pairing_event_flags_t" {
             assert_eq!(values, [0x1, 0x2]);
+        } else if typedef == "sas_pairing_action_flags_t" {
+            assert_eq!(values, [0x1], "no untracked-run flag for local actions");
         } else {
             let first = values[0];
             assert!(first <= 1, "{typedef}");
@@ -468,12 +616,36 @@ fn abi_constants_are_frozen() {
             ("SAS_PAIRING_STALE_AUTHORIZATION", 201),
             ("SAS_PAIRING_TERMINATED", 202),
             ("SAS_PAIRING_INVALID_BOOTSTRAP", 203),
+            ("SAS_PAIRING_RUN_ENDED", 204),
+            ("SAS_PAIRING_WRITE_PENDING", 205),
+            ("SAS_PAIRING_CEREMONY_INVALID_STATE", 206),
+            ("SAS_PAIRING_NO_LIVE_SAS", 207),
+            ("SAS_PAIRING_CEREMONY_IDENTITY_MISMATCH", 208),
+            ("SAS_PAIRING_NOT_LOCALLY_APPROVED", 209),
+            ("SAS_PAIRING_UNEXPECTED_SENDER_ROLE", 210),
+            ("SAS_PAIRING_INVALID_REQUEST_ID", 211),
+            ("SAS_PAIRING_REQUEST_ID_GENERATION_FAILED", 212),
+            ("SAS_PAIRING_REQUEST_ID_MISMATCH", 213),
+            ("SAS_PAIRING_SHARED_CONTEXT_MISMATCH", 214),
+            ("SAS_PAIRING_EXPECTED_PEER_MISMATCH", 215),
+            ("SAS_PAIRING_APPROVALS_NOT_AUTHENTICATED", 216),
+            ("SAS_PAIRING_NOT_INITIATOR", 217),
+            ("SAS_PAIRING_TRANSCRIPT_MISMATCH", 218),
+            ("SAS_PAIRING_COMPLETED", 219),
+            ("SAS_PAIRING_NO_PENDING_FINAL_ACK", 220),
+            ("SAS_PAIRING_FINAL_ACK_MISMATCH", 221),
+            ("SAS_PAIRING_CEREMONY_TIMED_OUT", 222),
+            ("SAS_PAIRING_CEREMONY_CLOCK_UNAVAILABLE", 223),
+            ("SAS_PAIRING_PENDING_EXPIRED", 224),
+            ("SAS_PAIRING_CEREMONY_CODEC_ERROR", 225),
+            ("SAS_PAIRING_CEREMONY_CRYPTO_ERROR", 226),
             ("SAS_PAIRING_BUFFER_TOO_SMALL", 300),
             ("SAS_PAIRING_LISTENER_ALREADY_ATTACHED", 400),
             ("SAS_PAIRING_LISTENER_SETUP_FAILED", 401),
             ("SAS_PAIRING_LISTENER_NOT_ATTACHED", 402),
             ("SAS_PAIRING_OWNER_LOOP_CLOSED", 403),
             ("SAS_PAIRING_NETWORK_POLL_FAILED", 404),
+            ("SAS_PAIRING_CONNECTION_ENDED", 405),
             ("SAS_PAIRING_FATAL", 900),
         ]
     );
@@ -587,6 +759,70 @@ fn event_and_result_info_layouts_are_pinned() {
     assert!(event.iter().chain(info).all(|byte| *byte == 0));
 }
 
+/// The local-action and SAS-presentation records (P7-D-011, P7-D-012): fixed sizes, alignment,
+/// and offsets, no padding, all-zero zero records, and the 14-byte decimal display.
+#[test]
+fn action_and_presentation_layouts_are_pinned() {
+    assert_eq!(size_of::<Action>(), 24);
+    assert_eq!(align_of::<Action>(), 8);
+    let action_fields = [
+        (offset_of!(Action, event), 4),
+        (offset_of!(Action, deadline_kind), 4),
+        (offset_of!(Action, flags), 4),
+        (offset_of!(Action, reserved), 4),
+        (offset_of!(Action, run), 8),
+    ];
+    let mut next = 0;
+    for (offset, size) in action_fields {
+        assert_eq!(offset, next, "fields are contiguous in declaration order");
+        next += size;
+    }
+    assert_eq!(next, size_of::<Action>(), "no trailing padding");
+
+    assert_eq!(control_abi::SAS_DECIMAL_LEN, 14);
+    assert_eq!(control_abi::CEREMONY_IDENTITY_LEN, 32);
+    assert_eq!(size_of::<Presentation>(), 56);
+    assert_eq!(align_of::<Presentation>(), 4);
+    let presentation_fields = [
+        (offset_of!(Presentation, available), 4),
+        (offset_of!(Presentation, reserved), 4),
+        (offset_of!(Presentation, ceremony_identity), 32),
+        (offset_of!(Presentation, decimal), 14),
+        (offset_of!(Presentation, reserved_tail), 2),
+    ];
+    let mut next = 0;
+    for (offset, size) in presentation_fields {
+        assert_eq!(offset, next);
+        next += size;
+    }
+    assert_eq!(next, size_of::<Presentation>());
+
+    // SAFETY: both are padding-free `repr(C)` records of integers and byte arrays, so every
+    // byte is an initialized field byte.
+    let (action, presentation) = unsafe {
+        (
+            std::slice::from_raw_parts(ptr::from_ref(&Action::ZERO).cast::<u8>(), 24),
+            std::slice::from_raw_parts(ptr::from_ref(&Presentation::ZERO).cast::<u8>(), 56),
+        )
+    };
+    assert!(action.iter().chain(presentation).all(|byte| *byte == 0));
+
+    // The display shape the core builds (`{first:04} {second:04} {third:04}`, each 1000-9191).
+    let shape = |text: &str| control_abi::is_decimal_display(text.as_bytes().try_into().unwrap());
+    for valid in ["1000 1000 1000", "9191 9191 9191", "4442 5768 1708"] {
+        assert!(shape(valid), "{valid}");
+    }
+    for invalid in [
+        "4442-5768-1708",
+        "4442 5768 170x",
+        " 4442 5768 170",
+        "44425 768 1708",
+    ] {
+        assert!(!shape(invalid), "{invalid}");
+    }
+    assert_eq!(format!("{:04} {:04} {:04}", 1000, 9191, 4442).len(), 14);
+}
+
 /// The ABI production sources keep exactly the one P7-D-007 router lifetime extension, transmute
 /// and leak nothing, start no thread, and expose no outbound-byte or send path.
 #[test]
@@ -652,6 +888,29 @@ fn export_signatures_are_pinned() {
     let _: unsafe extern "C" fn(u64, u64, u32, *mut u8, usize, *mut usize) -> i32 =
         sas_pairing_result_copy;
     let _: extern "C" fn(u64, u64) -> i32 = sas_pairing_result_destroy;
+    let _: unsafe extern "C" fn(
+        u64,
+        u64,
+        u64,
+        *const BootstrapView,
+        *const BootstrapView,
+        *mut Action,
+    ) -> i32 = sas_pairing_connection_start_initiator;
+    type RunAction = unsafe extern "C" fn(u64, u64, u64, u64, *mut Action) -> i32;
+    type RunDecision = unsafe extern "C" fn(u64, u64, u64, u64, *const u8, *mut Action) -> i32;
+    let _: [RunAction; 4] = [
+        sas_pairing_run_authorize_exposure,
+        sas_pairing_run_expose_key,
+        sas_pairing_run_emit_bootstrap_mac,
+        sas_pairing_run_emit_initiator_finish,
+    ];
+    let _: [RunDecision; 3] = [
+        sas_pairing_run_approve_sas,
+        sas_pairing_run_reject_sas,
+        sas_pairing_run_cancel_sas,
+    ];
+    let _: unsafe extern "C" fn(u64, u64, u64, u64, *mut Presentation) -> i32 =
+        sas_pairing_run_presentation;
 }
 
 /// The checked-in header and the Rust ABI agree on the version, status values, type widths,
@@ -716,6 +975,7 @@ fn header_matches_the_rust_abi() {
             "SAS_PAIRING_MAX_RUNS_PER_CONNECTION",
             drive_abi::MAX_RUNS_PER_CONNECTION,
         ),
+        ("SAS_PAIRING_SAS_DECIMAL_LEN", control_abi::SAS_DECIMAL_LEN),
     ] {
         assert_eq!(
             defines.get(name),
@@ -724,7 +984,7 @@ fn header_matches_the_rust_abi() {
         );
     }
     for (name, typedef, value) in typed_constants() {
-        let rendered = if typedef == "sas_pairing_event_flags_t" {
+        let rendered = if typedef.ends_with("_flags_t") {
             format!("(({typedef})0x{value:x})")
         } else {
             format!("(({typedef}){value})")
@@ -746,6 +1006,8 @@ fn header_matches_the_rust_abi() {
                 "((sas_pairing_event_flags_t)",
                 "((sas_pairing_role_t)",
                 "((sas_pairing_result_field_t)",
+                "((sas_pairing_local_event_t)",
+                "((sas_pairing_action_flags_t)",
             ]
             .iter()
             .any(|prefix| value.starts_with(prefix))
@@ -754,7 +1016,7 @@ fn header_matches_the_rust_abi() {
         .collect();
     assert_eq!(
         header_typed, typed_names,
-        "every typed event/result constant"
+        "every typed event, result, and local-action constant"
     );
     let header_statuses: BTreeMap<&str, i32> = defines
         .iter()
@@ -792,8 +1054,29 @@ fn header_matches_the_rust_abi() {
             "typedef uint32_t sas_pairing_role_t;",
             "typedef uint32_t sas_pairing_result_field_t;",
             "typedef struct sas_pairing_result_info {",
+            "typedef uint32_t sas_pairing_local_event_t;",
+            "typedef uint32_t sas_pairing_action_flags_t;",
+            "typedef struct sas_pairing_action {",
+            "typedef struct sas_pairing_sas_presentation {",
         ])
     );
+    // The local-action and presentation records, field for field (layout test above).
+    assert!(HEADER.contains(
+        "typedef struct sas_pairing_action {\n    \
+         sas_pairing_local_event_t event;\n    \
+         sas_pairing_deadline_kind_t deadline_kind;\n    \
+         sas_pairing_action_flags_t flags;\n    \
+         uint32_t reserved;\n    \
+         sas_pairing_run_t run;\n} sas_pairing_action_t;"
+    ));
+    assert!(HEADER.contains(
+        "typedef struct sas_pairing_sas_presentation {\n    \
+         uint32_t available;\n    \
+         uint32_t reserved;\n    \
+         uint8_t ceremony_identity[32];\n    \
+         uint8_t decimal[SAS_PAIRING_SAS_DECIMAL_LEN];\n    \
+         uint8_t reserved_tail[2];\n} sas_pairing_sas_presentation_t;"
+    ));
     // The event and result-info records, field for field, in the order `Event` and
     // `ResultInfo` pin (layout test below).
     assert!(HEADER.contains(
@@ -880,6 +1163,35 @@ fn header_matches_the_rust_abi() {
              size_t capacity, size_t *out_required);",
             "sas_pairing_status_t sas_pairing_result_destroy(sas_pairing_runtime_t runtime, \
              sas_pairing_result_t result);",
+            "sas_pairing_status_t sas_pairing_connection_start_initiator(\
+             sas_pairing_runtime_t runtime, sas_pairing_host_t host, \
+             sas_pairing_connection_t connection, const sas_pairing_bootstrap_view_t *local, \
+             const sas_pairing_bootstrap_view_t *expected, sas_pairing_action_t *out_action);",
+            "sas_pairing_status_t sas_pairing_run_authorize_exposure(sas_pairing_runtime_t runtime, \
+             sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, \
+             sas_pairing_action_t *out_action);",
+            "sas_pairing_status_t sas_pairing_run_expose_key(sas_pairing_runtime_t runtime, \
+             sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, \
+             sas_pairing_action_t *out_action);",
+            "sas_pairing_status_t sas_pairing_run_presentation(sas_pairing_runtime_t runtime, \
+             sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, \
+             sas_pairing_sas_presentation_t *out_presentation);",
+            "sas_pairing_status_t sas_pairing_run_approve_sas(sas_pairing_runtime_t runtime, \
+             sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, \
+             const uint8_t *ceremony_identity, sas_pairing_action_t *out_action);",
+            "sas_pairing_status_t sas_pairing_run_emit_bootstrap_mac(sas_pairing_runtime_t runtime, \
+             sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, \
+             sas_pairing_action_t *out_action);",
+            "sas_pairing_status_t sas_pairing_run_reject_sas(sas_pairing_runtime_t runtime, \
+             sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, \
+             const uint8_t *ceremony_identity, sas_pairing_action_t *out_action);",
+            "sas_pairing_status_t sas_pairing_run_cancel_sas(sas_pairing_runtime_t runtime, \
+             sas_pairing_host_t host, sas_pairing_connection_t connection, sas_pairing_run_t run, \
+             const uint8_t *ceremony_identity, sas_pairing_action_t *out_action);",
+            "sas_pairing_status_t sas_pairing_run_emit_initiator_finish(\
+             sas_pairing_runtime_t runtime, sas_pairing_host_t host, \
+             sas_pairing_connection_t connection, sas_pairing_run_t run, \
+             sas_pairing_action_t *out_action);",
         ])
     );
     let declared: BTreeSet<&str> = declarations
@@ -928,6 +1240,7 @@ fn every_export_runs_inside_the_central_panic_boundary() {
             "sas_pairing_authority_release",
             "sas_pairing_authority_status",
             "sas_pairing_connection_close",
+            "sas_pairing_connection_start_initiator",
             "sas_pairing_host_attach_windows_listener",
             "sas_pairing_host_create",
             "sas_pairing_host_destroy",
@@ -937,6 +1250,14 @@ fn every_export_runs_inside_the_central_panic_boundary() {
             "sas_pairing_result_copy",
             "sas_pairing_result_destroy",
             "sas_pairing_result_info",
+            "sas_pairing_run_approve_sas",
+            "sas_pairing_run_authorize_exposure",
+            "sas_pairing_run_cancel_sas",
+            "sas_pairing_run_emit_bootstrap_mac",
+            "sas_pairing_run_emit_initiator_finish",
+            "sas_pairing_run_expose_key",
+            "sas_pairing_run_presentation",
+            "sas_pairing_run_reject_sas",
             "sas_pairing_runtime_create",
             "sas_pairing_runtime_destroy",
         ]

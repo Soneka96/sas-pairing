@@ -14,7 +14,12 @@
 //! value check) before the fatal state, and adopts the caller's socket only after every other
 //! check passed. The drive exports check the platform and their event capacity before the fatal
 //! state, and every remaining refusal (handles, listener, handle space) before the owner loop
-//! runs. Result access is ABI-owned data access and is admitted in the fatal state.
+//! runs. Result access is ABI-owned data access and is admitted in the fatal state. The trusted
+//! local ceremony actions (P7-D-011, P7-D-012) validate every pointer and its overlap with the
+//! output record before any write, zero the record, copy their inputs, then check the platform,
+//! the fatal state, and the handles (and, for a local start, its Bootstrap configuration before
+//! the fatal state, its run cap, and one handle of space), and only then make exactly one
+//! reviewed owner-loop call.
 
 // A caught panic is the containment model, so the supported artifact must unwind (P6-D-004
 // item 12). Profile settings can be overridden, so the build itself refuses `panic = "abort"`.
@@ -25,6 +30,7 @@ compile_error!(
 );
 
 mod authority;
+mod control;
 mod hosting;
 mod listener;
 mod network;
@@ -40,9 +46,15 @@ use std::{marker::PhantomData, ptr, slice};
 #[cfg(windows)]
 use crate::protocol::{Bootstrap, MAX_BOOTSTRAP_FRAME};
 use authority::{AuthorityHandle, SAS_PAIRING_AUTHORITY_STATE_INVALID};
+use control::{
+    Action, Decision, Presentation, Request, RunTarget, act_through, decide_through,
+    present_through, start_through,
+};
 use hosting::HostHandle;
 use listener::{ListenerSlot, SAS_PAIRING_SOCKET_INVALID, SocketHandle};
-use network::{ConnectionHandle, DriveMode, Event, drive_through, element_range, overlaps};
+use network::{
+    ConnectionHandle, DriveMode, Event, RunHandle, drive_through, element_range, overlaps,
+};
 use result::{ResultField, ResultHandle, ResultInfo};
 use runtime::AbiState;
 use status::{
@@ -693,5 +705,299 @@ pub unsafe extern "C" fn sas_pairing_result_copy(
 pub extern "C" fn sas_pairing_result_destroy(runtime: RuntimeHandle, result: ResultHandle) -> i32 {
     dispatch(SAS_PAIRING_FATAL, |state| {
         state.destroy_result(runtime, result)
+    })
+}
+
+/// Starts an honest local Initiator on `connection` of `host` (P7-D-011) from the explicit
+/// trusted local configuration `local` (required) and the exact expected peer Bootstrap
+/// `expected` (or none, when null). The core generates and reserves the 16-byte request ID and
+/// routes the run; its START becomes the adapter's retained frame, written on a later drive.
+///
+/// `out_action` must be non-null and aligned and no input may overlap it; otherwise
+/// `INVALID_ARGUMENT`, nothing written. Otherwise it is zeroed on entry and filled only on `OK`:
+/// `INITIATOR_STARTED`, a new run handle, `WRITE_PENDING`. Refused before the core with
+/// `INVALID_BOOTSTRAP`, `FATAL`, `INVALID_HANDLE`, `LISTENER_NOT_ATTACHED`, `RESOURCE_LIMITED`
+/// (the connection already holds `SAS_PAIRING_MAX_RUNS_PER_CONNECTION` run handles), or
+/// `HANDLES_EXHAUSTED`; `WRITE_PENDING` before the host while a frame is retained.
+///
+/// # Safety
+///
+/// A non-null, aligned `out_action` must address one caller-owned writable
+/// `sas_pairing_action_t`; non-null, aligned `local` and `expected` one readable
+/// `sas_pairing_bootstrap_view_t` each, every non-empty byte view `len` readable bytes; none
+/// mutated or accessed concurrently for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_connection_start_initiator(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+    connection: ConnectionHandle,
+    local: *const BootstrapView,
+    expected: *const BootstrapView,
+    out_action: *mut Action,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        // SAFETY: forwarded unchanged under this export's own contract, which is
+        // `start_through`'s.
+        unsafe {
+            start_through(
+                state, runtime, host, connection, local, expected, out_action,
+            )
+        }
+    })
+}
+
+/// Records fresh exposure authorization for exactly `run` of `connection` of `host` from the
+/// host's own parent authority (P7-D-011). Nothing is exposed, reserved, spent, or sent:
+/// `EXPOSURE_AUTHORIZED`, the same run handle, no flag.
+///
+/// # Safety
+///
+/// A non-null, aligned `out_action` must address one caller-owned writable
+/// `sas_pairing_action_t`, not accessed concurrently for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_run_authorize_exposure(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+    connection: ConnectionHandle,
+    run: RunHandle,
+    out_action: *mut Action,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        let target = RunTarget {
+            runtime,
+            host,
+            connection,
+            run,
+        };
+        // SAFETY: forwarded unchanged under this export's own contract, which is
+        // `act_through`'s.
+        unsafe { act_through(state, target, out_action, Request::AuthorizeExposure) }
+    })
+}
+
+/// Crosses the exposure boundary of exactly `run` (P7-D-011): the core consumes its fresh
+/// authorization and atomically reserves the guard and one opportunity, then produces this
+/// role's key, which becomes the adapter's retained frame: `KEY_EXPOSED`, `WRITE_PENDING`.
+///
+/// # Safety
+///
+/// As for `sas_pairing_run_authorize_exposure`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_run_expose_key(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+    connection: ConnectionHandle,
+    run: RunHandle,
+    out_action: *mut Action,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        let target = RunTarget {
+            runtime,
+            host,
+            connection,
+            run,
+        };
+        // SAFETY: forwarded unchanged under this export's own contract, which is
+        // `act_through`'s.
+        unsafe { act_through(state, target, out_action, Request::ExposeKey) }
+    })
+}
+
+/// Reads the live SAS of exactly `run` for local comparison (P7-D-012): its 32-byte ceremony
+/// identity and its 14-byte decimal display, never the raw SAS. Read-only: it changes no state,
+/// refreshes no deadline, sends nothing, and also works while a write is pending. A live run
+/// without a presented SAS gives `OK` with `available = 0`; a stale run gives `RUN_ENDED`.
+///
+/// # Safety
+///
+/// A non-null, aligned `out_presentation` must address one caller-owned writable
+/// `sas_pairing_sas_presentation_t`, not accessed concurrently for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_run_presentation(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+    connection: ConnectionHandle,
+    run: RunHandle,
+    out_presentation: *mut Presentation,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        let target = RunTarget {
+            runtime,
+            host,
+            connection,
+            run,
+        };
+        // SAFETY: forwarded unchanged under this export's own contract, which is
+        // `present_through`'s.
+        unsafe { present_through(state, target, out_presentation) }
+    })
+}
+
+/// Local MATCH for exactly the 32-byte `ceremony_identity` on `run` (P7-D-012): `SAS_APPROVED`
+/// or `SAS_ALREADY_APPROVED`, nothing sent. It never emits BOOTSTRAP_MAC.
+///
+/// # Safety
+///
+/// A non-null, aligned `out_action` must address one caller-owned writable
+/// `sas_pairing_action_t`, and a non-null `ceremony_identity` 32 readable bytes, not mutated or
+/// accessed concurrently for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_run_approve_sas(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+    connection: ConnectionHandle,
+    run: RunHandle,
+    ceremony_identity: *const u8,
+    out_action: *mut Action,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        let target = RunTarget {
+            runtime,
+            host,
+            connection,
+            run,
+        };
+        // SAFETY: forwarded unchanged under this export's own contract, which is
+        // `decide_through`'s.
+        unsafe {
+            decide_through(
+                state,
+                target,
+                ceremony_identity,
+                out_action,
+                Decision::Approve,
+            )
+        }
+    })
+}
+
+/// Produces this run's own BOOTSTRAP_MAC once, after its local MATCH (P7-D-011): it becomes
+/// the adapter's retained frame (`BOOTSTRAP_MAC_EMITTED`, `WRITE_PENDING`); a repeat is
+/// `BOOTSTRAP_MAC_ALREADY_EMITTED` with no new frame. It never emits INITIATOR_FINISH.
+///
+/// # Safety
+///
+/// As for `sas_pairing_run_authorize_exposure`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_run_emit_bootstrap_mac(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+    connection: ConnectionHandle,
+    run: RunHandle,
+    out_action: *mut Action,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        let target = RunTarget {
+            runtime,
+            host,
+            connection,
+            run,
+        };
+        // SAFETY: forwarded unchanged under this export's own contract, which is
+        // `act_through`'s.
+        unsafe { act_through(state, target, out_action, Request::EmitBootstrapMac) }
+    })
+}
+
+/// Local MISMATCH for exactly the 32-byte `ceremony_identity` on `run` (P7-D-012): the run is
+/// terminal with no result and its opportunity kept (`SAS_REJECTED`, run `0`, the handle
+/// invalid afterwards); a best-effort authenticated CANCEL `0x01` may be the retained frame
+/// (`WRITE_PENDING`).
+///
+/// # Safety
+///
+/// As for `sas_pairing_run_approve_sas`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_run_reject_sas(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+    connection: ConnectionHandle,
+    run: RunHandle,
+    ceremony_identity: *const u8,
+    out_action: *mut Action,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        let target = RunTarget {
+            runtime,
+            host,
+            connection,
+            run,
+        };
+        // SAFETY: forwarded unchanged under this export's own contract, which is
+        // `decide_through`'s.
+        unsafe {
+            decide_through(
+                state,
+                target,
+                ceremony_identity,
+                out_action,
+                Decision::Reject,
+            )
+        }
+    })
+}
+
+/// Local CANCEL for exactly the 32-byte `ceremony_identity` on `run` (P7-D-012): as reject, with
+/// `SAS_CANCELLED` and CANCEL reason `0x02`.
+///
+/// # Safety
+///
+/// As for `sas_pairing_run_approve_sas`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_run_cancel_sas(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+    connection: ConnectionHandle,
+    run: RunHandle,
+    ceremony_identity: *const u8,
+    out_action: *mut Action,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        let target = RunTarget {
+            runtime,
+            host,
+            connection,
+            run,
+        };
+        // SAFETY: forwarded unchanged under this export's own contract, which is
+        // `decide_through`'s.
+        unsafe {
+            decide_through(
+                state,
+                target,
+                ceremony_identity,
+                out_action,
+                Decision::Cancel,
+            )
+        }
+    })
+}
+
+/// Produces the Initiator's INITIATOR_FINISH once, after both approvals are authenticated
+/// (P7-D-011): it becomes the adapter's retained frame (`INITIATOR_FINISH_EMITTED`,
+/// `WRITE_PENDING`); a repeat is `INITIATOR_FINISH_ALREADY_EMITTED`; a Responder run gives
+/// `NOT_INITIATOR`. No result: the adapter confirms the final ACK itself after writing it.
+///
+/// # Safety
+///
+/// As for `sas_pairing_run_authorize_exposure`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_run_emit_initiator_finish(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+    connection: ConnectionHandle,
+    run: RunHandle,
+    out_action: *mut Action,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        let target = RunTarget {
+            runtime,
+            host,
+            connection,
+            run,
+        };
+        // SAFETY: forwarded unchanged under this export's own contract, which is
+        // `act_through`'s.
+        unsafe { act_through(state, target, out_action, Request::EmitInitiatorFinish) }
     })
 }

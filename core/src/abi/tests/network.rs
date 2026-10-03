@@ -1228,14 +1228,14 @@ fn every_event_issues_at_most_one_handle() {
 
 /// Test plumbing only: a loopback listener on an OS-assigned port, bound by the test.
 #[cfg(windows)]
-fn loopback() -> (TcpListener, SocketAddr) {
+pub(super) fn loopback() -> (TcpListener, SocketAddr) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     (listener, address)
 }
 
 #[cfg(windows)]
-fn bytes(value: &[u8]) -> BytesView {
+pub(super) fn bytes(value: &[u8]) -> BytesView {
     BytesView {
         data: value.as_ptr(),
         len: value.len(),
@@ -1244,7 +1244,7 @@ fn bytes(value: &[u8]) -> BytesView {
 
 /// A view over `bootstrap`'s own fields (borrowed for as long as `bootstrap` lives).
 #[cfg(windows)]
-fn view_of(bootstrap: &Bootstrap) -> BootstrapView {
+pub(super) fn view_of(bootstrap: &Bootstrap) -> BootstrapView {
     BootstrapView {
         application_identity: bytes(bootstrap.application_identity()),
         key_algorithm: bytes(bootstrap.key_algorithm()),
@@ -1255,7 +1255,7 @@ fn view_of(bootstrap: &Bootstrap) -> BootstrapView {
 
 /// `outcome` of an owner-loop local action that must apply.
 #[cfg(windows)]
-fn applied(outcome: Result<Result<Acted, Refused>, OwnerLoopError>) -> Acted {
+pub(super) fn applied(outcome: Result<Result<Acted, Refused>, OwnerLoopError>) -> Acted {
     outcome.expect("hosting context").expect("action applied")
 }
 
@@ -1263,20 +1263,20 @@ fn applied(outcome: Result<Result<Acted, Refused>, OwnerLoopError>) -> Acted {
 /// driven through the real exports and the process state (`exports`), or through a test-local
 /// state's own methods.
 #[cfg(windows)]
-struct Harness<'s> {
-    state: &'s AbiState,
-    exports: bool,
-    runtime: u64,
-    authority: u64,
-    host: u64,
-    address: SocketAddr,
+pub(super) struct Harness<'s> {
+    pub(super) state: &'s AbiState,
+    pub(super) exports: bool,
+    pub(super) runtime: u64,
+    pub(super) authority: u64,
+    pub(super) host: u64,
+    pub(super) address: SocketAddr,
 }
 
 #[cfg(windows)]
 impl<'s> Harness<'s> {
     /// A new runtime (local) or the given one (exports), an authority for `scope`, a host, and
     /// an attached listener.
-    fn new(state: &'s AbiState, exports: bool, runtime: u64, scope: &[u8]) -> Self {
+    pub(super) fn new(state: &'s AbiState, exports: bool, runtime: u64, scope: &[u8]) -> Self {
         let authority = if exports {
             let (status, authority) = register(runtime, scope);
             assert_eq!(status, SAS_PAIRING_OK);
@@ -1297,12 +1297,12 @@ impl<'s> Harness<'s> {
         harness
     }
 
-    fn local(state: &'s AbiState, scope: &[u8]) -> Self {
+    pub(super) fn local(state: &'s AbiState, scope: &[u8]) -> Self {
         let runtime = state.create().unwrap().get();
         Self::new(state, false, runtime, scope)
     }
 
-    fn new_host(&self) -> u64 {
+    pub(super) fn new_host(&self) -> u64 {
         if self.exports {
             let (status, host) = host_create(self.runtime, self.authority);
             assert_eq!(status, SAS_PAIRING_OK);
@@ -1316,7 +1316,7 @@ impl<'s> Harness<'s> {
     }
 
     /// Binds a new loopback listener (the caller's job) and attaches it to the host.
-    fn attach(&self) -> SocketAddr {
+    pub(super) fn attach(&self) -> SocketAddr {
         let (listener, address) = loopback();
         let mut slot = listener.into_raw_socket() as usize;
         let socket = slot;
@@ -1347,7 +1347,7 @@ impl<'s> Harness<'s> {
         address
     }
 
-    fn detach(&self) -> i32 {
+    pub(super) fn detach(&self) -> i32 {
         if self.exports {
             sas_pairing_host_detach_listener(self.runtime, self.host)
         } else {
@@ -1356,7 +1356,7 @@ impl<'s> Harness<'s> {
     }
 
     /// One raw drive or recheck: `(status, written records, *out_count, *out_failure)`.
-    fn call(&self, mode: DriveMode, capacity: usize) -> (i32, Vec<Event>, usize, i32) {
+    pub(super) fn call(&self, mode: DriveMode, capacity: usize) -> (i32, Vec<Event>, usize, i32) {
         if self.exports {
             let export = match mode {
                 DriveMode::Drive => DRIVE_EXPORTS[0],
@@ -1415,7 +1415,7 @@ impl<'s> Harness<'s> {
     }
 
     /// One successful drive or recheck without an owner failure; every event is canonical.
-    fn events(&self, mode: DriveMode) -> Vec<Event> {
+    pub(super) fn events(&self, mode: DriveMode) -> Vec<Event> {
         let (status, events, _, failure) = self.call(mode, MAX_DRIVE_EVENTS);
         assert_eq!((status, failure), (SAS_PAIRING_OK, SAS_PAIRING_OK));
         events.iter().for_each(assert_canonical);
@@ -1423,7 +1423,7 @@ impl<'s> Harness<'s> {
     }
 
     /// Drives until one event appears; exactly one must.
-    fn next_event(&self) -> Event {
+    pub(super) fn next_event(&self) -> Event {
         let give_up = Instant::now() + Duration::from_secs(10);
         loop {
             let events = self.events(DriveMode::Drive);
@@ -1435,7 +1435,7 @@ impl<'s> Harness<'s> {
         }
     }
 
-    fn close(&self, connection: u64) -> i32 {
+    pub(super) fn close(&self, connection: u64) -> i32 {
         if self.exports {
             sas_pairing_connection_close(self.runtime, self.host, connection)
         } else {
@@ -1445,7 +1445,10 @@ impl<'s> Harness<'s> {
     }
 
     /// Reads the host context in place (test-side, under the runtime slot like an export).
-    fn with_host<T>(&self, op: impl FnOnce(&mut super::super::hosting::HostContext) -> T) -> T {
+    pub(super) fn with_host<T>(
+        &self,
+        op: impl FnOnce(&mut super::super::hosting::HostContext) -> T,
+    ) -> T {
         self.state
             .with_runtime(self.runtime, Admission::Cleanup, |live| {
                 let host = live
@@ -1457,22 +1460,22 @@ impl<'s> Harness<'s> {
             .unwrap()
     }
 
-    fn connection_ref(&self, handle: u64) -> ConnectionRef {
+    pub(super) fn connection_ref(&self, handle: u64) -> ConnectionRef {
         self.with_host(|host| host.bindings().connection_for_test(handle))
             .expect("a live connection handle")
     }
 
-    fn run_ref(&self, handle: u64) -> Option<RunRef> {
+    pub(super) fn run_ref(&self, handle: u64) -> Option<RunRef> {
         self.with_host(|host| host.bindings().run_for_test(handle))
             .map(|(_, run)| run)
     }
 
-    fn counts(&self) -> (usize, usize) {
+    pub(super) fn counts(&self) -> (usize, usize) {
         self.with_host(|host| host.bindings().counts_for_test())
     }
 
     /// A trusted local action on the owner loop (test-side: no ceremony export before P7.6).
-    fn with_loop<T>(
+    pub(super) fn with_loop<T>(
         &self,
         op: impl FnOnce(&mut WindowsOwnerLoop<'static>, &TrustedAuthority) -> T,
     ) -> T {
@@ -1488,11 +1491,11 @@ impl<'s> Harness<'s> {
             .unwrap()
     }
 
-    fn live_connections(&self) -> usize {
+    pub(super) fn live_connections(&self) -> usize {
         self.with_loop(|owner, _| owner.live_connections())
     }
 
-    fn result_info(&self, result: u64) -> Result<ResultInfo, i32> {
+    pub(super) fn result_info(&self, result: u64) -> Result<ResultInfo, i32> {
         if self.exports {
             let mut info = ResultInfo {
                 peer_role: 99,
@@ -1512,7 +1515,7 @@ impl<'s> Harness<'s> {
     }
 
     /// One field copy with `capacity` bytes: `(status, copied bytes, *out_required)`.
-    fn copy(&self, result: u64, field: u32, capacity: usize) -> (i32, Vec<u8>, usize) {
+    pub(super) fn copy(&self, result: u64, field: u32, capacity: usize) -> (i32, Vec<u8>, usize) {
         if self.exports {
             let mut buffer = vec![0xEE; capacity];
             let mut required = usize::MAX;
@@ -1552,7 +1555,7 @@ impl<'s> Harness<'s> {
         }
     }
 
-    fn destroy_result(&self, result: u64) -> i32 {
+    pub(super) fn destroy_result(&self, result: u64) -> i32 {
         if self.exports {
             sas_pairing_result_destroy(self.runtime, result)
         } else {
@@ -1561,7 +1564,7 @@ impl<'s> Harness<'s> {
     }
 
     /// The exact core result the runtime stores under `result` (test-side data read).
-    fn stored(&self, result: u64) -> PairingResult {
+    pub(super) fn stored(&self, result: u64) -> PairingResult {
         self.state
             .with_runtime(self.runtime, Admission::Data, |live| {
                 Ok(live.results[&NonZeroU64::new(result).unwrap()].clone())
@@ -1571,7 +1574,7 @@ impl<'s> Harness<'s> {
 }
 
 #[cfg(windows)]
-fn is_step(event: &Event, step_kind: u32, protocol_event: u32) -> bool {
+pub(super) fn is_step(event: &Event, step_kind: u32, protocol_event: u32) -> bool {
     event.kind == SAS_PAIRING_EVENT_CONNECTION_STEP
         && event.step_kind == step_kind
         && event.protocol_event == protocol_event
@@ -1580,7 +1583,7 @@ fn is_step(event: &Event, step_kind: u32, protocol_event: u32) -> bool {
 /// Every foreign-facing field of `result` equals the stored core `PairingResult` byte for byte,
 /// and copies obey the buffer contract (exact length, never truncated or terminated).
 #[cfg(windows)]
-fn assert_result_matches_core(harness: &Harness<'_>, result: u64) -> PairingResult {
+pub(super) fn assert_result_matches_core(harness: &Harness<'_>, result: u64) -> PairingResult {
     let core = harness.stored(result);
     let info = harness.result_info(result).expect("readable");
     assert_eq!(&info.ceremony_identity, core.ceremony_identity());

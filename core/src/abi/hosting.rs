@@ -12,8 +12,10 @@
 //! only place that borrow is created, stored, and ended ([`router_for_owner_loop`], the one
 //! lifetime extension of the ABI), and the network context is always torn down while the router
 //! is alive. Since P7.5 this module also runs the loop's bounded drive, resume recheck, and
-//! connection close (P7-D-008) and hands back only owned values: no reference to the router, the
-//! loop, or the network context leaves it. The host's connection and run references
+//! connection close (P7-D-008), and since P7.6 its trusted local ceremony actions and SAS
+//! presentation, one reviewed owner-loop call each (P7-D-011, P7-D-012). It hands back only owned
+//! values: no reference to the router, the loop, or the network context leaves it. The host's
+//! connection and run references
 //! ([`Bindings`], P7-D-009) live beside the network context and end with it.
 
 use std::num::NonZeroU64;
@@ -30,12 +32,15 @@ use std::{
     sync::{Arc, PoisonError, Weak},
 };
 
-#[cfg(windows)]
-use super::network::{Bindings, DriveMode};
 use super::{
     authority::enter_core,
     runtime::{AbiState, Admission, Runtime},
     status::{SAS_PAIRING_FATAL, SAS_PAIRING_INVALID_HANDLE, SAS_PAIRING_OWNERSHIP_UNCERTAIN},
+};
+#[cfg(windows)]
+use super::{
+    control::{Decision, Request},
+    network::{Bindings, DriveMode},
 };
 use crate::{
     CeremonyExecutor, Error,
@@ -44,12 +49,25 @@ use crate::{
 };
 #[cfg(windows)]
 use crate::{
+    TrustedAuthority,
+    ceremony::SasPresentation,
     protocol::Bootstrap,
+    router::RunRef,
     windows_owner_loop::{ConnectionRef, OwnerLoopError, OwnerStep, WindowsOwnerLoop},
+    windows_tcp::{Acted, Refused},
 };
 
 /// `sas_pairing_host_t`: an opaque process-local handle; `0` is never valid.
 pub(super) type HostHandle = u64;
+
+/// One owner-loop trusted local action: applied, refused with the connection live, or the
+/// loop's own refusal (P7-D-011).
+#[cfg(windows)]
+pub(super) type ActionOutcome = Result<Result<Acted, Refused>, OwnerLoopError>;
+/// One owner-loop presentation (P7-D-012).
+#[cfg(windows)]
+pub(super) type PresentationOutcome =
+    Result<Result<Option<SasPresentation>, RouteError>, OwnerLoopError>;
 
 /// Why closing a host's network context was not clean: the owner loop's own report.
 #[cfg(windows)]
@@ -202,10 +220,125 @@ impl HostContext {
         &mut self.bindings
     }
 
-    /// The connection and run references, read-only (tests only).
-    #[cfg(all(test, windows))]
+    /// The connection and run references, read-only.
+    #[cfg(windows)]
     pub(super) fn bindings(&self) -> &Bindings {
         &self.bindings
+    }
+
+    /// The owner loop's trusted local Initiator start on exactly `connection` (P7-D-011),
+    /// entered as core work; `None` without a network context. The outcome is returned by value
+    /// and holds no reference to the router or the loop; the started run's START is the
+    /// adapter's retained frame, never returned.
+    #[cfg(windows)]
+    pub(super) fn start_initiator(
+        &mut self,
+        connection: ConnectionRef,
+        local: Bootstrap,
+        expected: Option<Bootstrap>,
+    ) -> Option<ActionOutcome> {
+        let network = self.network.as_mut()?;
+        Some(enter_core(|| {
+            #[cfg(test)]
+            LOCAL_ACTIONS.with(|count| count.set(count.get() + 1));
+            #[cfg(test)]
+            if let Some(clock) = START_CLOCK.take() {
+                let mut started = network.owner_loop.start_initiator_with(
+                    connection,
+                    clock,
+                    &mut crate::request_id::OsRequestIds,
+                    local,
+                    expected,
+                );
+                if let Some(fault) = ACTION_FAULT.take() {
+                    fault(&mut network.owner_loop, connection, &mut started);
+                }
+                return started;
+            }
+            #[cfg_attr(
+                not(test),
+                expect(unused_mut, reason = "only the test seam rewrites it")
+            )]
+            let mut started = network
+                .owner_loop
+                .start_initiator(connection, local, expected);
+            #[cfg(test)]
+            if let Some(fault) = ACTION_FAULT.take() {
+                fault(&mut network.owner_loop, connection, &mut started);
+            }
+            started
+        }))
+    }
+
+    /// Exactly one reviewed owner-loop action for `request` on the exact run `run` of
+    /// `connection` (P7-D-011), entered as core work; `None` without a network context.
+    /// `authority` is the host's own parent authority, used only by exposure authorization and
+    /// only for this call. Nothing is chained: one request is one owner-loop call.
+    #[cfg(windows)]
+    pub(super) fn act_on_run(
+        &mut self,
+        connection: ConnectionRef,
+        run: &RunRef,
+        request: Request,
+        authority: &TrustedAuthority,
+    ) -> Option<ActionOutcome> {
+        let network = self.network.as_mut()?;
+        Some(enter_core(|| {
+            #[cfg(test)]
+            LOCAL_ACTIONS.with(|count| count.set(count.get() + 1));
+            let owner_loop = &mut network.owner_loop;
+            #[cfg_attr(
+                not(test),
+                expect(unused_mut, reason = "only the test seam rewrites it")
+            )]
+            let mut acted = match request {
+                Request::AuthorizeExposure => {
+                    owner_loop.authorize_exposure(connection, run, authority)
+                }
+                Request::ExposeKey => owner_loop.expose_key(connection, run),
+                Request::EmitBootstrapMac => owner_loop.emit_bootstrap_mac(connection, run),
+                Request::EmitInitiatorFinish => owner_loop.emit_initiator_finish(connection, run),
+                Request::Decide(Decision::Approve, identity) => {
+                    owner_loop.approve_sas(connection, run, &identity)
+                }
+                Request::Decide(Decision::Reject, identity) => {
+                    owner_loop.reject_sas(connection, run, &identity)
+                }
+                Request::Decide(Decision::Cancel, identity) => {
+                    owner_loop.cancel_sas(connection, run, &identity)
+                }
+            };
+            #[cfg(test)]
+            if let Some(fault) = ACTION_FAULT.take() {
+                fault(owner_loop, connection, &mut acted);
+            }
+            acted
+        }))
+    }
+
+    /// The owner loop's read-only presentation of the exact run `run` of `connection`
+    /// (P7-D-012), entered as core work; `None` without a network context.
+    #[cfg(windows)]
+    pub(super) fn presentation(
+        &mut self,
+        connection: ConnectionRef,
+        run: &RunRef,
+    ) -> Option<PresentationOutcome> {
+        let network = self.network.as_mut()?;
+        Some(enter_core(|| {
+            #[cfg(test)]
+            LOCAL_ACTIONS.with(|count| count.set(count.get() + 1));
+            #[cfg_attr(
+                not(test),
+                expect(unused_mut, reason = "only the test seam rewrites it")
+            )]
+            let mut presented = network.owner_loop.presentation(connection, run);
+            #[cfg(test)]
+            if let Some(fault) = PRESENTATION_FAULT.take() {
+                fault(&mut network.owner_loop, connection, &mut presented);
+            }
+            presented
+        }))
     }
 
     /// The attached owner loop, for internal tests that drive it without any ABI export.
@@ -333,6 +466,14 @@ thread_local! {
 #[cfg(all(test, windows))]
 pub(super) type DriveFault =
     fn(&mut WindowsOwnerLoop<'static>, &mut Result<OwnerStep, OwnerLoopError>);
+/// A test fault applied to one real trusted local action's outcome, with the loop and the
+/// connection it named (tests only).
+#[cfg(all(test, windows))]
+pub(super) type ActionFault = fn(&mut WindowsOwnerLoop<'static>, ConnectionRef, &mut ActionOutcome);
+/// A test fault applied to one real presentation's outcome (tests only).
+#[cfg(all(test, windows))]
+pub(super) type PresentationFault =
+    fn(&mut WindowsOwnerLoop<'static>, ConnectionRef, &mut PresentationOutcome);
 
 #[cfg(all(test, windows))]
 thread_local! {
@@ -349,6 +490,22 @@ thread_local! {
     /// Rewrites the next real owner-loop step on this thread after it ran (tests only), with
     /// the loop itself, so a test can fail the hosting context closed after real events exist.
     pub(super) static DRIVE_FAULT: Cell<Option<DriveFault>> = const { Cell::new(None) };
+    /// Owner-loop trusted local actions and presentations made on this thread (tests only):
+    /// evidence that a refused call (arguments, fatal, handles, run cap, handle space) never
+    /// reached the owner loop.
+    pub(super) static LOCAL_ACTIONS: Cell<usize> = const { Cell::new(0) };
+    /// Rewrites the next real local action's outcome on this thread after it ran (tests only),
+    /// with the loop itself, so a test can end the connection or fail the loop closed after a
+    /// real action, or present an outcome the core never produces.
+    pub(super) static ACTION_FAULT: Cell<Option<ActionFault>> = const { Cell::new(None) };
+    /// As `ACTION_FAULT`, for the next real presentation (tests only).
+    pub(super) static PRESENTATION_FAULT: Cell<Option<PresentationFault>> =
+        const { Cell::new(None) };
+    /// Starts the next local Initiator on this thread with this ceremony clock instead of a
+    /// system clock (tests only), through the owner loop's own test entry point, so a test can
+    /// move that run past its deadlines.
+    pub(super) static START_CLOCK: RefCell<Option<crate::deadline::Clock>> =
+        const { RefCell::new(None) };
     /// What each network context dropped on this thread observed once its owner loop and every
     /// connection were gone (tests only): `(other holders of the authority state, live
     /// connections of the authority)`, or `None` if the authority state was already gone.

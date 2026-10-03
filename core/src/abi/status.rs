@@ -5,9 +5,11 @@
 //! and protocol; 300–399 buffers and data results; 400–499 host, listener, and transport-boundary
 //! lifecycle; 900–999 fatal and internal. Wrappers treat
 //! every non-zero value, including unknown ones, as failure. The core `Error` discriminant is
-//! never exposed: [`map_core_error`] is the one explicit translation (P7-D-004).
+//! never exposed: [`map_core_error`] is the one explicit translation (P7-D-004), and
+//! [`map_ceremony_error`] the one translation of a ceremony refusal of a trusted local action
+//! (P7-D-012).
 
-use crate::Error;
+use crate::{Error, ceremony::CeremonyError, router::RouteError};
 
 /// The operation completed.
 pub const SAS_PAIRING_OK: i32 = 0;
@@ -55,6 +57,42 @@ pub const SAS_PAIRING_TERMINATED: i32 = 202;
     expect(dead_code, reason = "no listener can be attached off Windows")
 )]
 pub const SAS_PAIRING_INVALID_BOOTSTRAP: i32 = 203;
+/// The run handle named an exact run that is no longer routed: it ended. The handle is invalid
+/// from then on (P7-D-012).
+pub const SAS_PAIRING_RUN_ENDED: i32 = 204;
+/// A trusted local action did not run because the connection still retains one outbound frame
+/// awaiting socket progress; drive the host and retry (P7-D-011). Not a refusal by anyone.
+#[cfg_attr(
+    all(not(windows), not(test)),
+    expect(dead_code, reason = "no connection exists off Windows")
+)]
+pub const SAS_PAIRING_WRITE_PENDING: i32 = 205;
+
+// Run-local ceremony refusals of a trusted local action (P7-D-012): one value per
+// `CeremonyError` variant other than `Owner`, which keeps its P7-D-004 value. Local operation
+// outcomes, never a verdict about the peer, authentication, or compromise.
+
+pub const SAS_PAIRING_CEREMONY_INVALID_STATE: i32 = 206;
+pub const SAS_PAIRING_NO_LIVE_SAS: i32 = 207;
+pub const SAS_PAIRING_CEREMONY_IDENTITY_MISMATCH: i32 = 208;
+pub const SAS_PAIRING_NOT_LOCALLY_APPROVED: i32 = 209;
+pub const SAS_PAIRING_UNEXPECTED_SENDER_ROLE: i32 = 210;
+pub const SAS_PAIRING_INVALID_REQUEST_ID: i32 = 211;
+pub const SAS_PAIRING_REQUEST_ID_GENERATION_FAILED: i32 = 212;
+pub const SAS_PAIRING_REQUEST_ID_MISMATCH: i32 = 213;
+pub const SAS_PAIRING_SHARED_CONTEXT_MISMATCH: i32 = 214;
+pub const SAS_PAIRING_EXPECTED_PEER_MISMATCH: i32 = 215;
+pub const SAS_PAIRING_APPROVALS_NOT_AUTHENTICATED: i32 = 216;
+pub const SAS_PAIRING_NOT_INITIATOR: i32 = 217;
+pub const SAS_PAIRING_TRANSCRIPT_MISMATCH: i32 = 218;
+pub const SAS_PAIRING_COMPLETED: i32 = 219;
+pub const SAS_PAIRING_NO_PENDING_FINAL_ACK: i32 = 220;
+pub const SAS_PAIRING_FINAL_ACK_MISMATCH: i32 = 221;
+pub const SAS_PAIRING_CEREMONY_TIMED_OUT: i32 = 222;
+pub const SAS_PAIRING_CEREMONY_CLOCK_UNAVAILABLE: i32 = 223;
+pub const SAS_PAIRING_PENDING_EXPIRED: i32 = 224;
+pub const SAS_PAIRING_CEREMONY_CODEC_ERROR: i32 = 225;
+pub const SAS_PAIRING_CEREMONY_CRYPTO_ERROR: i32 = 226;
 
 // Buffers and data results (300–399).
 
@@ -95,6 +133,15 @@ pub const SAS_PAIRING_OWNER_LOOP_CLOSED: i32 = 403;
     expect(dead_code, reason = "no owner loop exists off Windows")
 )]
 pub const SAS_PAIRING_NETWORK_POLL_FAILED: i32 = 404;
+/// A trusted local action was admitted against a live connection, and the reviewed adapter or
+/// host ended that connection during the call: the connection handle and every run handle of it
+/// are invalid. Lifecycle only: never an attack, authentication, SAS, or compromise verdict
+/// (P7-D-012).
+#[cfg_attr(
+    all(not(windows), not(test)),
+    expect(dead_code, reason = "no connection exists off Windows")
+)]
+pub const SAS_PAIRING_CONNECTION_ENDED: i32 = 405;
 
 /// A Rust panic was contained: the native ABI state of this process is permanently fatal, and
 /// only a new OS process recovers (P6-D-004, P7-D-001). Distinct from every ordinary error.
@@ -115,5 +162,57 @@ pub(super) fn map_core_error(error: Error) -> i32 {
         Error::MissingAuthorization => SAS_PAIRING_MISSING_AUTHORIZATION,
         Error::StaleAuthorization => SAS_PAIRING_STALE_AUTHORIZATION,
         Error::Terminated => SAS_PAIRING_TERMINATED,
+    }
+}
+
+/// The one translation of a run-local [`CeremonyError`] refusal of a trusted local action into
+/// its frozen ABI status (P7-D-012). `Owner` keeps the P7-D-004 value of its core `Error`; every
+/// other variant has its own value. Exhaustive and wildcard-free, with no discriminant, `Debug`,
+/// or `Display`, so a new variant does not compile until P7 decides its ABI value.
+#[cfg_attr(
+    all(not(windows), not(test)),
+    expect(dead_code, reason = "no local action runs off Windows")
+)]
+pub(super) fn map_ceremony_error(error: &CeremonyError) -> i32 {
+    match error {
+        CeremonyError::Owner(error) => map_core_error(error.clone()),
+        CeremonyError::Codec(_) => SAS_PAIRING_CEREMONY_CODEC_ERROR,
+        CeremonyError::Crypto(_) => SAS_PAIRING_CEREMONY_CRYPTO_ERROR,
+        CeremonyError::InvalidState => SAS_PAIRING_CEREMONY_INVALID_STATE,
+        CeremonyError::NoLiveSas => SAS_PAIRING_NO_LIVE_SAS,
+        CeremonyError::CeremonyIdentityMismatch => SAS_PAIRING_CEREMONY_IDENTITY_MISMATCH,
+        CeremonyError::NotLocallyApproved => SAS_PAIRING_NOT_LOCALLY_APPROVED,
+        CeremonyError::UnexpectedSenderRole => SAS_PAIRING_UNEXPECTED_SENDER_ROLE,
+        CeremonyError::InvalidRequestId => SAS_PAIRING_INVALID_REQUEST_ID,
+        CeremonyError::RequestIdGenerationFailed => SAS_PAIRING_REQUEST_ID_GENERATION_FAILED,
+        CeremonyError::RequestIdMismatch => SAS_PAIRING_REQUEST_ID_MISMATCH,
+        CeremonyError::SharedContextMismatch => SAS_PAIRING_SHARED_CONTEXT_MISMATCH,
+        CeremonyError::ExpectedPeerMismatch => SAS_PAIRING_EXPECTED_PEER_MISMATCH,
+        CeremonyError::ApprovalsNotAuthenticated => SAS_PAIRING_APPROVALS_NOT_AUTHENTICATED,
+        CeremonyError::NotInitiator => SAS_PAIRING_NOT_INITIATOR,
+        CeremonyError::TranscriptMismatch => SAS_PAIRING_TRANSCRIPT_MISMATCH,
+        CeremonyError::Completed => SAS_PAIRING_COMPLETED,
+        CeremonyError::NoPendingFinalAck => SAS_PAIRING_NO_PENDING_FINAL_ACK,
+        CeremonyError::FinalAckMismatch => SAS_PAIRING_FINAL_ACK_MISMATCH,
+        CeremonyError::TimedOut(_) => SAS_PAIRING_CEREMONY_TIMED_OUT,
+        CeremonyError::ClockUnavailable => SAS_PAIRING_CEREMONY_CLOCK_UNAVAILABLE,
+        CeremonyError::PendingExpired => SAS_PAIRING_PENDING_EXPIRED,
+    }
+}
+
+/// The run-local refusal of a trusted local action on an EXISTING run: `UnknownRoute` (the exact
+/// run is no longer routed) is `RUN_ENDED`, and a ceremony refusal goes through
+/// [`map_ceremony_error`]. `UnknownSession` and `SessionProtocolFailure` end the connection in
+/// the host, so they never arrive as a run-local refusal; `None` marks that broken invariant,
+/// which the caller treats as fatal rather than misreport the connection's state.
+#[cfg_attr(
+    all(not(windows), not(test)),
+    expect(dead_code, reason = "no local action runs off Windows")
+)]
+pub(super) fn map_run_refusal(error: &RouteError) -> Option<i32> {
+    match error {
+        RouteError::UnknownRoute => Some(SAS_PAIRING_RUN_ENDED),
+        RouteError::Ceremony(error) => Some(map_ceremony_error(error)),
+        RouteError::UnknownSession | RouteError::SessionProtocolFailure => None,
     }
 }

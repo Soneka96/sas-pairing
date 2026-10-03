@@ -263,6 +263,13 @@ impl AbiState {
         }
     }
 
+    /// The next handle value the counter would issue (tests only; `0` once exhausted). Reading
+    /// it issues nothing.
+    #[cfg(all(test, windows))]
+    pub(super) fn next_handle_for_test(&self) -> u64 {
+        self.handles.0.load(Ordering::SeqCst)
+    }
+
     /// Test seam: panic while holding the runtime slot, poisoning it (run inside `contain`).
     #[cfg(test)]
     pub(super) fn panic_while_holding_runtime_slot(&self) -> i32 {

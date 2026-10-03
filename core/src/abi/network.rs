@@ -64,10 +64,6 @@ use crate::{
 /// `sas_pairing_connection_t`: an opaque process-local handle; `0` is never valid.
 pub(super) type ConnectionHandle = u64;
 /// `sas_pairing_run_t`: an opaque process-local handle; `0` is never valid.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "named by the header and the tests")
-)]
 pub(super) type RunHandle = u64;
 
 /// `SAS_PAIRING_MAX_DRIVE_EVENTS`: the most events one drive or recheck reports, exactly the
@@ -347,6 +343,77 @@ impl Bindings {
             .iter()
             .position(|binding| binding.handle.get() == handle)?;
         Some(self.connections.remove(index).connection)
+    }
+
+    /// The binding of the live connection whose ABI handle is `handle`. Any other value (zero,
+    /// stale, another kind, another loop's) names nothing.
+    fn binding(&self, handle: ConnectionHandle) -> Option<&ConnectionBinding> {
+        self.connections
+            .iter()
+            .find(|binding| binding.handle.get() == handle)
+    }
+
+    fn binding_mut(&mut self, handle: ConnectionHandle) -> Option<&mut ConnectionBinding> {
+        self.connections
+            .iter_mut()
+            .find(|binding| binding.handle.get() == handle)
+    }
+
+    /// The core connection behind the connection handle `connection` (P7-D-011).
+    pub(super) fn connection(&self, connection: ConnectionHandle) -> Option<ConnectionRef> {
+        self.binding(connection).map(|binding| binding.connection)
+    }
+
+    /// The core connection and the exact run behind `run`, which must be a run handle of exactly
+    /// the connection `connection` names: a run of another connection, host, or loop, or a
+    /// handle of another kind, names nothing. Never matched by request ID.
+    pub(super) fn run(
+        &self,
+        connection: ConnectionHandle,
+        run: RunHandle,
+    ) -> Option<(ConnectionRef, RunRef)> {
+        let binding = self.binding(connection)?;
+        let exact = binding
+            .runs
+            .iter()
+            .find(|bound| bound.handle.get() == run)?;
+        Some((binding.connection, exact.run.clone()))
+    }
+
+    /// Run references `connection` holds; `None` when it names no live connection.
+    pub(super) fn run_count(&self, connection: ConnectionHandle) -> Option<usize> {
+        self.binding(connection).map(|binding| binding.runs.len())
+    }
+
+    /// Removes the run reference `run` of `connection` (the exact run ended, or was found
+    /// stale). Removing an absent reference changes nothing.
+    pub(super) fn remove_run(&mut self, connection: ConnectionHandle, run: RunHandle) {
+        if let Some(binding) = self.binding_mut(connection) {
+            binding.runs.retain(|bound| bound.handle.get() != run);
+        }
+    }
+
+    /// Records the exact run a trusted local Initiator start just routed on `connection`, under
+    /// its already-preflighted `handle`. References under the same request ID are retired first
+    /// (the core routes one run per key, so they ended), exactly as for a run an event reports.
+    /// The caller checked under the same runtime slot that the connection is bound and holds
+    /// fewer than `MAX_RUNS_PER_CONNECTION` references; `false` if that no longer holds (a
+    /// broken invariant: nothing is recorded).
+    pub(super) fn bind_local_run(
+        &mut self,
+        connection: ConnectionHandle,
+        run: RunRef,
+        handle: NonZeroU64,
+    ) -> bool {
+        let Some(binding) = self.binding_mut(connection) else {
+            return false;
+        };
+        binding.retire(run.request_id());
+        if binding.runs.len() >= MAX_RUNS_PER_CONNECTION {
+            return false;
+        }
+        binding.runs.push(RunBinding { handle, run });
+        true
     }
 
     /// The core connection behind a connection handle (tests only).
@@ -664,7 +731,7 @@ fn well_formed(events: &[OwnerEvent], bindings: &Bindings) -> bool {
 /// Issues one handle the preflight already guaranteed; running out here breaks that guarantee
 /// and is fatal.
 #[cfg(windows)]
-fn issue(state: &AbiState) -> Result<NonZeroU64, i32> {
+pub(super) fn issue(state: &AbiState) -> Result<NonZeroU64, i32> {
     state.allocate_handle().map_err(|_| {
         state.fatal.mark();
         SAS_PAIRING_FATAL
