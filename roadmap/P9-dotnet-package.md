@@ -2,7 +2,7 @@
 
 ## Status
 
-🟡 Planned; gated on the native implementation and boundary.
+🟡 Planned. Its native prerequisite is met: P7 is complete and native ABI v1 is frozen ([P7 final closure](../docs/p7-native-abi/final-closure.md), [P7-D-013](../docs/p7-native-abi/decisions.md#p7-d-013--abi-v1-final-freeze-and-wrapper-handoff)). Not started; P8 comes first in the planned order.
 
 ## Goal
 
@@ -14,7 +14,9 @@ Create an idiomatic .NET wrapper over the same native implementation.
 
 ## Inputs / prerequisites
 
-The P7 native boundary and its supported platform behavior.
+The P7 native boundary and its supported platform behavior: the frozen native ABI v1 ([ABI contract](../docs/p7-native-abi/abi-contract.md), [ABI v1 manifest](../docs/p7-native-abi/abi-v1-manifest.md), [`sas_pairing.h`](../core/include/sas_pairing.h)). Networking is supported on Windows only (the Windows TCP carrier); elsewhere pairing operations fail closed with `SAS_PAIRING_UNSUPPORTED_PLATFORM`.
+
+**Mandatory ABI v1 prerequisite ([P7-D-013](../docs/p7-native-abi/decisions.md#p7-d-013--abi-v1-final-freeze-and-wrapper-handoff), [ABI contract §21](../docs/p7-native-abi/abi-contract.md#21-wrapper-handoff-p8-p9)).** The .NET wrapper binds exactly ABI v1 and checks `sas_pairing_abi_version() == 1`; loads one native image and retains its `NativeLibrary` handle for the process lifetime and never calls `NativeLibrary.Free` during supported use, with no unload, reload, reset, or alternate copy; treats `SAS_PAIRING_FATAL` as requiring an OS process restart; keeps the caller-owned pointer and buffer contracts (non-null aligned outputs, explicit capacities and lengths, no retained pointers, no Rust allocation to free); hands listening sockets over through the in/out ownership slot and never touches a socket whose slot reads `SAS_PAIRING_SOCKET_INVALID`; drives with the bounded cooperative drive and recheck and consumes every returned event, also when `out_failure` is not `SAS_PAIRING_OK`; and never changes, renumbers, or reinterprets any frozen value, layout, or ownership rule.
 
 **Mandatory loader prerequisite ([P7-D-002](../docs/p7-native-abi/decisions.md#p7-d-002--native-library-residency-and-loader-lifetime), [ABI contract §14](../docs/p7-native-abi/abi-contract.md#14-native-library-loading-and-residency)).** The .NET wrapper loads the native library once and retains its `NativeLibrary` or module handle for the process lifetime. It never calls `NativeLibrary.Free` during supported use, exposes no reload or reset as recovery, and loads no alternate copy of the library. It tells consumers that after `SAS_PAIRING_FATAL` the only recovery is restarting the process.
 

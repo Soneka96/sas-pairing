@@ -1,8 +1,8 @@
 # sas-pairing Native ABI v1 Manifest
 
-> Compact compatibility reference for the native ABI, version 1. Pre-alpha and experimental: not production approval, a professional audit, or formal verification. The normative prose is the [ABI contract](abi-contract.md); the declarations are [`core/include/sas_pairing.h`](../../core/include/sas_pairing.h); the freeze decision is P7-D-013 in the [P7 decisions](decisions.md).
+> Compact compatibility reference for the native ABI, version 1. Pre-alpha and experimental: not production approval, a professional audit, or formal verification. The normative prose is the [ABI contract](abi-contract.md); the declarations are [`core/include/sas_pairing.h`](../../core/include/sas_pairing.h); the freeze decision is [P7-D-013](decisions.md#p7-d-013--abi-v1-final-freeze-and-wrapper-handoff); the closure summary is the [P7 final closure](final-closure.md).
 
-**State: FREEZE CANDIDATE (P7.7).** Every value below is the implemented, tested ABI v1 surface. It becomes frozen with owner decision P7-D-013 at P7 closure.
+**State: FROZEN (P7-D-013, P7.7).** Every value below is the implemented, tested ABI v1 surface. Changing, removing, or renumbering any of it, or adding to it, needs an explicit owner decision on ABI version and compatibility (P7-D-013 item 14).
 
 Machine-checked: every table row whose first cell names a `SAS_PAIRING_` constant, an export, a type, or a record is compared with the Rust implementation and the header by `abi::tests::freeze::the_abi_v1_manifest_matches_the_rust_abi_and_the_header` (feature `native-abi`), and the export table with the built library by [`tooling/check_abi_exports.py`](../../tooling/check_abi_exports.py) in CI. A difference fails the build.
 

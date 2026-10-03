@@ -1,5 +1,9 @@
 /*
- * sas_pairing.h - native ABI of the sas-pairing core, ABI version 1.
+ * sas_pairing.h - SAS Pairing Native ABI v1.
+ *
+ * FROZEN: the declarations, numeric values, and record layouts below are frozen by owner
+ * decision P7-D-013 and docs/p7-native-abi/abi-v1-manifest.md. Any change needs an explicit
+ * ABI-version and compatibility decision.
  *
  * Experimental, pre-alpha, not production-security approved. Exposes the version query, the
  * runtime lifecycle, the authority lifecycle (P7.2), hosting contexts (P7.3), Windows listener
@@ -10,8 +14,8 @@
  * boundary: the library writes every frame itself.
  *
  * Contract: docs/p7-native-abi/abi-contract.md. Decisions: docs/p7-native-abi/decisions.md
- * (P7-D-001 to P7-D-012). Kept in sync with core/src/abi by the abi::tests::header consistency
- * test.
+ * (P7-D-001 to P7-D-013). Kept in sync with core/src/abi and the manifest by the abi::tests header
+ * and freeze consistency tests.
  *
  * LIBRARY LIFETIME (P7-D-002): supported use loads exactly one image of this library per OS
  * process and keeps it loaded until the process exits once stateful use begins (no later than
