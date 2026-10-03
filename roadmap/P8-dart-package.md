@@ -7,7 +7,7 @@
 | Increment | Scope | State |
 |---|---|---|
 | P8.1 | Dart package foundation and the frozen native ABI v1 bindings: pure-Dart package `sas_pairing`, generated private raw FFI, process-lifetime loader (explicit path, 64-bit gate, symbol preflight, ABI version 1), consistency tests, Windows and Linux CI ([P8-D-001](../docs/p8-dart-package/decisions.md#p8-d-001--dart-native-binding-and-loader-architecture)) | **Complete** ([evidence](../docs/p8-dart-package/README.md#p81-evidence)) |
-| P8.2 | Runtime / Authority / Host lifecycle wrapper | Next |
+| P8.2 | Runtime / Authority / Host lifecycle wrapper ([P8-D-002](../docs/p8-dart-package/decisions.md#p8-d-002--dart-lifecycle-ownership-and-fail-closed-state)) | In progress |
 | Later | Listener handoff, cooperative drive and events, connections and runs, ceremony control and SAS presentation, results, native artifact distribution, P8 closure | Planned |
 
 ## Goal
