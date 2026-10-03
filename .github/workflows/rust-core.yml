@@ -44,6 +44,16 @@ jobs:
       # operations, added later, still fail closed on unsupported platforms).
       - run: cargo clippy --manifest-path core/Cargo.toml --all-targets --all-features -- -D warnings
       - run: cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests
+      # P7.2: a valid authority registration through the real export enters the core and fails
+      # closed with SAS_PAIRING_UNSUPPORTED_PLATFORM; nothing is faked.
+      - name: Native ABI authority registration fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib \
+            abi::tests::authority::authority_registration_fails_closed_on_unsupported_platforms \
+            -- --exact | tee unsupported-authority.log
+          grep -F 'test result: ok. 1 passed' unsupported-authority.log
       - run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
       - name: Native ABI refuses panic = "abort"
         shell: bash

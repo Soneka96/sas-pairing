@@ -1,11 +1,14 @@
-//! Native runtime lifecycle and handles (P7-D-001).
+//! Native runtime lifecycle and handles (P7-D-001, P7-D-003).
 //!
 //! At most one runtime is active per OS process, and the runtime is the fatal-containment unit.
-//! Handles are opaque process-local `u64` values drawn from one monotonic counter: never zero,
-//! never reused, and never wrapped. P7.1 runtimes own no core state: creating one registers no
-//! authority, takes no OS lock, starts no listener, and generates no protocol randomness.
+//! Handles of every kind (runtimes, authorities) are opaque process-local `u64` values drawn from
+//! one monotonic counter: never zero, never reused, never wrapped, and never equal across kinds.
+//! Creating a runtime registers no authority, takes no OS lock, starts no listener, and generates
+//! no protocol randomness. The runtime owns the authorities registered through it, and every
+//! authority operation runs while holding the runtime slot, so it serializes with destroy.
 
 use std::{
+    collections::BTreeMap,
     num::NonZeroU64,
     sync::{
         Mutex, PoisonError,
@@ -20,9 +23,11 @@ use super::{
         SAS_PAIRING_INVALID_HANDLE, SAS_PAIRING_OK,
     },
 };
+use crate::TrustedAuthority;
 
-/// Issues each handle value at most once per process. `0` is the exhausted sentinel: after
-/// `u64::MAX` has been issued, allocation fails forever instead of wrapping to an old value.
+/// Issues each handle value at most once per process, across every handle kind. `0` is the
+/// exhausted sentinel: after `u64::MAX` has been issued, allocation fails forever instead of
+/// wrapping to an old value.
 pub(super) struct HandleCounter(AtomicU64);
 
 impl HandleCounter {
@@ -54,15 +59,33 @@ impl HandleCounter {
     }
 }
 
-/// The active runtime. P7.1 holds no core state; later increments attach their resources here.
-struct Runtime {
+/// The active runtime: the owning root of the authorities registered through it.
+pub(super) struct Runtime {
     handle: NonZeroU64,
+    /// The real core authorities, keyed by their opaque handles. The map owns them, so Rust
+    /// RAII stays authoritative: removing an entry is the only way to end its ABI lifetime.
+    pub(super) authorities: BTreeMap<NonZeroU64, TrustedAuthority>,
 }
 
 impl Runtime {
-    /// Best-effort destruction, run after the handle is already invalid. Never starts protocol
-    /// work, clears fatal state, or creates accounting.
-    fn destroy(self) {}
+    /// Best-effort destruction, run after the runtime handle is already invalid: drops every
+    /// owned authority, which releases its OS lease through the core's own `Drop` (an uncertain
+    /// release is recorded by the core and fails that authority's registration closed). Never
+    /// starts protocol work, clears fatal state, or creates accounting.
+    fn destroy(self) {
+        drop(self.authorities);
+    }
+}
+
+/// How an operation on a live runtime is admitted.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Admission {
+    /// A normal operation that may enter the core: refused with `FATAL` once the process is
+    /// fatal, and a poisoned runtime slot makes the process fatal.
+    Normal,
+    /// Cleanup (authority release): admitted in the fatal state and on a poisoned slot, like
+    /// runtime destroy. It never clears fatal state.
+    Cleanup,
 }
 
 /// The native ABI state of one process: the fatal marker, the handle counter, and the one
@@ -100,27 +123,66 @@ impl AbiState {
         if active.is_some() {
             return Err(SAS_PAIRING_ALREADY_INITIALIZED);
         }
-        let handle = self
-            .handles
-            .allocate()
-            .ok_or(SAS_PAIRING_HANDLES_EXHAUSTED)?;
-        *active = Some(Runtime { handle });
+        let handle = self.allocate_handle()?;
+        *active = Some(Runtime {
+            handle,
+            authorities: BTreeMap::new(),
+        });
         Ok(handle)
     }
 
-    /// Destroys the runtime named by `handle`. This is the cleanup path, so fatal state and a
-    /// poisoned slot do not prevent it; it never clears fatal state. The handle is removed from
-    /// the slot first and the runtime is destroyed after the lock is released.
+    /// Issues the next opaque handle from the one shared counter (an authority handle here).
+    pub(super) fn allocate_handle(&self) -> Result<NonZeroU64, i32> {
+        self.handles.allocate().ok_or(SAS_PAIRING_HANDLES_EXHAUSTED)
+    }
+
+    /// Runs `op` on the live runtime named `runtime` while holding the runtime slot, so the
+    /// operation completes before any destroy can begin and nothing is admitted after one.
+    ///
+    /// Order (contract §15.7): fatal state (normal operations only), then the runtime handle; the
+    /// caller has already validated its raw arguments.
+    pub(super) fn with_runtime<T>(
+        &self,
+        runtime: u64,
+        admission: Admission,
+        op: impl FnOnce(&mut Runtime) -> Result<T, i32>,
+    ) -> Result<T, i32> {
+        let normal = admission == Admission::Normal;
+        if normal && self.fatal.is_set() {
+            return Err(SAS_PAIRING_FATAL);
+        }
+        let mut active = match self.active.lock() {
+            Ok(active) => active,
+            // Poisoning means a panic was caught while the slot was held.
+            Err(_) if normal => {
+                self.fatal.mark();
+                return Err(SAS_PAIRING_FATAL);
+            }
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        // Recheck under the slot: a panic caught elsewhere since the first check wins.
+        if normal && self.fatal.is_set() {
+            return Err(SAS_PAIRING_FATAL);
+        }
+        match active.as_mut() {
+            Some(live) if live.handle.get() == runtime => op(live),
+            _ => Err(SAS_PAIRING_INVALID_HANDLE),
+        }
+    }
+
+    /// Destroys the runtime named by `handle`, cascading to every authority it owns. This is
+    /// the cleanup path, so fatal state and a poisoned slot do not prevent it; it never clears
+    /// fatal state. The runtime leaves the slot first, so its handle and every child authority
+    /// handle are invalid before cleanup starts; cleanup finishes before the slot is released,
+    /// so no operation can observe a half-destroyed runtime.
     pub(super) fn destroy(&self, handle: u64) -> i32 {
         let Some(handle) = NonZeroU64::new(handle) else {
             return SAS_PAIRING_INVALID_HANDLE;
         };
-        let removed = {
-            let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
-            match &*active {
-                Some(runtime) if runtime.handle == handle => active.take(),
-                _ => None,
-            }
+        let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        let removed = match &*active {
+            Some(runtime) if runtime.handle == handle => active.take(),
+            _ => None,
         };
         match removed {
             Some(runtime) => {

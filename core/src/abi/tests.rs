@@ -1,4 +1,4 @@
-//! P7.1 native ABI tests.
+//! Native ABI tests (P7.1 foundation; the P7.2 authority lifecycle is in `authority`).
 //!
 //! Logic tests use test-local `AbiState`/`FatalState` instances. Tests of the real exports and
 //! the process-global state run in isolated child processes (this test binary re-run with one
@@ -19,25 +19,32 @@ use std::{
 };
 
 use super::{
-    ABI_VERSION, INVALID_ABI_VERSION, PROCESS, RuntimeHandle, dispatch,
+    ABI_VERSION, INVALID_ABI_VERSION, PROCESS, RuntimeHandle,
+    authority::{
+        AuthorityHandle, CORE_ENTRIES, SAS_PAIRING_AUTHORITY_BUSY, SAS_PAIRING_AUTHORITY_EXHAUSTED,
+        SAS_PAIRING_AUTHORITY_READY, SAS_PAIRING_AUTHORITY_STATE_INVALID,
+    },
+    dispatch,
     panic_boundary::{FatalState, contain},
     runtime::{AbiState, HandleCounter},
-    sas_pairing_abi_version, sas_pairing_runtime_create, sas_pairing_runtime_destroy,
-    status::{
-        SAS_PAIRING_ALREADY_INITIALIZED, SAS_PAIRING_FATAL, SAS_PAIRING_HANDLES_EXHAUSTED,
-        SAS_PAIRING_INVALID_ARGUMENT, SAS_PAIRING_INVALID_HANDLE, SAS_PAIRING_OK,
-    },
+    sas_pairing_abi_version, sas_pairing_authority_register, sas_pairing_authority_release,
+    sas_pairing_authority_status, sas_pairing_runtime_create, sas_pairing_runtime_destroy,
+    status::*,
 };
+
+/// P7.2 authority lifecycle, error mapping, concurrency, and real-core panic tests.
+mod authority;
 
 const HEADER: &str = include_str!("../../include/sas_pairing.h");
 const MANIFEST: &str = include_str!("../../Cargo.toml");
-const ABI_SOURCES: [(&str, &str); 4] = [
+const ABI_SOURCES: [(&str, &str); 5] = [
     ("mod.rs", include_str!("mod.rs")),
+    ("authority.rs", include_str!("authority.rs")),
     ("panic_boundary.rs", include_str!("panic_boundary.rs")),
     ("runtime.rs", include_str!("runtime.rs")),
     ("status.rs", include_str!("status.rs")),
 ];
-const STATUSES: [(&str, i32); 6] = [
+const STATUSES: [(&str, i32); 17] = [
     ("SAS_PAIRING_OK", SAS_PAIRING_OK),
     ("SAS_PAIRING_INVALID_ARGUMENT", SAS_PAIRING_INVALID_ARGUMENT),
     ("SAS_PAIRING_INVALID_HANDLE", SAS_PAIRING_INVALID_HANDLE),
@@ -49,7 +56,48 @@ const STATUSES: [(&str, i32); 6] = [
         "SAS_PAIRING_HANDLES_EXHAUSTED",
         SAS_PAIRING_HANDLES_EXHAUSTED,
     ),
+    ("SAS_PAIRING_INVALID_SCOPE", SAS_PAIRING_INVALID_SCOPE),
+    (
+        "SAS_PAIRING_ALREADY_REGISTERED",
+        SAS_PAIRING_ALREADY_REGISTERED,
+    ),
+    (
+        "SAS_PAIRING_OWNERSHIP_UNAVAILABLE",
+        SAS_PAIRING_OWNERSHIP_UNAVAILABLE,
+    ),
+    (
+        "SAS_PAIRING_UNSUPPORTED_PLATFORM",
+        SAS_PAIRING_UNSUPPORTED_PLATFORM,
+    ),
+    (
+        "SAS_PAIRING_OWNERSHIP_UNCERTAIN",
+        SAS_PAIRING_OWNERSHIP_UNCERTAIN,
+    ),
+    ("SAS_PAIRING_BUSY", SAS_PAIRING_BUSY),
+    ("SAS_PAIRING_EXHAUSTED", SAS_PAIRING_EXHAUSTED),
+    ("SAS_PAIRING_RESOURCE_LIMITED", SAS_PAIRING_RESOURCE_LIMITED),
+    (
+        "SAS_PAIRING_MISSING_AUTHORIZATION",
+        SAS_PAIRING_MISSING_AUTHORIZATION,
+    ),
+    (
+        "SAS_PAIRING_STALE_AUTHORIZATION",
+        SAS_PAIRING_STALE_AUTHORIZATION,
+    ),
+    ("SAS_PAIRING_TERMINATED", SAS_PAIRING_TERMINATED),
     ("SAS_PAIRING_FATAL", SAS_PAIRING_FATAL),
+];
+const AUTHORITY_STATES: [(&str, u32); 4] = [
+    (
+        "SAS_PAIRING_AUTHORITY_STATE_INVALID",
+        SAS_PAIRING_AUTHORITY_STATE_INVALID,
+    ),
+    ("SAS_PAIRING_AUTHORITY_READY", SAS_PAIRING_AUTHORITY_READY),
+    ("SAS_PAIRING_AUTHORITY_BUSY", SAS_PAIRING_AUTHORITY_BUSY),
+    (
+        "SAS_PAIRING_AUTHORITY_EXHAUSTED",
+        SAS_PAIRING_AUTHORITY_EXHAUSTED,
+    ),
 ];
 
 /// A panic payload whose destructor counts itself and then panics again (P6.4.1).
@@ -80,10 +128,33 @@ fn abi_constants_are_frozen() {
             ("SAS_PAIRING_INVALID_HANDLE", 2),
             ("SAS_PAIRING_ALREADY_INITIALIZED", 3),
             ("SAS_PAIRING_HANDLES_EXHAUSTED", 4),
+            ("SAS_PAIRING_INVALID_SCOPE", 100),
+            ("SAS_PAIRING_ALREADY_REGISTERED", 101),
+            ("SAS_PAIRING_OWNERSHIP_UNAVAILABLE", 102),
+            ("SAS_PAIRING_UNSUPPORTED_PLATFORM", 103),
+            ("SAS_PAIRING_OWNERSHIP_UNCERTAIN", 104),
+            ("SAS_PAIRING_BUSY", 105),
+            ("SAS_PAIRING_EXHAUSTED", 106),
+            ("SAS_PAIRING_RESOURCE_LIMITED", 107),
+            ("SAS_PAIRING_MISSING_AUTHORIZATION", 200),
+            ("SAS_PAIRING_STALE_AUTHORIZATION", 201),
+            ("SAS_PAIRING_TERMINATED", 202),
             ("SAS_PAIRING_FATAL", 900),
         ]
     );
+    let values: BTreeSet<i32> = STATUSES.iter().map(|(_, value)| *value).collect();
+    assert_eq!(values.len(), STATUSES.len(), "no two statuses collide");
+    assert_eq!(
+        AUTHORITY_STATES,
+        [
+            ("SAS_PAIRING_AUTHORITY_STATE_INVALID", 0),
+            ("SAS_PAIRING_AUTHORITY_READY", 1),
+            ("SAS_PAIRING_AUTHORITY_BUSY", 2),
+            ("SAS_PAIRING_AUTHORITY_EXHAUSTED", 3),
+        ]
+    );
     assert_eq!(size_of::<RuntimeHandle>(), 8);
+    assert_eq!(size_of::<AuthorityHandle>(), 8);
     assert_eq!(size_of::<i32>(), 4);
     // Zero is never a valid handle: destroy rejects it, and the counter never issues it.
     assert_eq!(
@@ -103,6 +174,10 @@ fn export_signatures_are_pinned() {
     let _: extern "C" fn() -> u32 = sas_pairing_abi_version;
     let _: unsafe extern "C" fn(*mut u64) -> i32 = sas_pairing_runtime_create;
     let _: extern "C" fn(u64) -> i32 = sas_pairing_runtime_destroy;
+    let _: unsafe extern "C" fn(u64, *const u8, usize, *mut u64) -> i32 =
+        sas_pairing_authority_register;
+    let _: extern "C" fn(u64, u64) -> i32 = sas_pairing_authority_release;
+    let _: unsafe extern "C" fn(u64, u64, *mut u32, *mut u32) -> i32 = sas_pairing_authority_status;
 }
 
 /// The checked-in header and the Rust ABI agree on the version, status values, type widths,
@@ -127,18 +202,37 @@ fn header_matches_the_rust_abi() {
         defines.get("SAS_PAIRING_RUNTIME_INVALID"),
         Some(&"((sas_pairing_runtime_t)0)")
     );
+    assert_eq!(
+        defines.get("SAS_PAIRING_AUTHORITY_INVALID"),
+        Some(&"((sas_pairing_authority_t)0)")
+    );
+    for (name, value) in AUTHORITY_STATES {
+        assert_eq!(
+            defines.get(name),
+            Some(&format!("((sas_pairing_authority_state_t){value})").as_str()),
+            "{name}"
+        );
+    }
     let header_statuses: BTreeMap<&str, i32> = defines
         .iter()
         .filter_map(|(name, value)| Some((*name, value.parse::<i32>().ok()?)))
         .collect();
     assert_eq!(header_statuses, BTreeMap::from(STATUSES));
 
-    for typedef in [
-        "typedef uint64_t sas_pairing_runtime_t;",
-        "typedef int32_t sas_pairing_status_t;",
-    ] {
-        assert!(HEADER.contains(typedef), "header lacks `{typedef}`");
-    }
+    let typedefs: BTreeSet<&str> = HEADER
+        .lines()
+        .filter(|line| line.starts_with("typedef "))
+        .collect();
+    assert_eq!(
+        typedefs,
+        BTreeSet::from([
+            "typedef int32_t sas_pairing_status_t;",
+            "typedef uint64_t sas_pairing_runtime_t;",
+            "typedef uint64_t sas_pairing_authority_t;",
+            "typedef uint32_t sas_pairing_authority_state_t;",
+        ])
+    );
+    assert!(HEADER.contains("#include <stddef.h>"));
     assert!(HEADER.contains("#include <stdint.h>"));
 
     let declarations: BTreeSet<&str> = HEADER
@@ -151,6 +245,13 @@ fn header_matches_the_rust_abi() {
             "uint32_t sas_pairing_abi_version(void);",
             "sas_pairing_status_t sas_pairing_runtime_create(sas_pairing_runtime_t *out_runtime);",
             "sas_pairing_status_t sas_pairing_runtime_destroy(sas_pairing_runtime_t runtime);",
+            "sas_pairing_status_t sas_pairing_authority_register(sas_pairing_runtime_t runtime, \
+             const uint8_t *scope, size_t scope_len, sas_pairing_authority_t *out_authority);",
+            "sas_pairing_status_t sas_pairing_authority_release(sas_pairing_runtime_t runtime, \
+             sas_pairing_authority_t authority);",
+            "sas_pairing_status_t sas_pairing_authority_status(sas_pairing_runtime_t runtime, \
+             sas_pairing_authority_t authority, sas_pairing_authority_state_t *out_state, \
+             uint32_t *out_remaining);",
         ])
     );
     let declared: BTreeSet<&str> = declarations
@@ -191,7 +292,17 @@ fn exported_functions() -> BTreeMap<&'static str, &'static str> {
 #[test]
 fn every_export_runs_inside_the_central_panic_boundary() {
     let exports = exported_functions();
-    assert_eq!(exports.len(), 3);
+    assert_eq!(
+        exports.keys().copied().collect::<Vec<_>>(),
+        [
+            "sas_pairing_abi_version",
+            "sas_pairing_authority_register",
+            "sas_pairing_authority_release",
+            "sas_pairing_authority_status",
+            "sas_pairing_runtime_create",
+            "sas_pairing_runtime_destroy",
+        ]
+    );
     for (name, first_statement) in exports {
         assert!(
             first_statement.starts_with("dispatch("),
@@ -361,8 +472,9 @@ fn run_child(name: &str) {
     static SPAWNED: AtomicUsize = AtomicUsize::new(0);
     let spawn = SPAWNED.fetch_add(1, Ordering::SeqCst);
     let stem = env::temp_dir().join(format!(
-        "sas-pairing-abi-{}-{spawn}-{name}",
-        std::process::id()
+        "sas-pairing-abi-{}-{spawn}-{}",
+        std::process::id(),
+        name.replace("::", "-")
     ));
     let (out_path, err_path) = (stem.with_extension("out"), stem.with_extension("err"));
     let mut child = Command::new(env::current_exe().expect("test binary"))
@@ -418,6 +530,52 @@ fn destroy(handle: u64) -> i32 {
     sas_pairing_runtime_destroy(handle)
 }
 
+/// Registers `scope` through the export; the output slot starts as a sentinel.
+fn register(runtime: u64, scope: &[u8]) -> (i32, u64) {
+    let mut out = u64::MAX;
+    // SAFETY: `scope` is a live slice for the whole call, and `out` is a live, aligned,
+    // exclusively borrowed `u64` that does not overlap it.
+    let status =
+        unsafe { sas_pairing_authority_register(runtime, scope.as_ptr(), scope.len(), &mut out) };
+    (status, out)
+}
+
+fn release(runtime: u64, authority: u64) -> i32 {
+    sas_pairing_authority_release(runtime, authority)
+}
+
+/// Reads an authority's status through the export; the output slots start as sentinels.
+fn authority_status(runtime: u64, authority: u64) -> (i32, u32, u32) {
+    let (mut state, mut remaining) = (u32::MAX, u32::MAX);
+    // SAFETY: two distinct live, aligned, exclusively borrowed `u32` slots.
+    let status =
+        unsafe { sas_pairing_authority_status(runtime, authority, &mut state, &mut remaining) };
+    (status, state, remaining)
+}
+
+/// After a panic that left the runtime slot unpoisoned, normal authority operations are refused
+/// by the fatal state alone, before the runtime handle is checked and without entering the
+/// core; release stays admitted as cleanup.
+fn assert_authority_calls_are_fatal(runtime: u64) {
+    let entries = CORE_ENTRIES.load(Ordering::SeqCst);
+    for runtime in [runtime, 0, runtime.wrapping_add(1_000)] {
+        assert_eq!(
+            register(runtime, b"p7-abi-after-fatal"),
+            (SAS_PAIRING_FATAL, 0)
+        );
+        assert_eq!(
+            authority_status(runtime, runtime.wrapping_add(1)),
+            (SAS_PAIRING_FATAL, SAS_PAIRING_AUTHORITY_STATE_INVALID, 0)
+        );
+    }
+    assert_eq!(CORE_ENTRIES.load(Ordering::SeqCst), entries, "core entered");
+    assert_eq!(
+        release(runtime, runtime.wrapping_add(1)),
+        SAS_PAIRING_INVALID_HANDLE,
+        "cleanup is admitted and still validates its handles"
+    );
+}
+
 /// Export-shaped test seam: an `extern "C"` function whose Rust work panics inside the real
 /// `dispatch`, as a production export's would. Not `no_mangle`; never in the artifact. If the
 /// boundary let a second panic escape, crossing `extern "C"` would abort the child process.
@@ -442,6 +600,7 @@ fn assert_fatal_lifecycle(drop_panicking_payload: u32) {
         SAS_PAIRING_FATAL
     );
     assert!(PROCESS.fatal.is_set(), "fatal is recorded");
+    assert_authority_calls_are_fatal(handle);
 
     // Fatal cannot be left: no create succeeds, and the live runtime is not replaced.
     assert_eq!(create(), (SAS_PAIRING_FATAL, 0));
