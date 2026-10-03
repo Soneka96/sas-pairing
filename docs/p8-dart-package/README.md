@@ -2,7 +2,7 @@
 
 > **Pre-alpha, experimental.** P8 builds the Dart binding of the frozen sas-pairing native ABI v1. It is not production-security approved, not audited, and not formally verified. The protocol is implemented only by the native Rust core; Dart binds C.
 
-**Status: P8 IN PROGRESS — P8.2 COMPLETE; P8.3 next.** Roadmap: [P8 — Dart Package](../../roadmap/P8-dart-package.md). Decisions: [decisions.md](decisions.md). Package: [`dart/`](../../dart/README.md).
+**Status: P8 IN PROGRESS — P8.2 COMPLETE (with the P8.2.1 correction); P8.3 next.** Roadmap: [P8 — Dart Package](../../roadmap/P8-dart-package.md). Decisions: [decisions.md](decisions.md). Package: [`dart/`](../../dart/README.md).
 
 ## Baseline
 
@@ -17,7 +17,7 @@
 | Increment | Scope | Decisions | State |
 |---|---|---|---|
 | P8.1 | Dart package foundation: pure-Dart package `sas_pairing`, generated private raw FFI of ABI v1 (25 functions, constants, records), the process-lifetime native-library loader (explicit path, 64-bit gate, symbol preflight, ABI version 1), layout and manifest consistency tests, Windows and Linux CI | [P8-D-001](decisions.md#p8-d-001--dart-native-binding-and-loader-architecture) | **Complete** ([evidence](#p81-evidence)) |
-| P8.2 | Runtime / Authority / Host lifecycle wrapper: public lifecycle objects, status and exception model, explicit consuming `close()`, native-cascade mirroring, FATAL and contract-violation latches | [P8-D-002](decisions.md#p8-d-002--dart-lifecycle-ownership-and-fail-closed-state) | **Complete** ([evidence](#p82-evidence)) |
+| P8.2 | Runtime / Authority / Host lifecycle wrapper: public lifecycle objects, status and exception model, explicit consuming `close()`, native-cascade mirroring, FATAL and contract-violation latches; P8.2.1: public initialization errors and the `READY` 1–10 bound | [P8-D-002](decisions.md#p8-d-002--dart-lifecycle-ownership-and-fail-closed-state) | **Complete** ([evidence](#p82-evidence), [P8.2.1](#p821-evidence)) |
 | P8.3 | Windows listener ownership and cooperative network driver: Bootstrap value model, listening-socket ownership handoff, attach and detach, bounded host drive and resume recheck, event mapping, connection wrappers, `RUN_UNTRACKED` close guidance | — | Next |
 | Later | Ceremony control and SAS presentation, runs and results, native artifact distribution, final P8 closure | — | Planned |
 
@@ -52,7 +52,7 @@ dart/
     src/
       lifecycle.dart           SasPairingRuntime / Authority / Host, AuthorityState / Status
       status.dart              SasPairingStatus (48 frozen values)
-      exceptions.dart          Native / Closed / Contract exceptions
+      exceptions.dart          Initialization / Native / Closed / Contract exceptions
       native/                  private: never exported
         abi_v1.dart            frozen ABI v1 tables (exports, values, record sizes)
         native_library_loader.dart   process-lifetime loader (P8.1, unchanged)
@@ -60,8 +60,9 @@ dart/
         native_process_context.dart  per-image process context: FATAL and contract latches
         generated/
           sas_pairing_bindings.g.dart  generated raw FFI (SasPairingNativeBindings)
-  test/                        manifest, binding, layout, loader, lifecycle (fake), FFI
-                               marshalling, status, public API, real-artifact, scope tests
+  test/                        manifest, binding, layout, loader, initialization, lifecycle
+                               (fake), FFI marshalling, status, public API, real-artifact,
+                               scope tests
 ```
 
 ## Lifecycle contract (P8-D-002)
@@ -82,7 +83,8 @@ SasPairingRuntime                 runtime_create / runtime_destroy (close)
 | Authority | 1 × `sas_pairing_authority_release`, 0 × host destroy | authority and all of its hosts closed; removed from its runtime; runtime stays open |
 | Runtime | 1 × `sas_pairing_runtime_destroy`, 0 × authority release, 0 × host destroy | runtime, all authorities, and all hosts closed |
 
-- **Latches** (in the package-private process context of the loaded image, below every runtime, never cleared): status 900 from any lifecycle call sets the FATAL latch; an `OK` output that breaks a frozen success invariant (zero handle, authority state `INVALID` or unknown, `READY` with 0, `BUSY`/`EXHAUSTED` with nonzero remaining) sets the contract latch. Either refuses every later normal operation, including `SasPairingRuntime.create`, without a native call; recovery is an OS process restart.
+- **Latches** (in the package-private process context of the loaded image, below every runtime, never cleared): status 900 from any lifecycle call sets the FATAL latch; an `OK` output that breaks a frozen success invariant (zero handle, authority state `INVALID` or unknown, `READY` with a remaining count outside 1–10, `BUSY`/`EXHAUSTED` with nonzero remaining) sets the contract latch. The bound validates one returned snapshot; Dart keeps no budget, decrement, or expected next value. Either refuses every later normal operation, including `SasPairingRuntime.create`, without a native call; recovery is an OS process restart.
+- **Initialization failures** (P8.2.1). A loader failure inside `SasPairingRuntime.create` is translated at one package-private boundary into the public `SasPairingInitializationException` (category `SasPairingInitializationFailure`, message preserved, no native status). Pre-load failures (pointer width, invalid path, OS load failure) have `processRestartRequired == false` and may be retried after correcting the cause; post-load failures (missing export, version query 0, version mismatch, verification failure) have `processRestartRequired == true` and fail every later `create` in the process. The private loader types are never exported.
 - **Runtime recreation** reuses the same loaded image (the loader opens nothing once ready) and resets nothing: not the latches, the authority opportunity budget, the START limiter, or any process-session state.
 
 ## Real-native test topology
@@ -158,6 +160,23 @@ Commits on `feature/p8-dart-package`: `dd2054e` (`docs: define p8 dart lifecycle
 | Dart tests | 110 (Windows: 109 passed, 1 Linux-only skipped; Linux: the Windows-only test skipped): manifest 7, generated bindings 6, record layout 4, loader 19, real artifact 7, scope 10, lifecycle 40, FFI marshalling 7, status 5, public API 5; `dart format` clean; `dart analyze --fatal-infos` clean |
 | Mutations (temporary, reverted) | Each made its test fail: a `Finalizer` in the lifecycle (scope test); a public `int get nativeHandle` (public API test); host invalidation removed from authority close; child invalidation removed from runtime close; a second runtime close and a second host close calling native; runtime close calling `authority.close()` first; authority close calling `host.close()` first; a normal call entering native after FATAL; `busy` 105 → 115 (status consistency); scope length cut at the first NUL; scope round-tripped through a `String` (marshalling tests) |
 | Native regression | `abi::tests::freeze` 3 passed locally and in the Dart workflow; the unchanged `Rust security core` and `Repository consistency` workflows green on the same head |
+
+### P8.2.1 evidence
+
+Corrective increment after independent review of P8.2, on the same branch from `ea3ce92`: `45cf6d4` (`fix: harden p8.2 public initialization and status bounds`), then the closure commit `docs: close p8.2.1 lifecycle correction`. No native file changed.
+
+| Item | Result |
+|---|---|
+| Findings | (1) `SasPairingRuntime.create` could throw the private P8.1 `NativeLibraryInitializationException`, which a consumer of the public entrypoint cannot name or catch by type; (2) `queryStatus()` accepted `READY` with any remaining count above 0, although a successful `READY` reports 1–10 |
+| Public surface | The entrypoint now also exports `SasPairingInitializationException` and `SasPairingInitializationFailure` (explicit `show` list); still nothing from `lib/src/native/`; `NativeLibraryInitializationException` and `NativeLoadFailure` added to the prohibited public names |
+| Mapping | Exhaustive switch, private → public, same seven names: `unsupportedPointerWidth`, `invalidLibraryPath`, `openFailed` (restart false); `missingSymbol`, `abiVersionQueryFailed`, `abiVersionMismatch`, `verificationFailed` (restart true) |
+| Initialization tests | 12 (`initialization_test.dart`, fake loader seam): the category and restart table against every private value; each of the seven failures reaching the `create` boundary is the public type (never the private one) with the right category, restart class, and loader message, no lifecycle service, and an image retained exactly when restart is required; invalid path then a valid path → runtime created, one open; ABI mismatch then another path → the same public failure, one open only; a non-loader error passes untranslated |
+| Public API tests | 11 (`public_api_test.dart`, +6): consumer-visible types; the restart table; the real `SasPairingRuntime.create` (this isolate's process loader, nothing loaded) with an empty, relative, missing absolute, and non-library path → `SasPairingInitializationException` (`invalidLibraryPath` ×3, `openFailed`), restart false; an architecture check that `exceptions.dart` knows nothing of the loader, the public exception holds only `failure` and `message`, no doc comment in `lifecycle.dart` names a private loader type, and in code they appear only in the import and the one translation boundary used by `create` |
+| `READY` bound | `READY` 1 and 10 → `ready`; `READY` 0, 11, 500, and `0xFFFFFFFF` → `SasPairingContractException`, contract latch set, later `queryStatus`, `createHost`, `registerAuthority`, and runtime create refused with no native call, host/authority/runtime cleanup still one native call each; `BUSY` and `EXHAUSTED` still require 0; a sequence 1, 10, 4 is accepted (no snapshot is compared with an earlier one) |
+| Lifecycle regression | `lifecycle_test.dart` 41 (40 unchanged + 1 bounds test; the impossible-state table gained three `READY` rows); real Windows and Linux lifecycle children unchanged |
+| Mutations (temporary, reverted) | Each made its tests fail: (A) `create` without the translation boundary → the four public `create` tests and the architecture test; (B) `abiVersionMismatch` with restart false → initialization and public restart tests; (C) `READY` accepted for `remaining > 0` → the impossible-state test at `READY` 11; (D) upper bound `< 10` → the bounds test and every test whose default fake answers `READY` 10; (E) `NativeLibraryInitializationException` exported from the entrypoint → public API and scope export tests |
+| Native boundary | `git diff ea3ce92 -- core` and `git diff 80ecbb1 -- core` empty |
+| Dart tests | 128 (Windows with the real DLL: 127 passed, 1 Linux-only skipped): manifest 7, generated bindings 6, record layout 4, loader 19, initialization 12, real artifact 7, scope 10, lifecycle 41, FFI marshalling 7, status 5, public API 11; `dart format` clean; `dart analyze --fatal-infos` clean |
 
 ## Nonclaims
 
