@@ -2,7 +2,7 @@
 
 > **Pre-alpha, experimental.** P8 builds the Dart binding of the frozen sas-pairing native ABI v1. It is not production-security approved, not audited, and not formally verified. The protocol is implemented only by the native Rust core; Dart binds C.
 
-**Status: P8 IN PROGRESS — P8.1 in progress.** Roadmap: [P8 — Dart Package](../../roadmap/P8-dart-package.md). Decisions: [decisions.md](decisions.md). Package: [`dart/`](../../dart/README.md).
+**Status: P8 IN PROGRESS — P8.1 COMPLETE; P8.2 next.** Roadmap: [P8 — Dart Package](../../roadmap/P8-dart-package.md). Decisions: [decisions.md](decisions.md). Package: [`dart/`](../../dart/README.md).
 
 ## Baseline
 
@@ -16,7 +16,7 @@
 
 | Increment | Scope | Decisions | State |
 |---|---|---|---|
-| P8.1 | Dart package foundation: pure-Dart package `sas_pairing`, generated private raw FFI of ABI v1 (25 functions, constants, records), the process-lifetime native-library loader (explicit path, 64-bit gate, symbol preflight, ABI version 1), layout and manifest consistency tests, Windows and Linux CI | [P8-D-001](decisions.md#p8-d-001--dart-native-binding-and-loader-architecture) | In progress |
+| P8.1 | Dart package foundation: pure-Dart package `sas_pairing`, generated private raw FFI of ABI v1 (25 functions, constants, records), the process-lifetime native-library loader (explicit path, 64-bit gate, symbol preflight, ABI version 1), layout and manifest consistency tests, Windows and Linux CI | [P8-D-001](decisions.md#p8-d-001--dart-native-binding-and-loader-architecture) | **Complete** ([evidence](#p81-evidence)) |
 | P8.2 | Runtime / Authority / Host lifecycle wrapper | — | Next |
 | Later | Listener handoff, cooperative drive and events, connections and runs, ceremony control and SAS presentation, results, native artifact distribution, final P8 closure | — | Planned |
 
@@ -84,7 +84,23 @@ Dart statics are isolate-local, so the loader is a singleton per isolate, not pe
 
 ## Evidence
 
-Recorded per increment at its closure.
+### P8.1 evidence
+
+Commits on `feature/p8-dart-package`: `36222c8` (`docs: define p8 dart binding foundation`), `799fab8` (`feat: add dart native abi v1 bindings`), `67139a7` (`test: verify dart abi v1 foundation`; CI green on that exact head), then the closure commit `docs: close p8.1 dart binding foundation`.
+
+| Item | Result |
+|---|---|
+| Toolchain | Dart SDK 3.13.4 (stable), locally and pinned in CI; package constraint `^3.11.0`; `ffi` ^2.2.0; dev `ffigen` 22.0.0 (exact), `lints` ^6.1.0, `test` ^1.32.0; no Flutter |
+| Generation | `dart run ffigen --config ffigen.yaml` from `dart/`, header `../core/include/sas_pairing.h`, output `lib/src/native/generated/sas_pairing_bindings.g.dart` (1,259 lines, LF); local regeneration byte-identical (Windows, libclang 19.1.5); CI regeneration with `git diff --exit-code` passes on Linux (Ubuntu `libclang-dev`) and Windows |
+| Bound exports | Exactly the 25 frozen functions; every generated native signature equals the header declaration (C `const` has no FFI counterpart) |
+| Type mapping | `int32_t` → `Int32`, `uint32_t` → `Uint32`, `uint64_t` → `Uint64` (all six handle types), `uint8_t` → `Uint8`, `uintptr_t` → `UintPtr` (`sas_pairing_socket_t`), `size_t` → `Size`, pointers → `Pointer<T>`; 21 ABI typedefs checked against manifest §6 |
+| Constants | 145 generated constants (2 version, 48 statuses, 84 namespace values, 11 handle-invalid and scalar values), each mirrored by name and value in `abi_v1.dart` and compared with the manifest row by row; `SAS_PAIRING_SOCKET_INVALID` (`UINTPTR_MAX`) is `-1` as a 64-bit Dart `int` |
+| Records | `sas_pairing_bytes_view_t` 16, `sas_pairing_bootstrap_view_t` 64, `sas_pairing_event_t` 128, `sas_pairing_result_info_t` 56, `sas_pairing_action_t` 24, `sas_pairing_sas_presentation_t` 56 (`sizeOf` equals the frozen size); all 37 manifest field offsets and sizes measured from memory; fixed arrays 64 / 32 / 14 / 2; no padding |
+| Real artifact | Windows `sas_pairing_core.dll` (local and CI) and Linux `libsas_pairing_core.so` (CI): the production loader opens it from the explicit path, all 25 symbols resolve by exact name, `sas_pairing_abi_version()` = 1; a second initialization returns the identical retained object |
+| Fresh-process states | Child processes with the real loader: a missing path then the artifact → pre-load failure, then ready (version 1); a foreign real library (kernel32.dll / libc.so.6) then the artifact → permanent `missingSymbol` failure naming all 25 exports, and the artifact is never opened |
+| Dart tests | 48 passed (manifest 7, generated bindings 6, record layout 4, loader state machine 19, real artifact 5, scope 7); `dart format` clean; `dart analyze --fatal-infos` clean, generated file included |
+| Mutations (temporary, reverted) | Each made its test fail: status `SAS_PAIRING_FATAL` 900 → 901; an export removed from the ffigen filter; a fake export added to the ffigen filter; a fake export added to the Dart export list; required ABI version 1 → 2 (real-artifact smoke fails); event size expectation 128 → 120; generated `request_id` length 64 → 63; a `close()` call in the loader (scope test) |
+| Native regression | `git diff 80ecbb1 -- core` is empty; `abi::tests::freeze` 3 passed locally and in the Dart workflow; the unchanged `Rust security core` and `Repository consistency` workflows are green on the same head |
 
 ## Nonclaims
 

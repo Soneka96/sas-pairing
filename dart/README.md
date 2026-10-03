@@ -2,7 +2,7 @@
 
 Experimental, pre-alpha Dart package for the sas-pairing native core. **Not production-security approved, not audited, not formally verified.** Do not use it to protect production systems.
 
-**Status: P8 IN PROGRESS — P8.1.** The package foundation and the private bindings of the frozen [native ABI v1](../docs/p7-native-abi/abi-v1-manifest.md) exist. **There is no pairing API yet:** the public library `package:sas_pairing/sas_pairing.dart` intentionally exports nothing. The high-level API (runtime, authority, and host lifecycle first) begins in P8.2. See the [P8 package](../docs/p8-dart-package/README.md) and [P8-D-001](../docs/p8-dart-package/decisions.md#p8-d-001--dart-native-binding-and-loader-architecture).
+**Status: P8 IN PROGRESS — P8.1 COMPLETE.** The package foundation and the private bindings of the frozen [native ABI v1](../docs/p7-native-abi/abi-v1-manifest.md) exist. **There is no pairing API yet:** the public library `package:sas_pairing/sas_pairing.dart` intentionally exports nothing. The high-level API (runtime, authority, and host lifecycle first) begins in P8.2. See the [P8 package](../docs/p8-dart-package/README.md) and [P8-D-001](../docs/p8-dart-package/decisions.md#p8-d-001--dart-native-binding-and-loader-architecture).
 
 ## What exists in P8.1
 
