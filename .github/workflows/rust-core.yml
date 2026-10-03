@@ -105,6 +105,17 @@ jobs:
             abi::tests::listener::attach_fails_closed_on_unsupported_platforms \
             -- --exact | tee unsupported-listener.log
           grep -F 'test result: ok. 1 passed' unsupported-listener.log
+      # P7.5: drive, resume recheck, and connection close fail closed with
+      # SAS_PAIRING_UNSUPPORTED_PLATFORM without any network progress; result access stays
+      # ordinary ABI data access.
+      - name: Native ABI network drive fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib \
+            abi::tests::network::driving_fails_closed_on_unsupported_platforms \
+            -- --exact | tee unsupported-drive.log
+          grep -F 'test result: ok. 1 passed' unsupported-drive.log
       - run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
       - name: Native ABI refuses panic = "abort"
         shell: bash

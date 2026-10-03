@@ -1,13 +1,14 @@
-//! Native runtime lifecycle and handles (P7-D-001, P7-D-003, P7-D-005).
+//! Native runtime lifecycle and handles (P7-D-001, P7-D-003, P7-D-005, P7-D-010).
 //!
 //! At most one runtime is active per OS process, and the runtime is the fatal-containment unit.
-//! Handles of every kind (runtimes, authorities, hosts) are opaque process-local `u64` values
-//! drawn from one monotonic counter: never zero, never reused, never wrapped, and never equal
-//! across kinds. Creating a runtime registers no authority, takes no OS lock, starts no listener,
-//! and generates no protocol randomness. The runtime owns the authorities registered through it
-//! and the hosts created for them (and, through the hosts, their listeners and owner loops), and
-//! every authority, host, and listener operation runs while holding the runtime slot, so it
-//! serializes with release and destroy.
+//! Handles of every kind (runtimes, authorities, hosts, connections, runs, results) are opaque
+//! process-local `u64` values drawn from one monotonic counter: never zero, never reused, never
+//! wrapped, and never equal across kinds. Creating a runtime registers no authority, takes no OS
+//! lock, starts no listener, and generates no protocol randomness. The runtime owns the
+//! authorities registered through it, the hosts created for them (and, through the hosts, their
+//! listeners, owner loops, and connection and run references), and every surfaced
+//! `PairingResult`. Every operation that issues a handle runs while holding the runtime slot, so
+//! it serializes with every other, with release, and with destroy.
 
 use std::{
     collections::BTreeMap,
@@ -26,7 +27,7 @@ use super::{
         SAS_PAIRING_INVALID_HANDLE, SAS_PAIRING_OK,
     },
 };
-use crate::TrustedAuthority;
+use crate::{TrustedAuthority, ceremony::PairingResult};
 
 /// Issues each handle value at most once per process, across every handle kind. `0` is the
 /// exhausted sentinel: after `u64::MAX` has been issued, allocation fails forever instead of
@@ -43,6 +44,23 @@ impl HandleCounter {
     #[cfg(test)]
     pub(super) const fn starting_at(next: u64) -> Self {
         Self(AtomicU64::new(next))
+    }
+
+    /// Whether `count` more handles can still be issued, without issuing any: the counter's
+    /// next value and every value up to `count - 1` above it exist. Non-consuming, so a check
+    /// that is followed by fewer (or no) allocations burns nothing.
+    #[cfg_attr(
+        all(not(windows), not(test)),
+        expect(
+            dead_code,
+            reason = "only a Windows drive issues handles after a preflight"
+        )
+    )]
+    pub(super) fn can_allocate(&self, count: u64) -> bool {
+        match self.0.load(Ordering::SeqCst) {
+            0 => count == 0,
+            next => u64::MAX - next >= count.saturating_sub(1),
+        }
     }
 
     pub(super) fn allocate(&self) -> Option<NonZeroU64> {
@@ -74,6 +92,11 @@ pub(super) struct Runtime {
     /// boxed, so a host context never moves once created: map changes and removal move only
     /// the outer box, never the router box an owner loop borrows through.
     pub(super) hosts: BTreeMap<NonZeroU64, Box<HostContext>>,
+    /// Every `PairingResult` a drive surfaced, keyed by its opaque result handle (P7-D-010).
+    /// Owned here, at the runtime, and not under a host or connection, so a surfaced local
+    /// completion outlives its connection, listener, host, and authority; only result destroy
+    /// and runtime destroy end it. Each entry is immutable once inserted.
+    pub(super) results: BTreeMap<NonZeroU64, PairingResult>,
 }
 
 impl Runtime {
@@ -84,18 +107,20 @@ impl Runtime {
     /// authority ownership ends. Then every owned authority drops, which releases its OS lease
     /// through the core's own `Drop` (an uncertain release is recorded by the core and fails
     /// that authority's registration closed). Never starts protocol work, clears fatal state, or
-    /// creates accounting.
+    /// creates accounting. The surfaced results (plain immutable data) are dropped last.
     fn destroy(self) {
         let Self {
             handle: _,
             authorities,
             mut hosts,
+            results,
         } = self;
         for host in hosts.values_mut() {
             let _ = host.detach_network();
         }
         drop(hosts);
         drop(authorities);
+        drop(results);
     }
 }
 
@@ -105,9 +130,15 @@ pub(super) enum Admission {
     /// A normal operation that may enter the core: refused with `FATAL` once the process is
     /// fatal, and a poisoned runtime slot makes the process fatal.
     Normal,
-    /// Cleanup (authority release, host destroy): admitted in the fatal state and on a poisoned
-    /// slot, like runtime destroy. It never clears fatal state.
+    /// Cleanup (authority release, host destroy, listener detach, connection close): admitted
+    /// in the fatal state and on a poisoned slot, like runtime destroy. It never clears fatal
+    /// state.
     Cleanup,
+    /// Reading or destroying ABI-owned result data that already exists (P7-D-010): admitted in
+    /// the fatal state and on a poisoned slot like cleanup, but a separate path because it never
+    /// enters the core at all. It creates no result, resumes no run, changes no accounting, and
+    /// never clears fatal state.
+    Data,
 }
 
 /// The native ABI state of one process: the fatal marker, the handle counter, and the one
@@ -150,13 +181,29 @@ impl AbiState {
             handle,
             authorities: BTreeMap::new(),
             hosts: BTreeMap::new(),
+            results: BTreeMap::new(),
         });
         Ok(handle)
     }
 
-    /// Issues the next opaque handle from the one shared counter (an authority handle here).
+    /// Issues the next opaque handle from the one shared counter.
     pub(super) fn allocate_handle(&self) -> Result<NonZeroU64, i32> {
         self.handles.allocate().ok_or(SAS_PAIRING_HANDLES_EXHAUSTED)
+    }
+
+    /// Whether `count` more handles can be issued, issuing none (the drive preflight,
+    /// P7-D-008). The answer stays true until the caller has allocated them as long as the
+    /// caller holds the runtime slot: every handle allocation (runtime create, authority
+    /// register, host create, and drive conversion) happens under that one mutex.
+    #[cfg_attr(
+        not(windows),
+        expect(
+            dead_code,
+            reason = "only a Windows drive issues handles after a preflight"
+        )
+    )]
+    pub(super) fn can_allocate_handles(&self, count: u64) -> bool {
+        self.handles.can_allocate(count)
     }
 
     /// Runs `op` on the live runtime named `runtime` while holding the runtime slot, so the

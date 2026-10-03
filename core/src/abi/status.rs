@@ -1,6 +1,6 @@
 //! Frozen ABI v1 status codes (`int32_t`), mirrored by `core/include/sas_pairing.h`.
 //!
-//! Values are explicit and never renumbered or reused. Ranges reserved for later increments:
+//! Values are explicit and never renumbered or reused. Ranges:
 //! 1–99 ABI, lifecycle, and arguments; 100–199 authority, resource, and core; 200–299 ceremony
 //! and protocol; 300–399 buffers and data results; 400–499 host, listener, and transport-boundary
 //! lifecycle; 900–999 fatal and internal. Wrappers treat
@@ -56,6 +56,12 @@ pub const SAS_PAIRING_TERMINATED: i32 = 202;
 )]
 pub const SAS_PAIRING_INVALID_BOOTSTRAP: i32 = 203;
 
+// Buffers and data results (300–399).
+
+/// A caller buffer is smaller than required; nothing was copied, no work was done, and the
+/// required size was reported (P7-D-008, P7-D-010).
+pub const SAS_PAIRING_BUFFER_TOO_SMALL: i32 = 300;
+
 // Host, listener, and transport-boundary lifecycle (400–499).
 
 /// The host already has a listener and owner loop; the new socket was not adopted.
@@ -70,6 +76,25 @@ pub const SAS_PAIRING_LISTENER_ALREADY_ATTACHED: i32 = 400;
     expect(dead_code, reason = "no listener can be attached off Windows")
 )]
 pub const SAS_PAIRING_LISTENER_SETUP_FAILED: i32 = 401;
+/// The host has no listener and owner loop: nothing was driven or closed (P7-D-008).
+#[cfg_attr(
+    all(not(windows), not(test)),
+    expect(dead_code, reason = "no listener can be attached off Windows")
+)]
+pub const SAS_PAIRING_LISTENER_NOT_ATTACHED: i32 = 402;
+/// The host's owner loop had already failed closed: nothing was driven; detach it (P7-D-008).
+#[cfg_attr(
+    all(not(windows), not(test)),
+    expect(dead_code, reason = "no owner loop exists off Windows")
+)]
+pub const SAS_PAIRING_OWNER_LOOP_CLOSED: i32 = 403;
+/// The owner loop's readiness wait failed, so it failed closed (P7-D-008). The WinSock code is
+/// diagnostic only and never part of the ABI.
+#[cfg_attr(
+    all(not(windows), not(test)),
+    expect(dead_code, reason = "no owner loop exists off Windows")
+)]
+pub const SAS_PAIRING_NETWORK_POLL_FAILED: i32 = 404;
 
 /// A Rust panic was contained: the native ABI state of this process is permanently fatal, and
 /// only a new OS process recovers (P6-D-004, P7-D-001). Distinct from every ordinary error.

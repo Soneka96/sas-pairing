@@ -11,7 +11,10 @@
 //! the caller bound, which borrows that boxed router for as long as it exists. This module is the
 //! only place that borrow is created, stored, and ended ([`router_for_owner_loop`], the one
 //! lifetime extension of the ABI), and the network context is always torn down while the router
-//! is alive. Nothing here drives the loop: it is inert until a later increment adds driving.
+//! is alive. Since P7.5 this module also runs the loop's bounded drive, resume recheck, and
+//! connection close (P7-D-008) and hands back only owned values: no reference to the router, the
+//! loop, or the network context leaves it. The host's connection and run references
+//! ([`Bindings`], P7-D-009) live beside the network context and end with it.
 
 use std::num::NonZeroU64;
 
@@ -27,6 +30,8 @@ use std::{
     sync::{Arc, PoisonError, Weak},
 };
 
+#[cfg(windows)]
+use super::network::{Bindings, DriveMode};
 use super::{
     authority::enter_core,
     runtime::{AbiState, Admission, Runtime},
@@ -40,7 +45,7 @@ use crate::{
 #[cfg(windows)]
 use crate::{
     protocol::Bootstrap,
-    windows_owner_loop::{OwnerLoopError, WindowsOwnerLoop},
+    windows_owner_loop::{ConnectionRef, OwnerLoopError, OwnerStep, WindowsOwnerLoop},
 };
 
 /// `sas_pairing_host_t`: an opaque process-local handle; `0` is never valid.
@@ -68,6 +73,11 @@ pub(super) struct HostContext {
     /// created only by `attach_network` and ended only by `detach_network`, and no reference to
     /// it or to its router borrow leaves this module (tests aside).
     network: Option<WindowsNetworkContext>,
+    /// The ABI connection and run references of the current network context (P7-D-009): empty
+    /// whenever `network` is `None`, and cleared before the network context ends on every path,
+    /// so no reference from one owner loop survives into a replacement.
+    #[cfg(windows)]
+    bindings: Bindings,
     /// The real core router. Boxed for a heap-stable address; never reassigned, moved out of its
     /// box, or borrowed mutably, so a network context's borrow stays valid while it exists.
     /// Dropping the context drops it, and with it every routed run and its executor clone.
@@ -86,6 +96,8 @@ impl HostContext {
         Self {
             authority,
             network: None,
+            #[cfg(windows)]
+            bindings: Bindings::new(),
             router: Box::new(router),
         }
     }
@@ -129,14 +141,71 @@ impl HostContext {
         Ok(())
     }
 
-    /// Ends the network context, if any, while the router is still alive: it leaves `self`
-    /// first, then the owner loop closes its listener and every connection it owns, then it is
-    /// dropped. Returns the loop's own close report. Idempotent; the router is untouched.
+    /// Ends the network context, if any, while the router is still alive: every connection and
+    /// run reference is invalidated first, then the network context leaves `self`, then the
+    /// owner loop closes its listener and every connection it owns, then it is dropped. Returns
+    /// the loop's own close report. Idempotent; the router is untouched.
     pub(super) fn detach_network(&mut self) -> Result<(), CloseError> {
+        #[cfg(windows)]
+        self.bindings.clear();
         match self.network.take() {
             Some(network) => network.close(),
             None => Ok(()),
         }
+    }
+
+    /// One bounded owner-loop call (`drive_once`, or `recheck_after_resume` for
+    /// `DriveMode::Resume`) on the attached loop, entered as core work; `None` without a network
+    /// context. The step is returned by value: it holds no reference to the router or the loop.
+    #[cfg(windows)]
+    pub(super) fn step_network(
+        &mut self,
+        mode: DriveMode,
+    ) -> Option<Result<OwnerStep, OwnerLoopError>> {
+        let network = self.network.as_mut()?;
+        Some(enter_core(|| {
+            #[cfg(test)]
+            NETWORK_STEPS.with(|count| count.set(count.get() + 1));
+            #[cfg_attr(
+                not(test),
+                expect(unused_mut, reason = "only the test seam rewrites it")
+            )]
+            let mut stepped = match mode {
+                DriveMode::Drive => network.owner_loop.drive_once(),
+                DriveMode::Resume => network.owner_loop.recheck_after_resume(),
+            };
+            #[cfg(test)]
+            if let Some(fault) = DRIVE_FAULT.take() {
+                fault(&mut network.owner_loop, &mut stepped);
+            }
+            stepped
+        }))
+    }
+
+    /// The owner loop's own close of exactly `connection` (its one teardown, no CANCEL),
+    /// entered as core work; `None` without a network context. The caller has already removed
+    /// the connection's references from [`Bindings`].
+    #[cfg(windows)]
+    pub(super) fn close_network_connection(
+        &mut self,
+        connection: ConnectionRef,
+    ) -> Option<Result<(), OwnerLoopError>> {
+        let network = self.network.as_mut()?;
+        Some(enter_core(|| {
+            network.owner_loop.close_connection(connection)
+        }))
+    }
+
+    /// The connection and run references of the current network context.
+    #[cfg(windows)]
+    pub(super) fn bindings_mut(&mut self) -> &mut Bindings {
+        &mut self.bindings
+    }
+
+    /// The connection and run references, read-only (tests only).
+    #[cfg(all(test, windows))]
+    pub(super) fn bindings(&self) -> &Bindings {
+        &self.bindings
     }
 
     /// The attached owner loop, for internal tests that drive it without any ABI export.
@@ -157,7 +226,7 @@ impl Drop for HostContext {
 }
 
 /// One Windows network context of a host: the owner loop over one already-bound listener and
-/// (from a later increment on) the connections it accepts, all borrowing the host's router.
+/// the connections it accepts, all borrowing the host's router.
 #[cfg(windows)]
 pub(super) struct WindowsNetworkContext {
     /// `'static` is not a claim that the router lives forever: it stands for "as long as the
@@ -260,6 +329,11 @@ thread_local! {
     pub(super) static ROUTER_FAULT: Cell<Option<fn() -> RouteError>> = const { Cell::new(None) };
 }
 
+/// A test fault applied to one real owner-loop step, with the loop itself (tests only).
+#[cfg(all(test, windows))]
+pub(super) type DriveFault =
+    fn(&mut WindowsOwnerLoop<'static>, &mut Result<OwnerStep, OwnerLoopError>);
+
 #[cfg(all(test, windows))]
 thread_local! {
     /// `WindowsOwnerLoop::from_bound_listener` calls made on this thread (tests only).
@@ -269,6 +343,12 @@ thread_local! {
     /// error returned.
     pub(super) static OWNER_LOOP_FAULT: Cell<Option<fn() -> OwnerLoopError>> =
         const { Cell::new(None) };
+    /// Owner-loop drive and recheck calls made on this thread (tests only): evidence that a
+    /// refused call (buffer, handles, fatal, no listener) did no network work at all.
+    pub(super) static NETWORK_STEPS: Cell<usize> = const { Cell::new(0) };
+    /// Rewrites the next real owner-loop step on this thread after it ran (tests only), with
+    /// the loop itself, so a test can fail the hosting context closed after real events exist.
+    pub(super) static DRIVE_FAULT: Cell<Option<DriveFault>> = const { Cell::new(None) };
     /// What each network context dropped on this thread observed once its owner loop and every
     /// connection were gone (tests only): `(other holders of the authority state, live
     /// connections of the authority)`, or `None` if the authority state was already gone.

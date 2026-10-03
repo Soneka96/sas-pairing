@@ -7,11 +7,14 @@
 //! enum, `Result`, or object pointer does. Every export enters Rust work through [`dispatch`],
 //! the one panic-containment boundary (P6-D-004).
 //!
-//! Argument precedence for every export (contract §15.7, §16.2, §17.5): raw-memory validation,
-//! then output slots set to their invalid values, then the fatal state (normal operations only),
-//! then the runtime handle, then the authority or host handle, then the core. Listener attach
-//! validates its Bootstrap configuration (a stateless value check) before the fatal state, and
-//! adopts the caller's socket only after every other check passed.
+//! Argument precedence for every export (contract §15.7, §16.2, §17.5, §18): raw-memory
+//! validation, then output slots set to their invalid values, then the fatal state (normal
+//! operations only), then the runtime handle, then the authority, host, connection, or result
+//! handle, then the core. Listener attach validates its Bootstrap configuration (a stateless
+//! value check) before the fatal state, and adopts the caller's socket only after every other
+//! check passed. The drive exports check the platform and their event capacity before the fatal
+//! state, and every remaining refusal (handles, listener, handle space) before the owner loop
+//! runs. Result access is ABI-owned data access and is admitted in the fatal state.
 
 // A caught panic is the containment model, so the supported artifact must unwind (P6-D-004
 // item 12). Profile settings can be overridden, so the build itself refuses `panic = "abort"`.
@@ -24,21 +27,27 @@ compile_error!(
 mod authority;
 mod hosting;
 mod listener;
+mod network;
 mod panic_boundary;
+mod result;
 mod runtime;
 mod status;
 #[cfg(test)]
 mod tests;
 
-use std::{marker::PhantomData, slice};
+use std::{marker::PhantomData, ptr, slice};
 
 #[cfg(windows)]
 use crate::protocol::{Bootstrap, MAX_BOOTSTRAP_FRAME};
 use authority::{AuthorityHandle, SAS_PAIRING_AUTHORITY_STATE_INVALID};
 use hosting::HostHandle;
 use listener::{ListenerSlot, SAS_PAIRING_SOCKET_INVALID, SocketHandle};
+use network::{ConnectionHandle, DriveMode, Event, drive_through, element_range, overlaps};
+use result::{ResultField, ResultHandle, ResultInfo};
 use runtime::AbiState;
-use status::{SAS_PAIRING_FATAL, SAS_PAIRING_INVALID_ARGUMENT, SAS_PAIRING_OK};
+use status::{
+    SAS_PAIRING_BUFFER_TOO_SMALL, SAS_PAIRING_FATAL, SAS_PAIRING_INVALID_ARGUMENT, SAS_PAIRING_OK,
+};
 
 /// The native ABI version. Not the protocol profile version and not the crate version.
 const ABI_VERSION: u32 = 1;
@@ -483,5 +492,206 @@ pub extern "C" fn sas_pairing_host_detach_listener(
 ) -> i32 {
     dispatch(SAS_PAIRING_FATAL, |state| {
         state.detach_listener(runtime, host)
+    })
+}
+
+/// Drives `host`'s owner loop once: one bounded `drive_once` (deadline sweeps, at most one
+/// readiness wait of at most 250 ms, at most one socket operation per connection, at most one
+/// accept), translated into at most `SAS_PAIRING_MAX_DRIVE_EVENTS` records written to `events`.
+///
+/// The return value says whether the call itself ran; `*out_failure` says whether the owner loop
+/// failed during it. On `OK`, `*out_count` events were written and must all be consumed, also
+/// when `*out_failure` is not `OK` (events produced before the loop failed closed are kept). A
+/// capacity below `SAS_PAIRING_MAX_DRIVE_EVENTS` gives `BUFFER_TOO_SMALL` with `*out_count` set
+/// to the required capacity and drives nothing (`events` may then be null with capacity `0`).
+/// Every refusal (arguments, platform, capacity, fatal, handles, no listener, handle space) is
+/// decided before any network progress. No outbound byte is returned: the adapter writes it.
+///
+/// # Safety
+///
+/// Non-null, aligned `out_count` and `out_failure` must each address one caller-owned writable
+/// value of their type, and a non-null `events` must address `event_capacity` caller-owned
+/// writable `sas_pairing_event_t` records, none accessed concurrently, for the duration of the
+/// call. Rust cannot validate other invalid addresses.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_host_drive(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+    events: *mut Event,
+    event_capacity: usize,
+    out_count: *mut usize,
+    out_failure: *mut i32,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        // SAFETY: forwarded unchanged under this export's own contract, which is
+        // `drive_through`'s.
+        unsafe {
+            drive_through(
+                state,
+                runtime,
+                host,
+                DriveMode::Drive,
+                events,
+                event_capacity,
+                out_count,
+                out_failure,
+            )
+        }
+    })
+}
+
+/// For trusted outer code after an OS resume notification: one `recheck_after_resume` of
+/// `host`'s owner loop, a deadline sweep and nothing else (no readiness wait, socket read or
+/// write, or accept), with exactly the event, capacity, handle-space, and `out_failure` contract
+/// of `sas_pairing_host_drive`.
+///
+/// # Safety
+///
+/// As for `sas_pairing_host_drive`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_host_recheck_after_resume(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+    events: *mut Event,
+    event_capacity: usize,
+    out_count: *mut usize,
+    out_failure: *mut i32,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        // SAFETY: forwarded unchanged under this export's own contract, which is
+        // `drive_through`'s.
+        unsafe {
+            drive_through(
+                state,
+                runtime,
+                host,
+                DriveMode::Resume,
+                events,
+                event_capacity,
+                out_count,
+                out_failure,
+            )
+        }
+    })
+}
+
+/// Closes one connection of `host`'s owner loop (cleanup): its connection handle and every run
+/// handle of that connection are invalidated first, then the loop's own close of that
+/// connection runs (no CANCEL, nothing retried). Allowed in the fatal state; never clears it.
+#[unsafe(no_mangle)]
+pub extern "C" fn sas_pairing_connection_close(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+    connection: ConnectionHandle,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        state.close_connection(runtime, host, connection)
+    })
+}
+
+/// Writes the fixed fields of `result` (its ceremony identity, the peer's role, the profile
+/// version, and the lengths of the variable fields) to `out_info`.
+///
+/// Null or misaligned `out_info` → `INVALID_ARGUMENT`, nothing written. Otherwise `*out_info` is
+/// zeroed on entry and filled only on `OK`. ABI-owned data access: allowed in the fatal state,
+/// never entering the core.
+///
+/// # Safety
+///
+/// A non-null, aligned `out_info` must address one caller-owned writable
+/// `sas_pairing_result_info_t`, not accessed concurrently for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_result_info(
+    runtime: RuntimeHandle,
+    result: ResultHandle,
+    out_info: *mut ResultInfo,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        if out_info.is_null() || !out_info.is_aligned() {
+            return SAS_PAIRING_INVALID_ARGUMENT;
+        }
+        // SAFETY: the pointer is non-null and aligned (checked above), and the caller guarantees
+        // one writable record it owns, unaliased, for this call. `ResultInfo` is a padding-free
+        // `repr(C)` record of integers and bytes with no destructor, written whole.
+        let write_out = |value: ResultInfo| unsafe { out_info.write(value) };
+        write_out(ResultInfo::ZERO);
+        match state.result_info(runtime, result) {
+            Ok(info) => {
+                write_out(info);
+                SAS_PAIRING_OK
+            }
+            Err(status) => status,
+        }
+    })
+}
+
+/// Copies the bytes of one variable-length `field` of `result` into `buffer`.
+///
+/// `out_required` must be non-null and aligned; `buffer` may be null only when `capacity` is
+/// `0`; the buffer range must be describable and must not overlap `*out_required`; `field` must
+/// be a known `sas_pairing_result_field_t`. Otherwise `INVALID_ARGUMENT`, nothing written.
+/// Then `*out_required` is set to `0`, and once the result is found to the field's exact length.
+/// A capacity below it gives `BUFFER_TOO_SMALL` and copies nothing; otherwise exactly that many
+/// bytes are copied (never truncated, never NUL-terminated) and `OK` is returned. ABI-owned data
+/// access: allowed in the fatal state, never entering the core.
+///
+/// # Safety
+///
+/// A non-null, aligned `out_required` must address one caller-owned writable `size_t`, and a
+/// non-null `buffer` `capacity` caller-owned writable bytes, neither accessed concurrently for
+/// the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_result_copy(
+    runtime: RuntimeHandle,
+    result: ResultHandle,
+    field: u32,
+    buffer: *mut u8,
+    capacity: usize,
+    out_required: *mut usize,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        if out_required.is_null() || !out_required.is_aligned() {
+            return SAS_PAIRING_INVALID_ARGUMENT;
+        }
+        let (Some(required_range), Some(buffer_range)) = (
+            element_range(out_required.cast_const(), 1),
+            element_range(buffer.cast_const(), capacity),
+        ) else {
+            return SAS_PAIRING_INVALID_ARGUMENT;
+        };
+        if overlaps(buffer_range, required_range) {
+            return SAS_PAIRING_INVALID_ARGUMENT;
+        }
+        let Some(field) = ResultField::from_raw(field) else {
+            return SAS_PAIRING_INVALID_ARGUMENT;
+        };
+        // SAFETY: the pointer is non-null and aligned and does not overlap the buffer (checked
+        // above); the caller guarantees one writable `size_t` it owns, unaliased, for this call.
+        let write_required = |value: usize| unsafe { out_required.write(value) };
+        write_required(0);
+        let copied = state.with_result_field(runtime, result, field, |bytes| {
+            write_required(bytes.len());
+            if bytes.len() > capacity {
+                return SAS_PAIRING_BUFFER_TOO_SMALL;
+            }
+            if !bytes.is_empty() {
+                // SAFETY: `bytes.len() <= capacity`, so `buffer` is non-null (a null buffer has
+                // capacity 0) and its validated range holds the copy; the caller guarantees the
+                // bytes writable and unaliased for this call. The source is the runtime's own
+                // result storage, which no caller memory overlaps.
+                unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len()) };
+            }
+            SAS_PAIRING_OK
+        });
+        copied.unwrap_or_else(|status| status)
+    })
+}
+
+/// Destroys `result`: its handle is invalid forever once this returns and the immutable result
+/// is dropped. ABI-owned data cleanup: allowed in the fatal state, never entering the core.
+#[unsafe(no_mangle)]
+pub extern "C" fn sas_pairing_result_destroy(runtime: RuntimeHandle, result: ResultHandle) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        state.destroy_result(runtime, result)
     })
 }
