@@ -2,13 +2,14 @@
 
 ## Status
 
-🔵 **P8 IN PROGRESS — P8.1 COMPLETE; P8.2 next.** Its native prerequisite is met: P7 is complete and native ABI v1 is frozen ([P7 final closure](../docs/p7-native-abi/final-closure.md), [P7-D-013](../docs/p7-native-abi/decisions.md#p7-d-013--abi-v1-final-freeze-and-wrapper-handoff)). Work happens on the one branch `feature/p8-dart-package` from `main` at `80ecbb1` (the P7 pull request merge), with one pull request at P8 closure. Package: [docs/p8-dart-package](../docs/p8-dart-package/README.md); decisions: [P8-D-001](../docs/p8-dart-package/decisions.md#p8-d-001--dart-native-binding-and-loader-architecture).
+🔵 **P8 IN PROGRESS — P8.2 COMPLETE; P8.3 next.** Its native prerequisite is met: P7 is complete and native ABI v1 is frozen ([P7 final closure](../docs/p7-native-abi/final-closure.md), [P7-D-013](../docs/p7-native-abi/decisions.md#p7-d-013--abi-v1-final-freeze-and-wrapper-handoff)). Work happens on the one branch `feature/p8-dart-package` from `main` at `80ecbb1` (the P7 pull request merge), with one pull request at P8 closure. Package: [docs/p8-dart-package](../docs/p8-dart-package/README.md); decisions: [P8-D-001](../docs/p8-dart-package/decisions.md#p8-d-001--dart-native-binding-and-loader-architecture), [P8-D-002](../docs/p8-dart-package/decisions.md#p8-d-002--dart-lifecycle-ownership-and-fail-closed-state).
 
 | Increment | Scope | State |
 |---|---|---|
 | P8.1 | Dart package foundation and the frozen native ABI v1 bindings: pure-Dart package `sas_pairing`, generated private raw FFI, process-lifetime loader (explicit path, 64-bit gate, symbol preflight, ABI version 1), consistency tests, Windows and Linux CI ([P8-D-001](../docs/p8-dart-package/decisions.md#p8-d-001--dart-native-binding-and-loader-architecture)) | **Complete** ([evidence](../docs/p8-dart-package/README.md#p81-evidence)) |
-| P8.2 | Runtime / Authority / Host lifecycle wrapper ([P8-D-002](../docs/p8-dart-package/decisions.md#p8-d-002--dart-lifecycle-ownership-and-fail-closed-state)) | In progress |
-| Later | Listener handoff, cooperative drive and events, connections and runs, ceremony control and SAS presentation, results, native artifact distribution, P8 closure | Planned |
+| P8.2 | Runtime / Authority / Host lifecycle wrapper: public lifecycle objects, status and exception model, explicit consuming `close()` mirroring the native cascade, process FATAL and contract-violation latches ([P8-D-002](../docs/p8-dart-package/decisions.md#p8-d-002--dart-lifecycle-ownership-and-fail-closed-state)) | **Complete** ([evidence](../docs/p8-dart-package/README.md#p82-evidence)) |
+| P8.3 | Windows listener ownership + cooperative network driver: Bootstrap value model, listening-socket ownership handoff, attach and detach, bounded host drive and resume recheck, event mapping, connection wrappers, `RUN_UNTRACKED` close guidance | Next |
+| Later | Ceremony control and SAS presentation, runs and results, native artifact distribution, P8 closure | Planned |
 
 ## Goal
 
