@@ -2,7 +2,7 @@
 
 > **Pre-alpha, experimental.** This is the language-neutral boundary that the future Dart (P8) and .NET (P9) wrappers call. It wraps the frozen experimental candidate `sas-pairing-vodozemac-profile-draft-01`, version 1, and is not production-security approved.
 
-This document is normative for the native ABI. The C declarations are in [`core/include/sas_pairing.h`](../../core/include/sas_pairing.h), and the Rust implementation is in [`core/src/abi`](../../core/src/abi/mod.rs). The decision behind the runtime and fatal model is [P7-D-001](decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit); the loader invariant it depends on is [P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime) (§14); the authority lifecycle is [P7-D-003](decisions.md#p7-d-003--authority-handles-ownership-and-lifecycle) (§15), and the core error mapping is [P7-D-004](decisions.md#p7-d-004--stable-core-error-mapping) (§3). Wherever this contract says "per OS process" or "for the rest of the process", it means under that invariant. The current contents are the P7.1 foundation (a version query and the runtime lifecycle) and the P7.2 authority lifecycle (register, release, status). No ceremony operation is exposed yet.
+This document is normative for the native ABI. The C declarations are in [`core/include/sas_pairing.h`](../../core/include/sas_pairing.h), and the Rust implementation is in [`core/src/abi`](../../core/src/abi/mod.rs). The decision behind the runtime and fatal model is [P7-D-001](decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit); the loader invariant it depends on is [P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime) (§14); the authority lifecycle is [P7-D-003](decisions.md#p7-d-003--authority-handles-ownership-and-lifecycle) (§15), the core error mapping is [P7-D-004](decisions.md#p7-d-004--stable-core-error-mapping) (§3), and hosting contexts are [P7-D-005](decisions.md#p7-d-005--hosting-context-ownership-and-router-lifetime) (§16). Wherever this contract says "per OS process" or "for the rest of the process", it means under that invariant. The current contents are the P7.1 foundation (a version query and the runtime lifecycle), the P7.2 authority lifecycle (register, release, status), and the P7.3 hosting-context foundation (host create and destroy). No networking or ceremony operation is exposed yet.
 
 ## 1. ABI version
 
@@ -63,11 +63,11 @@ The core's Rust `Error` discriminants are never exposed directly. Wrappers must 
 
 ## 4. Handles
 
-- `typedef uint64_t sas_pairing_runtime_t;` and `typedef uint64_t sas_pairing_authority_t;`. `0` (`SAS_PAIRING_RUNTIME_INVALID`, `SAS_PAIRING_AUTHORITY_INVALID`) is never a valid handle.
+- `typedef uint64_t sas_pairing_runtime_t;`, `typedef uint64_t sas_pairing_authority_t;`, and `typedef uint64_t sas_pairing_host_t;`. `0` (`SAS_PAIRING_RUNTIME_INVALID`, `SAS_PAIRING_AUTHORITY_INVALID`, `SAS_PAIRING_HOST_INVALID`) is never a valid handle.
 - Handles are opaque and process-local. They are not pointers, network identities, security secrets, authority identities, or reusable protocol identifiers, and must not be persisted, sent to peers, or used as trust material.
-- Every handle kind (runtimes, authorities, and later ceremonies) comes from one shared counter that starts at `1` and only increases (P7-D-003). Each value is issued once, to one kind, so a handle of one kind presented as another names nothing (`SAS_PAIRING_INVALID_HANDLE`). Under the loader invariant (§14) the counter lives as long as the OS process, so a value is issued at most once per OS process, a destroyed or released (stale) handle never aliases a later object, and using one returns `SAS_PAIRING_INVALID_HANDLE` forever: create H1, destroy H1, create H2 gives H2 ≠ H1. The counter is module state; a host that unloads the library or loads another image of it gets a new counter, and no uniqueness is promised across images.
-- After `UINT64_MAX` has been issued, creation and registration return `SAS_PAIRING_HANDLES_EXHAUSTED` for the rest of the process. The counter never wraps or resets.
-- A value reserved for an operation that then fails (§15.2) is burned: it is never issued.
+- Every handle kind (runtimes, authorities, hosts, and later connections and runs) comes from one shared counter that starts at `1` and only increases (P7-D-003, P7-D-005). Each value is issued once, to one kind, so a handle of one kind presented as another names nothing (`SAS_PAIRING_INVALID_HANDLE`). Under the loader invariant (§14) the counter lives as long as the OS process, so a value is issued at most once per OS process, a destroyed or released (stale) handle never aliases a later object, and using one returns `SAS_PAIRING_INVALID_HANDLE` forever: create H1, destroy H1, create H2 gives H2 ≠ H1. The counter is module state; a host that unloads the library or loads another image of it gets a new counter, and no uniqueness is promised across images.
+- After `UINT64_MAX` has been issued, creation and registration (runtime, authority, host) return `SAS_PAIRING_HANDLES_EXHAUSTED` for the rest of the process. The counter never wraps or resets.
+- A value reserved for an operation that then fails (§15.2, §16.2) is burned: it is never issued.
 
 ## 5. Runtime lifecycle
 
@@ -90,7 +90,7 @@ The output slot is set to `0` on entry and receives a handle only once creation 
 
 | Condition | Result |
 |---|---|
-| Valid live handle | The handle is invalidated first (and with it every authority handle the runtime owns), then the runtime is destroyed best-effort, releasing its authorities (§15.5); `SAS_PAIRING_OK` |
+| Valid live handle | The handle is invalidated first (and with it every authority and host handle the runtime owns), then the runtime is destroyed best-effort: its hosts and their routers first, then its authorities (§15.5, §16.5); `SAS_PAIRING_OK` |
 | `0`, unknown, random, or already destroyed handle | `SAS_PAIRING_INVALID_HANDLE` |
 | Valid handle while the process is fatal | Allowed: `SAS_PAIRING_OK` (fatal state stays set) |
 | A panic is caught | `SAS_PAIRING_FATAL`; the process becomes fatal |
@@ -101,8 +101,8 @@ After a successful destroy the handle is invalid forever, and a later create (ou
 
 A caught Rust panic in any export makes the native ABI state of the process permanently fatal (P6-D-004, P7-D-001):
 
-- every later `sas_pairing_runtime_create`, `sas_pairing_authority_register`, and `sas_pairing_authority_status` returns `SAS_PAIRING_FATAL` without entering the core, as will every normal operation added later;
-- an existing runtime stays destroyable and its authorities releasable (cleanup), and cleanup never clears the fatal state;
+- every later `sas_pairing_runtime_create`, `sas_pairing_authority_register`, `sas_pairing_authority_status`, and `sas_pairing_host_create` returns `SAS_PAIRING_FATAL` without entering the core, as will every normal operation added later;
+- an existing runtime stays destroyable, its authorities releasable, and its hosts destroyable (cleanup), and cleanup never clears the fatal state;
 - nothing resets it: there is no clear, reset, or re-initialize API, and destroying and re-creating gives no fresh state or accounting (P6-D-002);
 - the only recovery is a new OS process. Unloading and reloading the library, or loading another copy of it, is not recovery: it leaves the supported contract (§14) and is not process replacement (P6-D-004).
 
@@ -151,7 +151,7 @@ Protocol and application data (identities, scopes, contexts, bootstrap values) a
 
 ## 11. Threading
 
-Every export is safe to call concurrently from any threads: concurrent creates admit exactly one runtime, concurrent valid, stale, or random destroys never race into undefined behavior, and authority operations serialize with runtime destruction as §15.7 defines. The library starts no thread. Host requirement: the library stays loaded for the rest of the process once stateful use begins (§14), so no thread may unload it, including after `SAS_PAIRING_FATAL`. Ceremony and network operations, when added, define their own interaction with destroy while keeping §15.7.
+Every export is safe to call concurrently from any threads: concurrent creates admit exactly one runtime, concurrent valid, stale, or random destroys never race into undefined behavior, and authority and host operations serialize with authority release and runtime destruction as §15.7 and §16.7 define. The library starts no thread. Host requirement: the library stays loaded for the rest of the process once stateful use begins (§14), so no thread may unload it, including after `SAS_PAIRING_FATAL`. Ceremony and network operations, when added, define their own interaction with destroy while keeping §15.7.
 
 ## 12. Supported build
 
@@ -239,11 +239,11 @@ The core decides ownership: one active registration per canonical authority per 
 | Condition | Result |
 |---|---|
 | `runtime` invalid, or `authority` `0`, unknown, released, of another kind, or owned by no live runtime | `SAS_PAIRING_INVALID_HANDLE` |
-| Valid | The handle is removed from the runtime **first**, then the core's explicit release runs: `SAS_PAIRING_OK`, or its mapped error (`BUSY` while another holder shares the registration, which then ends when that holder goes; `OWNERSHIP_UNCERTAIN` when the lease release is uncertain, after which this authority's registration fails closed until process restart) |
+| Valid | Every host of this authority is removed and destroyed (§16.4), the handle is removed from the runtime, and only then does the core's explicit release run: `SAS_PAIRING_OK`, or its mapped error (`BUSY` while another holder shares the registration, which then ends when that holder goes, never because of an ABI-owned host; `OWNERSHIP_UNCERTAIN` when the lease release is uncertain, after which this authority's registration fails closed until process restart) |
 | Process fatal | Allowed, as cleanup (like runtime destroy); same results |
 | A panic is caught | `SAS_PAIRING_FATAL`; the process becomes fatal |
 
-After the call returns, the handle is invalid forever, whatever the result. A failed release never restores it and never creates a replacement handle. Release ends only the registration and its OS lease; it does not end process-session accounting, reset the START limiter or the budget, permit a library unload or reload, or reset the ABI.
+After the call returns, the handle and every host handle of the authority are invalid forever, whatever the result. A failed release never restores them and never creates a replacement handle. Release ends only the registration and its OS lease; it does not end process-session accounting, reset the START limiter or the budget, permit a library unload or reload, or reset the ABI.
 
 ### 15.4 Status
 
@@ -259,7 +259,7 @@ Both outputs must be distinct, aligned, writable slots. If either is null or mis
 
 ### 15.5 Ownership and runtime destroy
 
-The runtime is the owning root: it owns its authorities as real core objects (no pointers cross the boundary), and one runtime may own several authorities for different canonical scopes. `sas_pairing_runtime_destroy` cascades: it invalidates the runtime handle and, with it, every authority handle the runtime owns, then releases those authorities through the core's own drop path, best-effort (an uncertain lease release is recorded by the core and fails that authority closed, as for an explicit release), and returns as in §5. Callers need not release authorities first. After destroy returns, no authority handle of that runtime is valid, and none aliases anything in a later runtime. Destroy is cleanup only: it never resets fatal state, creates accounting, or does ceremony work. A panic during destroy is contained (fatal, `SAS_PAIRING_FATAL`) and the runtime is never reinserted.
+The runtime is the owning root: it owns its authorities as real core objects (no pointers cross the boundary), and one runtime may own several authorities for different canonical scopes. `sas_pairing_runtime_destroy` cascades: it invalidates the runtime handle and, with it, every authority and host handle the runtime owns, then destroys every host (§16.5), then releases those authorities through the core's own drop path, best-effort (an uncertain lease release is recorded by the core and fails that authority closed, as for an explicit release), and returns as in §5. Callers need not release authorities first. After destroy returns, no authority handle of that runtime is valid, and none aliases anything in a later runtime. Destroy is cleanup only: it never resets fatal state, creates accounting, or does ceremony work. A panic during destroy is contained (fatal, `SAS_PAIRING_FATAL`) and the runtime is never reinserted.
 
 ### 15.6 Process-session persistence
 
@@ -282,3 +282,95 @@ Runtime destruction serializes with authority operations. A call admitted agains
 | register vs register, different scopes | each `OK` with distinct handles, where platform ownership permits |
 
 No interleaving gives a use-after-free, an authority surviving its runtime, two live handles for one canonical authority, or a deadlock.
+
+## 16. Hosting contexts
+
+Normative ([P7-D-005](decisions.md#p7-d-005--hosting-context-ownership-and-router-lifetime)). A host is one local routing and hosting context for one registered authority: it owns one real core `Router` built over that authority's executor. The ABI wraps the core's router semantics and does not redefine them.
+
+**Three lifetimes.** They are distinct and must not be confused:
+
+| Lifetime | What it is | Begins | Ends |
+|---|---|---|---|
+| Authority *process session* | Long-lived security accounting: opportunity budget, START limiter and its clock, registration state (P6-D-002) | First successful OS ownership of the canonical authority in this OS process | Only with the OS process |
+| Authority *handle* | One ABI registration, holding the OS lease (§15) | `sas_pairing_authority_register` | Release, or runtime destroy |
+| Host *handle* | One router and hosting-object lifetime | `sas_pairing_host_create` | Host destroy, its authority's release, or runtime destroy |
+
+A new host handle is never a new security session, and no host operation ends or refreshes a process session.
+
+### 16.1 Types and object hierarchy
+
+| Item | Value |
+|---|---|
+| Handle | `typedef uint64_t sas_pairing_host_t;` `SAS_PAIRING_HOST_INVALID = 0` is never valid. Same rules as §4, from the same counter: a runtime or authority handle presented as a host handle, or a host handle presented as either, gives `SAS_PAIRING_INVALID_HANDLE` |
+
+```text
+Runtime (owning root)
+  ├── authorities: handle → TrustedAuthority
+  └── hosts:       handle → host context
+                     ├── parent authority handle
+                     └── Box<Router>   (Router::new(authority.executor()))
+```
+
+Each host has exactly one parent authority, owned by the same runtime. One authority may have several hosts, each with its own router; they share the authority's one opportunity budget, START limiter, guard, and process-session accounting through the authority's core state (the core's own multi-router rule). The router is owned in a heap allocation, so its address stays stable for the host's lifetime while the runtime's maps change; that address is an implementation property for later increments, never ABI semantics, and no pointer to it or to any other Rust object crosses or is stored in the ABI.
+
+### 16.2 Creation
+
+**`sas_pairing_status_t sas_pairing_host_create(sas_pairing_runtime_t runtime, sas_pairing_authority_t authority, sas_pairing_host_t *out_host)`**
+
+| Order | Condition | Result | `*out_host` |
+|---:|---|---|---|
+| 1 | `out_host` null or misaligned | `SAS_PAIRING_INVALID_ARGUMENT` | not written |
+| 2 | Otherwise the output is set to `0` | | `0` |
+| 3 | Process fatal | `SAS_PAIRING_FATAL`; the core is not entered (no executor clone, no router) | `0` |
+| 4 | `runtime` is `0`, unknown, destroyed, or another kind | `SAS_PAIRING_INVALID_HANDLE` | `0` |
+| 5 | `authority` is `0`, unknown, released, another kind, or not owned by `runtime` | `SAS_PAIRING_INVALID_HANDLE` | `0` |
+| 6 | Handle space exhausted | `SAS_PAIRING_HANDLES_EXHAUSTED`; no router is built | `0` |
+| 7 | The router constructor reports its documented failure (router-ID exhaustion) | `SAS_PAIRING_OWNERSHIP_UNCERTAIN`; the reserved value is burned, nothing installed | `0` |
+| 7′ | The router constructor returns any other error (a broken constructor invariant) | `SAS_PAIRING_FATAL`; the process becomes fatal | `0` |
+| 8 | Created | `SAS_PAIRING_OK` | the new non-zero handle |
+| — | A panic is caught | `SAS_PAIRING_FATAL`; the process becomes fatal; nothing installed | `0` |
+
+Creation builds the router with the reviewed `Router::new(authority.executor())` and nothing else. It consumes no opportunity, refreshes no budget, resets no START limiter, takes no OS lease, registers nothing, creates no ceremony, opens no router session, generates no protocol randomness, and opens no listener or socket. The authority's status (§15.4) is the same before and after.
+
+### 16.3 Destruction
+
+**`sas_pairing_status_t sas_pairing_host_destroy(sas_pairing_runtime_t runtime, sas_pairing_host_t host)`**
+
+| Condition | Result |
+|---|---|
+| `runtime` invalid, or `host` `0`, unknown, destroyed, of another kind, or owned by no live runtime | `SAS_PAIRING_INVALID_HANDLE` |
+| Valid | The host is removed from the runtime **first** (its handle is invalid forever), then its router is dropped through its own drop path; `SAS_PAIRING_OK` |
+| Process fatal | Allowed, as cleanup; same results; fatal stays set |
+| A panic is caught | `SAS_PAIRING_FATAL`; the process becomes fatal |
+
+Destroying a host never releases or invalidates its authority, never touches its sibling hosts, and changes no accounting: the authority stays registered and usable. As cleanup it never clears fatal, builds a router, recreates an authority, or resets anything.
+
+### 16.4 Cascade on authority release
+
+`sas_pairing_authority_release` (§15.3) checks the authority handle, then removes and destroys every host of that authority (their routers and the executor clones they hold), then removes the authority handle, then runs the core's release. After it returns, the authority handle and all of its host handles are invalid forever, whatever the core result; no host is ever restored. Because the ABI's own routers are gone before the core release, an authority with live hosts releases normally: `BUSY` from release never means "this authority still had ABI hosts".
+
+### 16.5 Cascade on runtime destruction
+
+`sas_pairing_runtime_destroy` (§5) invalidates the runtime handle and with it every authority and host handle it owns, then destroys every host (all routers) and only then the authorities. The order is explicit in the cleanup, because routers hold executor clones and must be gone before authority ownership ends. No host survives its runtime, and no host handle aliases anything in a later runtime.
+
+### 16.6 Fatal state
+
+`sas_pairing_host_create` is a normal operation: after fatal it returns `SAS_PAIRING_FATAL` before any handle check and enters neither `executor()` nor `Router::new`. `sas_pairing_host_destroy` is cleanup and stays allowed; like authority release and runtime destroy, it never clears fatal or refreshes anything.
+
+### 16.7 Concurrency
+
+Host create and destroy run under the runtime slot, as authority operations do (§15.7), so they serialize with authority release and runtime destruction. Allowed outcomes of races:
+
+| Race | Outcomes |
+|---|---|
+| host create vs host destroy (of a sibling) | both `OK`; the sibling is gone and the new host is live |
+| host create vs authority release | create first: `OK`, then release removes the new host; release first: `INVALID_HANDLE` with output `0` |
+| host destroy vs authority release | exactly one of them removes the host: destroy `OK` then release `OK`, or release `OK` then destroy `INVALID_HANDLE` |
+| host create vs runtime destroy | create first: `OK`, then destroy removes the new host; destroy first: `INVALID_HANDLE` with output `0` |
+| host destroy vs runtime destroy | exactly one of them removes the host: destroy `OK` then runtime destroy `OK`, or runtime destroy `OK` then host destroy `INVALID_HANDLE` |
+
+No interleaving gives a use-after-free, a router dropped twice, a host surviving its authority or runtime, a reachable stale handle, or a deadlock.
+
+### 16.8 Residency and scope
+
+Hosts and their routers are module state of the loaded image, so the loader invariant (§14) applies unchanged: one image, resident until process exit, no reload or reset. P7.3 hosts are intentionally inert. They have no listener, socket, address, port, connection, owner loop, network event, or run, and the ABI exposes no host drive, status, or listener operation yet. A later increment (P7.4) adds the listener handoff, the owner-loop lifetime bridge to the host's router, bounded driving, and the event and error representation, on top of this hierarchy.
