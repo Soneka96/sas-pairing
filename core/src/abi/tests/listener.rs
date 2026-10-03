@@ -1273,8 +1273,8 @@ fn listener_churn_never_changes_process_session_accounting() {
 const ROUNDS: usize = 24;
 
 /// Attach copies and validates its Bootstrap before it takes the runtime slot, so an unstaggered
-/// race almost always admits the other call first. Rounds therefore delay one side by 0-1 ms
-/// (the first side on even rounds, the second on odd ones), so both admission orders occur.
+/// race almost always admits the other call first. Raced rounds therefore delay one side by
+/// 0-1 ms (the first side on even rounds, the second on odd ones).
 #[cfg(windows)]
 fn stagger(round: usize) -> [Duration; 2] {
     let delay = Duration::from_micros(200 * (round as u64 / 2 % 6));
@@ -1293,7 +1293,43 @@ fn pause(delay: Duration) {
     }
 }
 
-/// Both admission orders occurred, so both outcomes of the race were checked.
+/// Runs `first` and `second` for one round. Rounds 0 and 1 run them one after the other
+/// (first then second, then second then first), so each admission order and its outcome is
+/// checked whatever the scheduler does; every later round races them, staggered.
+#[cfg(windows)]
+fn contend<T: Send + 'static>(
+    round: usize,
+    first: impl Fn() -> T + Send + Sync + 'static,
+    second: impl Fn() -> T + Send + Sync + 'static,
+) -> [T; 2] {
+    match round {
+        0 => {
+            let first = first();
+            [first, second()]
+        }
+        1 => {
+            let second = second();
+            [first(), second]
+        }
+        _ => {
+            let [early, late] = stagger(round);
+            race_pair(
+                round,
+                move || {
+                    pause(early);
+                    first()
+                },
+                move || {
+                    pause(late);
+                    second()
+                },
+            )
+        }
+    }
+}
+
+/// Both admission orders occurred (rounds 0 and 1 force them; raced rounds add to the counts),
+/// so both outcomes were checked.
 #[cfg(windows)]
 fn report_orders(first: &str, second: &str, orders: [usize; 2]) {
     println!(
@@ -1316,18 +1352,13 @@ fn attach_race(
     other: impl Fn() -> i32 + Send + Sync + 'static,
 ) -> ((i32, usize), i32, usize) {
     let (raw, _) = bound();
-    let [first, second] = stagger(round);
-    let [attached, raced] = race_pair(
+    let [attached, raced] = contend(
         round,
         move || {
-            pause(first);
             let mut slot = raw;
             (attach(runtime, host, &mut slot), slot)
         },
-        move || {
-            pause(second);
-            (other(), 0)
-        },
+        move || (other(), 0),
     );
     (attached, raced.0, raw)
 }
@@ -1513,18 +1544,7 @@ fn detach_race(
     let (raw, _) = bound();
     let mut slot = raw;
     assert_eq!(attach(runtime, host, &mut slot), SAS_PAIRING_OK);
-    let [first, second] = stagger(round);
-    let [detached, destroyed] = race_pair(
-        round,
-        move || {
-            pause(first);
-            detach(runtime, host)
-        },
-        move || {
-            pause(second);
-            parent()
-        },
-    );
+    let [detached, destroyed] = contend(round, move || detach(runtime, host), parent);
     assert_eq!(destroyed, SAS_PAIRING_OK);
     assert!(closed(raw), "closed by exactly one path");
     match detached {

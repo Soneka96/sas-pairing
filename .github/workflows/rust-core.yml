@@ -21,7 +21,20 @@ jobs:
       # P7 native ABI: lint, test (in-process and subprocess-isolated), and build the supported
       # release artifact.
       - run: cargo clippy --manifest-path core/Cargo.toml --all-targets --all-features -- -D warnings
-      - run: cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests
+      - name: Native ABI tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests \
+            2>&1 | tee abi-tests.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # Job logs need a signed-in viewer; also publish the failures as an annotation.
+            summary=$(grep -E '^test .* FAILED$|panicked at|^  left:|^ right:|^child ' abi-tests.log \
+              | head -n 40 | sed -e 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { print }')
+            echo "::error title=Native ABI tests failed::${summary}"
+          fi
+          exit "$status"
       - run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
       - name: Check native ABI artifact
         shell: bash
@@ -43,7 +56,20 @@ jobs:
       # The native ABI compiles here too; this is not a claim of platform support (pairing
       # operations, added later, still fail closed on unsupported platforms).
       - run: cargo clippy --manifest-path core/Cargo.toml --all-targets --all-features -- -D warnings
-      - run: cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests
+      - name: Native ABI tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests \
+            2>&1 | tee abi-tests.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # Job logs need a signed-in viewer; also publish the failures as an annotation.
+            summary=$(grep -E '^test .* FAILED$|panicked at|^  left:|^ right:|^child ' abi-tests.log \
+              | head -n 40 | sed -e 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { print }')
+            echo "::error title=Native ABI tests failed::${summary}"
+          fi
+          exit "$status"
       # P7.2: a valid authority registration through the real export enters the core and fails
       # closed with SAS_PAIRING_UNSUPPORTED_PLATFORM; nothing is faked.
       - name: Native ABI authority registration fails closed
