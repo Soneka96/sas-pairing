@@ -4,7 +4,7 @@
 
 ## Status
 
-**P7 IN PROGRESS — P7.1 ABI FOUNDATION COMPLETE.** P7.1 established the ABI version, type conventions, status namespace, opaque runtime handle, runtime lifecycle, and the central panic containment ([evidence](#p71-evidence)). The P6-D-004 handoff is **PARTIAL / FOUNDATION COMPLETE**: its end-to-end exit test still needs an export that enters the core. Next: P7.2 — Authority Lifecycle + Core Error Mapping. P7 must not be marked complete before every [completion gate](#completion-gates) holds.
+**P7 IN PROGRESS — P7.1 COMPLETE (ABI FOUNDATION ACCEPTED).** P7.1 established the ABI version, type conventions, status namespace, opaque runtime handle, runtime lifecycle, and the central panic containment ([evidence](#p71-evidence)). The P7.1.1 correction then fixed the loader boundary those process-lifetime guarantees depend on: one native library image per process, resident until process exit, never unloaded or reloaded as recovery ([P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime), [evidence](#p711-evidence)). The P6-D-004 handoff is **PARTIAL / FOUNDATION COMPLETE**: its end-to-end exit test still needs an export that enters the core. Next: P7.2 — Authority Lifecycle + Core Error Mapping. P7 must not be marked complete before every [completion gate](#completion-gates) holds.
 
 ## Target
 
@@ -35,7 +35,8 @@ The ABI lives inside the core crate so later increments can call the reviewed cr
 | Increment | Scope | State |
 |---|---|---|
 | P7.1 | ABI version, C type conventions, initial status namespace, opaque runtime handle, runtime create/destroy, central panic containment, permanent fatal state, payload-destructor suppression, unwind-only native build, checked-in header, CI, this package; [P7-D-001](decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit) | **Complete:** `b0aaee1` (contract), `6b1b602` (implementation, tests, CI), `3dade72` (CI YAML correction: the `abi::` test filter ended a plain scalar with a colon, so `rust-core.yml` did not parse on `6b1b602`), and the closure commit |
-| P7.2 | Authority lifecycle and core error mapping | Next after P7.1 |
+| P7.1.1 | Native library lifetime / reload semantics: loader experiments, [P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime), the [loading and residency](abi-contract.md#14-native-library-loading-and-residency) contract section, header warning, P8/P9 loader handoffs. Documentation and header comments only; no `core/src` change | **Complete** (`docs: define native abi loader lifetime`; [evidence](#p711-evidence)). P7.1 is accepted |
+| P7.2 | Authority lifecycle and core error mapping | Next |
 | Later | Ceremony operations, network driving, SAS presentation, MATCH/REJECT, results, the real-core panic exit test, final header, P7 closure | Planned |
 
 ## Mandatory P6 handoff
@@ -51,6 +52,7 @@ The ABI lives inside the core crate so later increments can call the reviewed cr
 | Rust-owned thread roots contained | P6-D-004 item 11 | Not applicable yet: P7.1 starts no thread |
 | Real core panic → ABI fatal → host survives → next operation fatal without core re-entry → no fresh accounting → destroy works (ordinary and Drop-panicking payloads) | P6-D-004 item 13; P7 exit criteria | **Open (PARTIAL / FOUNDATION COMPLETE):** P7.1 proves the primitive, the fatal runtime lifecycle, and payload-destructor suppression at an `extern "C"` seam; the end-to-end test needs an export that enters the core (later increment) |
 | No same-process accounting reset through any ABI path | P6-D-002 | P7.1 has no accounting; process-wide fatal unit prepared; to be shown with authorities (P7.2+) |
+| Loader lifetime invariant established before authority lifecycle: one native image per process, resident until process exit, no unload/reload or copied image as reset or recovery | P6-D-002, P6-D-004 via [P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime) | P7.1.1: normative in the contract and header; a host obligation, not enforced by the library. P8 and P9 must carry it into their loaders |
 | Results presented as local verified completion, never a bilateral commit | P6-D-005 | Later increment (result access) |
 
 ## Completion gates
@@ -63,6 +65,7 @@ P7 is complete only when all of these hold:
 - the unwind-only artifact is pinned in CI;
 - no same-process re-registration or handle re-creation yields fresh accounting after a fatal panic (P6-D-002);
 - result semantics are documented as local verified completion (P6-D-005);
+- the P8 and P9 handoffs keep the loader invariant of P7-D-002: exactly one native image retained for the process lifetime, and no unload, reload, or reset mechanism;
 - CI is green on the closure head, and the one P7 pull request is opened.
 
 ## P7.1 evidence
@@ -123,3 +126,43 @@ Outside `core/src/abi`, `git diff 5becd09..3dade72` changes only `core/src/lib.r
 | `cargo build --manifest-path core/Cargo.toml --release --features native-abi` | Pass |
 | Repository consistency script, `git diff --check`, relative links of the P7 documents | Pass |
 | GitHub Actions on `3dade72`: Repository consistency; Rust security core `windows-core` (now also native-ABI clippy, tests, and release build) and `unsupported-platform-fails-closed` (also native-ABI clippy, tests, release build, and the negative `panic = "abort"` build check) | Pass |
+
+## P7.1.1 evidence
+
+P7.1 wrote its guarantees for the OS process, but the state behind them is module state of the loaded library image (`static PROCESS: AbiState` in `core/src/abi/mod.rs`). A module static lives only as long as its image, so P7.1.1 tested what unloading and duplicating the image do to it before authority state enters the ABI.
+
+**Setup.** The release artifact from `cargo build --manifest-path core/Cargo.toml --release --features native-abi` at `cbf0ea3` (`sas_pairing_core.dll`, SHA-256 `4f1d61e4da2a8b0d822444f2eb8a3e4f3c3969d5efa9bc28659f1bfa01bbe459`). A throwaway C host in a scratch directory outside the repository (clang 19.1.5, `-std=c11 -Wall -Wextra -Werror`), using only `LoadLibraryW`, `GetProcAddress`, and `FreeLibrary`; each run is a fresh OS process. Nothing from the experiments is committed, and the copied DLL was deleted afterwards. Windows 11 Pro 26200, rustc 1.99.0.
+
+| Run | Calls | Observed |
+|---|---|---|
+| Control (one resident image) | load; create; destroy; create | `OK` handle 1; destroy `OK`; `OK` handle 2. H2 ≠ H1 |
+| A: same DLL unload/reload | load; create H1; destroy H1; `FreeLibrary`; load the same path; create H2 | H1 = 1. `FreeLibrary` returned 1 and `GetModuleHandleW(path)` was then null (image unmapped). After the reload, create returned `OK` with **H2 = 1**: the handle counter restarted |
+| A, variant: live runtime abandoned | load; create H1; create again; `FreeLibrary` (H1 never destroyed); reload; create | `OK` 1, then `ALREADY_INITIALIZED`; after the reload, create returned `OK` with handle 1: the single-runtime slot restarted too |
+| B: two independent images | load the original; load a byte-identical copy (`sas_pairing_core_copy.dll`, another path); create through each, then a second create through each | Distinct `HMODULE`s; image A `OK` handle 1; image B `OK` handle 1 while A's runtime was still live; each image's second create `ALREADY_INITIALIZED`. Two independent runtimes in one OS process |
+
+**Empirically shown:** module unload and reload resets the handle counter and the runtime slot without an OS process restart, and two images of the library each keep their own. So P7.1's "never reused in the OS process" and "one runtime per OS process" hold per resident image, not per process, unless the loader is constrained.
+
+**Structural conclusion (no experiment).** The fatal marker (`FatalState`) is a field of the same `PROCESS` static as the counter and the slot. The release DLL has no export that can panic, and P7.1.1 adds none (no debug ABI was built for this), so a fatal reload was not run. Because unloading ends the image that holds `PROCESS` and a reload builds a new one, a reloaded or copied image would start without the fatal marker, exactly as the counter and slot did. The same holds for the core's authority registry (`REGISTRY` in `core/src/lib.rs`), which P7.2 will bring under the ABI.
+
+**Decision.** The owner selected a supported loader invariant, [P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime): one image per process, resident until process exit, no unload/reload, no copied image, process restart as the only recovery. The library does not enforce it (no self-pinning, no new status code); P8 and P9 carry it as a loader obligation.
+
+| Scenario | Classification |
+|---|---|
+| One resident image: create H1, destroy, create H2 | Supported; H2 ≠ H1 |
+| Panic → fatal → destroy → create again | Supported; create returns `SAS_PAIRING_FATAL` |
+| Fatal → unload the image → reload it | Outside the supported ABI contract; not recovery |
+| Load the DLL, then load a copied DLL | Outside the supported ABI contract |
+| The Dart wrapper reopens the library after `FATAL` | Forbidden wrapper behavior (P8 handoff) |
+| The .NET wrapper calls `NativeLibrary.Free` after `FATAL`, then reloads | Forbidden wrapper behavior (P9 handoff) |
+| The OS process exits and a new one starts | Supported recovery: fresh native state, and a fresh process session once authority ownership is safely acquired |
+
+**Unchanged:** `git diff cbf0ea3 -- core/src` is empty. ABI version `1`, the three exports, every status value, the handle type, and every header declaration are unchanged; the header changed only in comments.
+
+| Check | Result |
+|---|---|
+| `cargo fmt --manifest-path core/Cargo.toml -- --check` | Pass |
+| `cargo clippy --manifest-path core/Cargo.toml --all-targets --all-features -- -D warnings` | Pass |
+| `cargo test --manifest-path core/Cargo.toml` | Pass |
+| `cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests` | Pass: 20 passed, 5 ignored (the child bodies), including the header consistency test |
+| `cargo build --manifest-path core/Cargo.toml --release --features native-abi` | Pass |
+| Repository consistency script, `git diff --check`, relative links and anchors of the changed documents | Pass |

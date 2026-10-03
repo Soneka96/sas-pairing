@@ -16,6 +16,8 @@ Create an idiomatic .NET wrapper over the same native implementation.
 
 The P7 native boundary and its supported platform behavior.
 
+**Mandatory loader prerequisite ([P7-D-002](../docs/p7-native-abi/decisions.md#p7-d-002--native-library-residency-and-loader-lifetime), [ABI contract §14](../docs/p7-native-abi/abi-contract.md#14-native-library-loading-and-residency)).** The .NET wrapper loads the native library once and retains its `NativeLibrary` or module handle for the process lifetime. It never calls `NativeLibrary.Free` during supported use, exposes no reload or reset as recovery, and loads no alternate copy of the library. It tells consumers that after `SAS_PAIRING_FATAL` the only recovery is restarting the process.
+
 ## Scope
 
 Provide the .NET-facing wrapper and verify that it correctly uses the native core. If the native contract requires consumer-provided persistence, preserve that contract and its security-required state across ceremonies and restarts.

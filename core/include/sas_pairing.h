@@ -4,8 +4,16 @@
  * Experimental, pre-alpha, not production-security approved. P7.1 foundation only: version
  * query and runtime lifecycle. No pairing operation is exposed yet.
  *
- * Contract: docs/p7-native-abi/abi-contract.md. Decision: docs/p7-native-abi/decisions.md
- * (P7-D-001). Kept in sync with core/src/abi by the abi::tests::header consistency test.
+ * Contract: docs/p7-native-abi/abi-contract.md. Decisions: docs/p7-native-abi/decisions.md
+ * (P7-D-001, P7-D-002). Kept in sync with core/src/abi by the abi::tests::header consistency
+ * test.
+ *
+ * LIBRARY LIFETIME (P7-D-002): supported use loads exactly one image of this library per OS
+ * process and keeps it loaded until the process exits once stateful use begins (no later than
+ * sas_pairing_runtime_create). Do not unload/reload it or load an independent copy to reset
+ * state: its state is module state, so that leaves the supported contract. The process-lifetime
+ * guarantees below hold under this rule. Process restart is the only supported recovery from
+ * SAS_PAIRING_FATAL.
  *
  * Build: cargo build --manifest-path core/Cargo.toml --release --features native-abi
  *
@@ -41,11 +49,13 @@ typedef int32_t sas_pairing_status_t;
 #define SAS_PAIRING_ALREADY_INITIALIZED 3
 #define SAS_PAIRING_HANDLES_EXHAUSTED 4
 /* A Rust panic was contained. The native ABI state of this process is permanently fatal:
- * every later create returns this, destroy still works, and only a new OS process recovers. */
+ * every later create returns this, destroy still works, and only a new OS process recovers
+ * (a library reload is not recovery). */
 #define SAS_PAIRING_FATAL 900
 
 /* Opaque process-local runtime handle. Never a pointer, secret, network identity, or protocol
- * identifier. Never reused within one OS process. 0 is never valid. */
+ * identifier. Never reused within one OS process (under the library-lifetime rule above). 0 is
+ * never valid. */
 typedef uint64_t sas_pairing_runtime_t;
 
 #define SAS_PAIRING_RUNTIME_INVALID ((sas_pairing_runtime_t)0)

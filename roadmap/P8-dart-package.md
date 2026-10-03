@@ -16,6 +16,8 @@ Dart consumers need a usable package while sharing the same reviewed protocol im
 
 The P7 native boundary and its supported platform behavior.
 
+**Mandatory loader prerequisite ([P7-D-002](../docs/p7-native-abi/decisions.md#p7-d-002--native-library-residency-and-loader-lifetime), [ABI contract §14](../docs/p7-native-abi/abi-contract.md#14-native-library-loading-and-residency)).** The Dart wrapper loads the native library once and retains the `DynamicLibrary` for the process lifetime. It exposes no close, unload, or reload, including as recovery, and loads no alternate copy of the library. It tells consumers that after `SAS_PAIRING_FATAL` the only recovery is restarting the process.
+
 ## Scope
 
 Provide the Dart-facing wrapper and verify that it correctly uses the native core. If the native contract requires consumer-provided persistence, preserve that contract and its security-required state across ceremonies and restarts.

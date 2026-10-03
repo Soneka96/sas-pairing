@@ -2,7 +2,7 @@
 
 > **Pre-alpha, experimental.** This is the language-neutral boundary that the future Dart (P8) and .NET (P9) wrappers call. It wraps the frozen experimental candidate `sas-pairing-vodozemac-profile-draft-01`, version 1, and is not production-security approved.
 
-This document is normative for the native ABI. The C declarations are in [`core/include/sas_pairing.h`](../../core/include/sas_pairing.h), and the Rust implementation is in [`core/src/abi`](../../core/src/abi/mod.rs). The decision behind the runtime and fatal model is [P7-D-001](decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit). The current contents are the P7.1 foundation: a version query and the runtime lifecycle. No pairing operation is exposed yet.
+This document is normative for the native ABI. The C declarations are in [`core/include/sas_pairing.h`](../../core/include/sas_pairing.h), and the Rust implementation is in [`core/src/abi`](../../core/src/abi/mod.rs). The decision behind the runtime and fatal model is [P7-D-001](decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit); the loader invariant it depends on is [P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime) (§14). Wherever this contract says "per OS process" or "for the rest of the process", it means under that invariant. The current contents are the P7.1 foundation: a version query and the runtime lifecycle. No pairing operation is exposed yet.
 
 ## 1. ABI version
 
@@ -52,13 +52,13 @@ The core's Rust `Error` discriminants are never exposed directly; later incremen
 
 - `typedef uint64_t sas_pairing_runtime_t;` `0` (`SAS_PAIRING_RUNTIME_INVALID`) is never a valid handle.
 - Handles are opaque and process-local. They are not pointers, network identities, security secrets, authority identities, or reusable protocol identifiers, and must not be persisted, sent to peers, or used as trust material.
-- Handles come from one process-lifetime counter that starts at `1` and only increases. A value is issued at most once per OS process, so a destroyed (stale) handle never aliases a later runtime, and using one returns `SAS_PAIRING_INVALID_HANDLE` forever.
+- Handles come from one counter that starts at `1` and only increases. Under the loader invariant (§14) it lives as long as the OS process, so a value is issued at most once per OS process, a destroyed (stale) handle never aliases a later runtime, and using one returns `SAS_PAIRING_INVALID_HANDLE` forever: create H1, destroy H1, create H2 gives H2 ≠ H1. The counter is module state; a host that unloads the library or loads another image of it gets a new counter, and no uniqueness is promised across images.
 - After `UINT64_MAX` has been issued, creation returns `SAS_PAIRING_HANDLES_EXHAUSTED` for the rest of the process. The counter never wraps or resets.
 - Later handle kinds (authorities, ceremonies) follow the same rules; whether they share this counter is decided when they are added.
 
 ## 5. Runtime lifecycle
 
-At most one runtime is active per OS process ([P7-D-001](decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit)).
+At most one runtime is active per OS process ([P7-D-001](decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit)), under the loader invariant (§14). The single-runtime slot is module state: a second, independently loaded image of the library would have its own, which is why loading one is unsupported.
 
 **`sas_pairing_status_t sas_pairing_runtime_create(sas_pairing_runtime_t *out_runtime)`**
 
@@ -91,7 +91,9 @@ A caught Rust panic in any export makes the native ABI state of the process perm
 - every later `sas_pairing_runtime_create` returns `SAS_PAIRING_FATAL`, and every later normal operation added by later increments returns it without entering the core;
 - an existing runtime stays destroyable, and destroy never clears the fatal state;
 - nothing resets it: there is no clear, reset, or re-initialize API, and destroying and re-creating gives no fresh state or accounting (P6-D-002);
-- the only recovery is a new OS process.
+- the only recovery is a new OS process. Unloading and reloading the library, or loading another copy of it, is not recovery: it leaves the supported contract (§14) and is not process replacement (P6-D-004).
+
+Fatal is permanent for the OS process under the loader invariant (§14). The marker is module state like the rest of the ABI state, so the library does not claim that it survives an unsupported unload; it claims that a supported host never unloads it.
 
 `sas_pairing_abi_version` keeps returning `1` in the fatal state: it reads a constant and enters neither a runtime nor the core, so a wrapper can always identify the library. Fatal state is reported by every status-returning operation.
 
@@ -119,7 +121,7 @@ The caller must guarantee that:
 - every non-null pointer it passes really refers to the documented amount of accessible caller-owned memory (writable for outputs) for the whole call;
 - no other thread reads or mutates that memory against the documented contract during the call.
 
-Rust cannot validate an arbitrary non-null address, so an invalid one is undefined behavior, as in any C ABI. Wrappers are trusted local callers of this boundary; it is not a sandbox against hostile in-process code.
+Rust cannot validate an arbitrary non-null address, so an invalid one is undefined behavior, as in any C ABI. Wrappers are trusted local callers of this boundary; it is not a sandbox against hostile in-process code. The caller also keeps the loader invariant of §14.
 
 ## 9. Memory ownership
 
@@ -135,7 +137,7 @@ Protocol and application data (identities, scopes, contexts, bootstrap values) a
 
 ## 11. Threading
 
-The P7.1 exports are safe to call concurrently from any threads: concurrent creates admit exactly one runtime, and concurrent valid, stale, or random destroys never race into undefined behavior. The library starts no thread. What happens when the only runtime is destroyed while a protocol operation is still in progress will be fixed precisely by the increment that adds protocol operations.
+The P7.1 exports are safe to call concurrently from any threads: concurrent creates admit exactly one runtime, and concurrent valid, stale, or random destroys never race into undefined behavior. The library starts no thread. Host requirement: the library stays loaded for the rest of the process once stateful use begins (§14), so no thread may unload it, including after `SAS_PAIRING_FATAL`. What happens when the only runtime is destroyed while a protocol operation is still in progress will be fixed precisely by the increment that adds protocol operations.
 
 ## 12. Supported build
 
@@ -157,4 +159,27 @@ The crate builds both `rlib` (the Rust library used by the tests and tools) and 
 - A new export that enters the core first checks the fatal state and returns `SAS_PAIRING_FATAL` without entering the core.
 - Core errors are mapped explicitly into the reserved ranges, never by exposing Rust discriminants.
 - Data follows §9 and §10. No callbacks or Rust-owned threads are added without the P6-D-004 thread-root containment.
+- State that must last for the OS process (handles, fatal state, and from P7.2 authority accounting) relies on the loader invariant (§14). No export may unload, reload, reset, or re-initialize the library or its state, and none may offer a way around §14.
 - An incompatible change requires a new ABI version, an owner decision, and an updated header.
+
+## 14. Native-library loading and residency
+
+Normative ([P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime)). The ABI state (handle counter, runtime slot, fatal marker, and from P7.2 the authority accounting) is module state of the loaded library image: it begins when the image is loaded and ends when it is unloaded. It has OS-process lifetime only because a supported host follows these rules:
+
+1. **One image.** Exactly one sas-pairing native library image is loaded per OS process. The host does not load an independent copy (another path, filename, copy, or rename).
+2. **Resident until process exit.** Stateful use begins no later than the first `sas_pairing_runtime_create`. From then on the image stays loaded until the OS process terminates, and the host keeps its load of the library (module handle or library object) for the whole process.
+3. **No unload or reload.** The host does not unload the image after stateful use (`FreeLibrary`, `dlclose`, `NativeLibrary.Free`, or a wrapper close or reset), and does not reload it or load an alternate image to obtain fresh state.
+4. **Recovery is process restart.** After `SAS_PAIRING_FATAL`, the only supported recovery is a new OS process (P6-D-004). A library reload is not process replacement.
+
+Guarantees and their scope:
+
+| Guarantee | Under the invariant | If a host breaks it |
+|---|---|---|
+| Handle values never reused (§4) | For the OS-process lifetime | Not promised across images: a reload restarts the counter, and each copy has its own |
+| At most one active runtime (§5) | Per OS process | Each image has its own runtime slot |
+| Fatal is permanent (§6) | For the OS-process lifetime | A new image starts without the fatal marker; that is unsupported, not recovery |
+| No fresh authority accounting in the same process (P6-D-002, from P7.2) | Holds: no supported path re-creates the opportunity budget, START limiter, limiter clock, or process session | A new image has new module state; this is outside the supported security contract |
+
+**Trusted host.** The library does not detect, prevent, or report a duplicate image or an unload; there is no status code for it, and it does not pin itself. Code with arbitrary control over the process's loader is outside what the ABI protects against, as is any other hostile in-process code (§8). A host that breaks these rules is outside the supported security contract; what it gets is not a supported reset.
+
+**Wrappers.** The Dart wrapper (P8) and the .NET wrapper (P9) load the library once, keep it loaded for the process lifetime, expose no close, unload, reload, or reset operation, load no alternate copy, and tell their consumers that process restart is the recovery from `SAS_PAIRING_FATAL`.
