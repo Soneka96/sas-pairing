@@ -8,6 +8,8 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "native-abi")]
+mod abi;
 mod ceremony;
 mod crypto;
 mod deadline;
@@ -323,7 +325,12 @@ impl TrustedAuthority {
     /// release or the final drop reacquires the OS lease and continues the same accounting.
     /// Only a new OS process that safely acquires ownership starts fresh.
     pub fn register(scope: &[u8]) -> Result<Self, Error> {
-        Self::register_with(scope, system_clock)
+        let authority = Self::register_with(scope, system_clock)?;
+        // Test-only fault point: the registration is complete (OS lease held, process session
+        // active, registry lock released), before the caller receives it.
+        #[cfg(test)]
+        test_hook::fire(test_hook::Point::AuthorityRegistered);
+        Ok(authority)
     }
 
     /// `register` with one injected authority START-limiter clock (tests only; registration

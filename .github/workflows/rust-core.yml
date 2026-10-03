@@ -18,6 +18,67 @@ jobs:
       - run: cargo fmt --manifest-path core/Cargo.toml -- --check
       - run: cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path core/Cargo.toml
+      # P7 native ABI: lint, test (in-process and subprocess-isolated), and build the supported
+      # release artifact.
+      - run: cargo clippy --manifest-path core/Cargo.toml --all-targets --all-features -- -D warnings
+      - name: Native ABI tests
+        shell: bash
+        run: |
+          # GitHub runs bash with -e; keep going after a failed run to report it.
+          set +e -uo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests \
+            2>&1 | tee abi-tests.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # Job logs need a signed-in viewer; also publish the failures in the run summary
+            # and as annotations.
+            (grep -aE 'FAILED|panicked at|left:|right:|^child |exit code|error' abi-tests.log \
+              | head -n 30; echo '--- tail ---'; tail -n 25 abi-tests.log) \
+              | tr -d '\r' > abi-failure.txt
+            { echo '### Native ABI test failure'; echo '```'; cat abi-failure.txt; echo '```'; } \
+              >> "$GITHUB_STEP_SUMMARY"
+            while IFS= read -r line; do
+              echo "::error::${line//::/ }"
+            done < <(grep -aE 'FAILED|panicked at' abi-failure.txt | head -n 8)
+          fi
+          exit "$status"
+      # P7.7: the two-sided public-ABI ceremonies (two endpoint processes, byte-transparent relay)
+      # must run and pass as their own step, so a filter that matches nothing cannot hide them.
+      - name: Native ABI two-sided ceremonies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib             abi::tests::two_sided | tee two-sided.log
+          grep -F 'test result: ok. 9 passed' two-sided.log
+      # P7.7 ABI v1 freeze: an ordinary release build exports no ABI symbol.
+      - run: cargo build --manifest-path core/Cargo.toml --release
+      - name: Ordinary build exports no native ABI
+        run: python tooling/check_abi_exports.py --library core/target/release/sas_pairing_core.dll --expect none
+      - run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
+      - name: Check native ABI artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s core/target/release/sas_pairing_core.dll
+          test -s core/target/release/sas_pairing_core.dll.lib
+      # P7.7 ABI v1 freeze: the artifact exports exactly the 25 exports of the manifest, and a
+      # strict C11 and C++17 consumer of the header (static layout and value assertions, every
+      # export bound to its frozen signature) links against the import library and runs.
+      - name: Native ABI export audit
+        run: python tooling/check_abi_exports.py --library core/target/release/sas_pairing_core.dll --expect manifest
+      - name: Native ABI C11 and C++17 consumers
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang --version
+          out=core/target/abi-consumer
+          mkdir -p "$out"
+          cp core/target/release/sas_pairing_core.dll "$out/"
+          clang -std=c11 -Wall -Wextra -Werror -pedantic -Icore/include             core/tests/c/abi_v1_consumer.c core/target/release/sas_pairing_core.dll.lib             -o "$out/consumer_c11.exe"
+          clang++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icore/include             -x c++ core/tests/c/abi_v1_consumer.c -x none core/target/release/sas_pairing_core.dll.lib             -o "$out/consumer_cxx17.exe"
+          "$out/consumer_c11.exe" | tee consumer.log
+          "$out/consumer_cxx17.exe" | tee -a consumer.log
+          test "$(grep -c ': OK$' consumer.log)" -eq 2
 
   unsupported-platform-fails-closed:
     runs-on: ubuntu-latest
@@ -29,3 +90,109 @@ jobs:
       - run: cargo fmt --manifest-path core/Cargo.toml -- --check
       - run: cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path core/Cargo.toml
+      # The native ABI compiles here too; this is not a claim of platform support (pairing
+      # operations, added later, still fail closed on unsupported platforms).
+      - run: cargo clippy --manifest-path core/Cargo.toml --all-targets --all-features -- -D warnings
+      - name: Native ABI tests
+        shell: bash
+        run: |
+          # GitHub runs bash with -e; keep going after a failed run to report it.
+          set +e -uo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests \
+            2>&1 | tee abi-tests.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # Job logs need a signed-in viewer; also publish the failures in the run summary
+            # and as annotations.
+            (grep -aE 'FAILED|panicked at|left:|right:|^child |exit code|error' abi-tests.log \
+              | head -n 30; echo '--- tail ---'; tail -n 25 abi-tests.log) \
+              | tr -d '\r' > abi-failure.txt
+            { echo '### Native ABI test failure'; echo '```'; cat abi-failure.txt; echo '```'; } \
+              >> "$GITHUB_STEP_SUMMARY"
+            while IFS= read -r line; do
+              echo "::error::${line//::/ }"
+            done < <(grep -aE 'FAILED|panicked at' abi-failure.txt | head -n 8)
+          fi
+          exit "$status"
+      # P7.2: a valid authority registration through the real export enters the core and fails
+      # closed with SAS_PAIRING_UNSUPPORTED_PLATFORM; nothing is faked.
+      - name: Native ABI authority registration fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib \
+            abi::tests::authority::authority_registration_fails_closed_on_unsupported_platforms \
+            -- --exact | tee unsupported-authority.log
+          grep -F 'test result: ok. 1 passed' unsupported-authority.log
+      # P7.4: a structurally valid listener attach fails closed with
+      # SAS_PAIRING_UNSUPPORTED_PLATFORM and leaves the caller's socket slot unchanged; no
+      # Windows networking code exists here.
+      - name: Native ABI listener attach fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib \
+            abi::tests::listener::attach_fails_closed_on_unsupported_platforms \
+            -- --exact | tee unsupported-listener.log
+          grep -F 'test result: ok. 1 passed' unsupported-listener.log
+      # P7.5: drive, resume recheck, and connection close fail closed with
+      # SAS_PAIRING_UNSUPPORTED_PLATFORM without any network progress; result access stays
+      # ordinary ABI data access.
+      - name: Native ABI network drive fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib \
+            abi::tests::network::driving_fails_closed_on_unsupported_platforms \
+            -- --exact | tee unsupported-drive.log
+          grep -F 'test result: ok. 1 passed' unsupported-drive.log
+      # P7.6: every trusted local ceremony action and the SAS presentation fail closed with
+      # SAS_PAIRING_UNSUPPORTED_PLATFORM after their structural checks, with zeroed outputs and
+      # no handle issued; no ceremony or presentation is faked.
+      - name: Native ABI ceremony control fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib \
+            abi::tests::control::local_actions_fail_closed_on_unsupported_platforms \
+            -- --exact | tee unsupported-control.log
+          grep -F 'test result: ok. 1 passed' unsupported-control.log
+      # P7.7: after a contained panic, every one of the 25 exports behaves as its frozen fatal
+      # class says on this platform too (normal operations never enter the core).
+      - name: Native ABI fatal classes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib             abi::tests::freeze::every_export_has_its_frozen_fatal_class             -- --exact | tee unsupported-fatal-classes.log
+          grep -F 'test result: ok. 1 passed' unsupported-fatal-classes.log
+      # P7.7 ABI v1 freeze: an ordinary release build exports no ABI symbol; the supported
+      # build exports exactly the 25 of the manifest; a strict C11 and C++17 consumer links and
+      # observes pairing fail closed here.
+      - run: cargo build --manifest-path core/Cargo.toml --release
+      - name: Ordinary build exports no native ABI
+        run: python3 tooling/check_abi_exports.py --library core/target/release/libsas_pairing_core.so --expect none
+      - run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
+      - name: Native ABI export audit
+        run: python3 tooling/check_abi_exports.py --library core/target/release/libsas_pairing_core.so --expect manifest
+      - name: Native ABI C11 and C++17 consumers
+        shell: bash
+        run: |
+          set -euo pipefail
+          lib="$PWD/core/target/release"
+          out=core/target/abi-consumer
+          mkdir -p "$out"
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic -Icore/include             core/tests/c/abi_v1_consumer.c -L"$lib" -lsas_pairing_core -Wl,-rpath,"$lib"             -o "$out/consumer_c11"
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icore/include             -x c++ core/tests/c/abi_v1_consumer.c -x none -L"$lib" -lsas_pairing_core             -Wl,-rpath,"$lib" -o "$out/consumer_cxx17"
+          "$out/consumer_c11" | tee consumer.log
+          "$out/consumer_cxx17" | tee -a consumer.log
+          test "$(grep -c ': OK$' consumer.log)" -eq 2
+      - name: Native ABI refuses panic = "abort"
+        shell: bash
+        run: |
+          set -uo pipefail
+          if CARGO_PROFILE_RELEASE_PANIC=abort cargo build --manifest-path core/Cargo.toml \
+              --release --features native-abi > abort-build.log 2>&1; then
+            echo "native-abi built with panic = abort; the containment guard is missing"
+            exit 1
+          fi
+          grep -F 'the `native-abi` feature requires panic = "unwind"' abort-build.log

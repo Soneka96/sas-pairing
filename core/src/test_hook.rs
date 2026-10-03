@@ -27,6 +27,10 @@ pub(crate) enum Point {
     /// A local action through an exact run reference holds that run's lock (and its session
     /// lease, but no table lock), after the instance check and before the action itself.
     LocalRunLocked,
+    /// `TrustedAuthority::register` has built a complete registration (OS lease held, process
+    /// session active, no core lock held) and is about to return it. A panic here unwinds
+    /// through the registration's own `Drop`.
+    AuthorityRegistered,
 }
 
 type Hook = Box<dyn FnMut(Point)>;

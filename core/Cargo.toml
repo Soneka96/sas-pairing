@@ -4,6 +4,15 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[lib]
+# rlib: the Rust library used by the tests and tools. cdylib: the native ABI artifact, which
+# exports symbols only when built with the `native-abi` feature (P7-D-001).
+crate-type = ["rlib", "cdylib"]
+
+[features]
+# Compiles the language-neutral native ABI (`core/src/abi`, `core/include/sas_pairing.h`).
+native-abi = []
+
 [dependencies]
 base64 = "0.23"
 # Honest Initiator request IDs only; the version vodozemac already resolves (no new RNG stack).
@@ -16,3 +25,8 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Network
 
 [dev-dependencies]
 serde_json = "1"
+
+# The supported native artifact must unwind so the ABI can contain panics (P6-D-004 item 12).
+# `core/src/abi` also refuses to compile under panic = "abort".
+[profile.release]
+panic = "unwind"
