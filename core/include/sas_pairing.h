@@ -2,10 +2,11 @@
  * sas_pairing.h - native ABI of the sas-pairing core, ABI version 1.
  *
  * Experimental, pre-alpha, not production-security approved. Exposes the version query, the
- * runtime lifecycle, and the authority lifecycle (P7.2). No ceremony operation is exposed yet.
+ * runtime lifecycle, the authority lifecycle (P7.2), and hosting contexts (P7.3). No networking
+ * or ceremony operation is exposed yet.
  *
  * Contract: docs/p7-native-abi/abi-contract.md. Decisions: docs/p7-native-abi/decisions.md
- * (P7-D-001 to P7-D-004). Kept in sync with core/src/abi by the abi::tests::header consistency
+ * (P7-D-001 to P7-D-005). Kept in sync with core/src/abi by the abi::tests::header consistency
  * test.
  *
  * LIBRARY LIFETIME (P7-D-002): supported use loads exactly one image of this library per OS
@@ -66,19 +67,25 @@ typedef int32_t sas_pairing_status_t;
 #define SAS_PAIRING_TERMINATED 202
 /* A Rust panic was contained. The native ABI state of this process is permanently fatal:
  * every later create and normal operation returns this without entering the core, runtime
- * destroy and authority release still work as cleanup, and only a new OS process recovers
+ * destroy, authority release, and host destroy still work as cleanup, and only a new OS process
+ * recovers
  * (a library reload is not recovery). */
 #define SAS_PAIRING_FATAL 900
 
 /* Opaque process-local handles. Never a pointer, secret, network identity, authority identity,
- * or protocol identifier. Runtime and authority handles come from one counter, so a value is
- * issued once, to one kind, and never reused within one OS process (under the library-lifetime
- * rule above). 0 is never valid. */
+ * or protocol identifier. Runtime, authority, and host handles come from one counter, so a
+ * value is issued once, to one kind, and never reused within one OS process (under the
+ * library-lifetime rule above). 0 is never valid. */
 typedef uint64_t sas_pairing_runtime_t;
 typedef uint64_t sas_pairing_authority_t;
+/* A host is one hosting context of one authority: it owns one core router. Several hosts may
+ * belong to one authority and share its opportunity budget and START limiter; a host is never a
+ * new security session. Not a socket, connection, peer, or run. */
+typedef uint64_t sas_pairing_host_t;
 
 #define SAS_PAIRING_RUNTIME_INVALID ((sas_pairing_runtime_t)0)
 #define SAS_PAIRING_AUTHORITY_INVALID ((sas_pairing_authority_t)0)
+#define SAS_PAIRING_HOST_INVALID ((sas_pairing_host_t)0)
 
 /* Authority state reported by sas_pairing_authority_status. */
 typedef uint32_t sas_pairing_authority_state_t;
@@ -98,8 +105,9 @@ uint32_t sas_pairing_abi_version(void);
  * SAS_PAIRING_HANDLES_EXHAUSTED, or SAS_PAIRING_FATAL. */
 sas_pairing_status_t sas_pairing_runtime_create(sas_pairing_runtime_t *out_runtime);
 
-/* Destroys the runtime; its handle and every authority handle it owns are invalid forever
- * afterwards, and those authorities are released. Allowed in the fatal state. Returns
+/* Destroys the runtime; its handle and every authority and host handle it owns are invalid
+ * forever afterwards; its hosts are destroyed first, then its authorities released. Allowed in
+ * the fatal state. Returns
  * SAS_PAIRING_OK, SAS_PAIRING_INVALID_HANDLE (0, unknown, or destroyed), or SAS_PAIRING_FATAL. */
 sas_pairing_status_t sas_pairing_runtime_destroy(sas_pairing_runtime_t runtime);
 
@@ -115,9 +123,10 @@ sas_pairing_status_t sas_pairing_runtime_destroy(sas_pairing_runtime_t runtime);
  * again after a release continues them, under a new handle. */
 sas_pairing_status_t sas_pairing_authority_register(sas_pairing_runtime_t runtime, const uint8_t *scope, size_t scope_len, sas_pairing_authority_t *out_authority);
 
-/* Releases the authority's registration (its OS ownership). The handle is consumed: it is
- * invalid forever once this returns, even when a core error such as
- * SAS_PAIRING_OWNERSHIP_UNCERTAIN is returned. Process-session accounting is not reset.
+/* Releases the authority's registration (its OS ownership), after first destroying every host
+ * of the authority. The handle and all of its host handles are consumed: invalid forever once
+ * this returns, even when a core error such as SAS_PAIRING_OWNERSHIP_UNCERTAIN is returned.
+ * Process-session accounting is not reset.
  * Allowed in the fatal state. Returns SAS_PAIRING_OK, SAS_PAIRING_INVALID_HANDLE, a core error,
  * or SAS_PAIRING_FATAL. */
 sas_pairing_status_t sas_pairing_authority_release(sas_pairing_runtime_t runtime, sas_pairing_authority_t authority);
@@ -127,6 +136,20 @@ sas_pairing_status_t sas_pairing_authority_release(sas_pairing_runtime_t runtime
  * and filled only on SAS_PAIRING_OK. Returns SAS_PAIRING_INVALID_ARGUMENT (nothing written),
  * SAS_PAIRING_FATAL, SAS_PAIRING_INVALID_HANDLE, or a core error. */
 sas_pairing_status_t sas_pairing_authority_status(sas_pairing_runtime_t runtime, sas_pairing_authority_t authority, sas_pairing_authority_state_t *out_state, uint32_t *out_remaining);
+
+/* Creates a host (one core router) for the authority. out_host is set to 0 on entry and
+ * receives a new handle only on SAS_PAIRING_OK. Does no networking (no listener, socket, or
+ * connection; those arrive in a later P7 increment) and changes no accounting. Returns
+ * SAS_PAIRING_INVALID_ARGUMENT (null or misaligned out_host, not written), SAS_PAIRING_FATAL,
+ * SAS_PAIRING_INVALID_HANDLE (runtime or authority), SAS_PAIRING_HANDLES_EXHAUSTED, or
+ * SAS_PAIRING_OWNERSHIP_UNCERTAIN. */
+sas_pairing_status_t sas_pairing_host_create(sas_pairing_runtime_t runtime, sas_pairing_authority_t authority, sas_pairing_host_t *out_host);
+
+/* Destroys the host and its router; the handle is invalid forever afterwards. The authority is
+ * not released and its other hosts stay valid. Releasing the authority or destroying the
+ * runtime also destroys its hosts. Allowed in the fatal state. Returns SAS_PAIRING_OK,
+ * SAS_PAIRING_INVALID_HANDLE, or SAS_PAIRING_FATAL. */
+sas_pairing_status_t sas_pairing_host_destroy(sas_pairing_runtime_t runtime, sas_pairing_host_t host);
 
 #ifdef __cplusplus
 }

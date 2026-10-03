@@ -7,9 +7,9 @@
 //! enum, `Result`, or object pointer does. Every export enters Rust work through [`dispatch`],
 //! the one panic-containment boundary (P6-D-004).
 //!
-//! Argument precedence for every export (contract §15.7): raw-memory validation, then output slots
-//! set to their invalid values, then the fatal state (normal operations only), then the runtime
-//! handle, then the authority handle, then the core.
+//! Argument precedence for every export (contract §15.7, §16.2): raw-memory validation, then
+//! output slots set to their invalid values, then the fatal state (normal operations only), then
+//! the runtime handle, then the authority or host handle, then the core.
 
 // A caught panic is the containment model, so the supported artifact must unwind (P6-D-004
 // item 12). Profile settings can be overridden, so the build itself refuses `panic = "abort"`.
@@ -20,6 +20,7 @@ compile_error!(
 );
 
 mod authority;
+mod hosting;
 mod panic_boundary;
 mod runtime;
 mod status;
@@ -29,6 +30,7 @@ mod tests;
 use std::slice;
 
 use authority::{AuthorityHandle, SAS_PAIRING_AUTHORITY_STATE_INVALID};
+use hosting::HostHandle;
 use runtime::AbiState;
 use status::{SAS_PAIRING_FATAL, SAS_PAIRING_INVALID_ARGUMENT, SAS_PAIRING_OK};
 
@@ -231,4 +233,49 @@ pub unsafe extern "C" fn sas_pairing_authority_status(
             Err(status) => status,
         }
     })
+}
+
+/// Creates a hosting context (one core router) for `authority` under `runtime` and writes its
+/// new opaque handle to `out_host`.
+///
+/// Null or misaligned `out_host` → `INVALID_ARGUMENT`, nothing written. Otherwise the slot is
+/// set to `0` on entry and receives the non-zero handle only on `OK`. A fatal process returns
+/// `FATAL` without building a router. Creation is accounting neutral and does no networking.
+///
+/// # Safety
+///
+/// A non-null, aligned `out_host` must point to one caller-owned `uint64_t` that is writable
+/// and not accessed concurrently for the duration of the call. Rust cannot validate other
+/// invalid addresses.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_host_create(
+    runtime: RuntimeHandle,
+    authority: AuthorityHandle,
+    out_host: *mut HostHandle,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        if out_host.is_null() || !out_host.is_aligned() {
+            return SAS_PAIRING_INVALID_ARGUMENT;
+        }
+        // SAFETY: the pointer is non-null and aligned (checked above), and the caller guarantees
+        // it addresses one writable `u64` it owns, unaliased, for this whole call. `u64` has no
+        // invalid bit patterns and no destructor, so plain writes are sound.
+        let write_out = |value: HostHandle| unsafe { out_host.write(value) };
+        write_out(0);
+        match state.create_host(runtime, authority) {
+            Ok(handle) => {
+                write_out(handle.get());
+                SAS_PAIRING_OK
+            }
+            Err(status) => status,
+        }
+    })
+}
+
+/// Destroys `host`; its handle is invalid forever once this returns, and its router is dropped.
+/// Its authority stays registered and its sibling hosts stay live. Allowed in the fatal state as
+/// cleanup; it never clears fatal state or changes accounting.
+#[unsafe(no_mangle)]
+pub extern "C" fn sas_pairing_host_destroy(runtime: RuntimeHandle, host: HostHandle) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| state.destroy_host(runtime, host))
 }

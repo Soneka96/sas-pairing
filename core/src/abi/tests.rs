@@ -1,4 +1,5 @@
-//! Native ABI tests (P7.1 foundation; the P7.2 authority lifecycle is in `authority`).
+//! Native ABI tests (P7.1 foundation; the P7.2 authority lifecycle is in `authority`, the P7.3
+//! hosting contexts in `host`).
 //!
 //! Logic tests use test-local `AbiState`/`FatalState` instances. Tests of the real exports and
 //! the process-global state run in isolated child processes (this test binary re-run with one
@@ -25,21 +26,26 @@ use super::{
         SAS_PAIRING_AUTHORITY_READY, SAS_PAIRING_AUTHORITY_STATE_INVALID,
     },
     dispatch,
+    hosting::{HostHandle, ROUTER_CONSTRUCTIONS},
     panic_boundary::{FatalState, contain},
     runtime::{AbiState, HandleCounter},
     sas_pairing_abi_version, sas_pairing_authority_register, sas_pairing_authority_release,
-    sas_pairing_authority_status, sas_pairing_runtime_create, sas_pairing_runtime_destroy,
+    sas_pairing_authority_status, sas_pairing_host_create, sas_pairing_host_destroy,
+    sas_pairing_runtime_create, sas_pairing_runtime_destroy,
     status::*,
 };
 
 /// P7.2 authority lifecycle, error mapping, concurrency, and real-core panic tests.
 mod authority;
+/// P7.3 hosting contexts: host lifecycle, cascades, accounting neutrality, races.
+mod host;
 
 const HEADER: &str = include_str!("../../include/sas_pairing.h");
 const MANIFEST: &str = include_str!("../../Cargo.toml");
-const ABI_SOURCES: [(&str, &str); 5] = [
+const ABI_SOURCES: [(&str, &str); 6] = [
     ("mod.rs", include_str!("mod.rs")),
     ("authority.rs", include_str!("authority.rs")),
+    ("hosting.rs", include_str!("hosting.rs")),
     ("panic_boundary.rs", include_str!("panic_boundary.rs")),
     ("runtime.rs", include_str!("runtime.rs")),
     ("status.rs", include_str!("status.rs")),
@@ -155,6 +161,7 @@ fn abi_constants_are_frozen() {
     );
     assert_eq!(size_of::<RuntimeHandle>(), 8);
     assert_eq!(size_of::<AuthorityHandle>(), 8);
+    assert_eq!(size_of::<HostHandle>(), 8);
     assert_eq!(size_of::<i32>(), 4);
     // Zero is never a valid handle: destroy rejects it, and the counter never issues it.
     assert_eq!(
@@ -178,6 +185,8 @@ fn export_signatures_are_pinned() {
         sas_pairing_authority_register;
     let _: extern "C" fn(u64, u64) -> i32 = sas_pairing_authority_release;
     let _: unsafe extern "C" fn(u64, u64, *mut u32, *mut u32) -> i32 = sas_pairing_authority_status;
+    let _: unsafe extern "C" fn(u64, u64, *mut u64) -> i32 = sas_pairing_host_create;
+    let _: extern "C" fn(u64, u64) -> i32 = sas_pairing_host_destroy;
 }
 
 /// The checked-in header and the Rust ABI agree on the version, status values, type widths,
@@ -206,6 +215,10 @@ fn header_matches_the_rust_abi() {
         defines.get("SAS_PAIRING_AUTHORITY_INVALID"),
         Some(&"((sas_pairing_authority_t)0)")
     );
+    assert_eq!(
+        defines.get("SAS_PAIRING_HOST_INVALID"),
+        Some(&"((sas_pairing_host_t)0)")
+    );
     for (name, value) in AUTHORITY_STATES {
         assert_eq!(
             defines.get(name),
@@ -229,6 +242,7 @@ fn header_matches_the_rust_abi() {
             "typedef int32_t sas_pairing_status_t;",
             "typedef uint64_t sas_pairing_runtime_t;",
             "typedef uint64_t sas_pairing_authority_t;",
+            "typedef uint64_t sas_pairing_host_t;",
             "typedef uint32_t sas_pairing_authority_state_t;",
         ])
     );
@@ -252,6 +266,10 @@ fn header_matches_the_rust_abi() {
             "sas_pairing_status_t sas_pairing_authority_status(sas_pairing_runtime_t runtime, \
              sas_pairing_authority_t authority, sas_pairing_authority_state_t *out_state, \
              uint32_t *out_remaining);",
+            "sas_pairing_status_t sas_pairing_host_create(sas_pairing_runtime_t runtime, \
+             sas_pairing_authority_t authority, sas_pairing_host_t *out_host);",
+            "sas_pairing_status_t sas_pairing_host_destroy(sas_pairing_runtime_t runtime, \
+             sas_pairing_host_t host);",
         ])
     );
     let declared: BTreeSet<&str> = declarations
@@ -299,6 +317,8 @@ fn every_export_runs_inside_the_central_panic_boundary() {
             "sas_pairing_authority_register",
             "sas_pairing_authority_release",
             "sas_pairing_authority_status",
+            "sas_pairing_host_create",
+            "sas_pairing_host_destroy",
             "sas_pairing_runtime_create",
             "sas_pairing_runtime_destroy",
         ]
@@ -544,6 +564,18 @@ fn release(runtime: u64, authority: u64) -> i32 {
     sas_pairing_authority_release(runtime, authority)
 }
 
+/// Creates a host through the export; the output slot starts as a sentinel.
+fn host_create(runtime: u64, authority: u64) -> (i32, u64) {
+    let mut out = u64::MAX;
+    // SAFETY: `out` is a live, aligned, exclusively borrowed `u64` for the whole call.
+    let status = unsafe { sas_pairing_host_create(runtime, authority, &mut out) };
+    (status, out)
+}
+
+fn host_destroy(runtime: u64, host: u64) -> i32 {
+    sas_pairing_host_destroy(runtime, host)
+}
+
 /// Reads an authority's status through the export; the output slots start as sentinels.
 fn authority_status(runtime: u64, authority: u64) -> (i32, u32, u32) {
     let (mut state, mut remaining) = (u32::MAX, u32::MAX);
@@ -553,12 +585,17 @@ fn authority_status(runtime: u64, authority: u64) -> (i32, u32, u32) {
     (status, state, remaining)
 }
 
-/// After a panic that left the runtime slot unpoisoned, normal authority operations are refused
-/// by the fatal state alone, before the runtime handle is checked and without entering the
-/// core; release stays admitted as cleanup.
+/// After a panic that left the runtime slot unpoisoned, normal authority and host operations are
+/// refused by the fatal state alone, before the runtime handle is checked and without entering
+/// the core or building a router; release and host destroy stay admitted as cleanup.
 fn assert_authority_calls_are_fatal(runtime: u64) {
     let entries = CORE_ENTRIES.load(Ordering::SeqCst);
+    let routers = ROUTER_CONSTRUCTIONS.get();
     for runtime in [runtime, 0, runtime.wrapping_add(1_000)] {
+        assert_eq!(
+            host_create(runtime, runtime.wrapping_add(1)),
+            (SAS_PAIRING_FATAL, 0)
+        );
         assert_eq!(
             register(runtime, b"p7-abi-after-fatal"),
             (SAS_PAIRING_FATAL, 0)
@@ -569,10 +606,16 @@ fn assert_authority_calls_are_fatal(runtime: u64) {
         );
     }
     assert_eq!(CORE_ENTRIES.load(Ordering::SeqCst), entries, "core entered");
+    assert_eq!(ROUTER_CONSTRUCTIONS.get(), routers, "router built");
     assert_eq!(
         release(runtime, runtime.wrapping_add(1)),
         SAS_PAIRING_INVALID_HANDLE,
         "cleanup is admitted and still validates its handles"
+    );
+    assert_eq!(
+        host_destroy(runtime, runtime.wrapping_add(1)),
+        SAS_PAIRING_INVALID_HANDLE,
+        "host destroy is cleanup too"
     );
 }
 

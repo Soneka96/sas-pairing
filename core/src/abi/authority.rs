@@ -2,7 +2,8 @@
 //!
 //! An authority handle names one ABI object lifetime: one active registration of a real core
 //! [`TrustedAuthority`], owned by the runtime. It is not the authority's identity and not its
-//! process session. Release or runtime destroy ends the registration (its OS lease); the core's
+//! process session. Release (after destroying the authority's hosts) or runtime destroy ends the
+//! registration (its OS lease); the core's
 //! process session, with its opportunity budget and START limiter, outlives every handle for the
 //! rest of the OS process (P6-D-002), under the loader invariant of P7-D-002.
 
@@ -31,8 +32,8 @@ pub(super) const SAS_PAIRING_AUTHORITY_EXHAUSTED: u32 = 3;
 #[cfg(test)]
 pub(super) static CORE_ENTRIES: AtomicUsize = AtomicUsize::new(0);
 
-/// Every call from an authority operation into the reviewed core goes through here.
-fn enter_core<T>(op: impl FnOnce() -> T) -> T {
+/// Every call from an authority or host operation into the reviewed core goes through here.
+pub(super) fn enter_core<T>(op: impl FnOnce() -> T) -> T {
     #[cfg(test)]
     CORE_ENTRIES.fetch_add(1, Ordering::SeqCst);
     op()
@@ -68,14 +69,20 @@ impl AbiState {
         })
     }
 
-    /// Releases `authority`: its handle leaves the runtime first and is invalid forever, then
-    /// the core's explicit release runs and its result is mapped. A failed release never
-    /// restores the handle. Admitted in the fatal state, as cleanup.
+    /// Releases `authority`: every host of it is destroyed first (P7-D-005), so no ABI-owned
+    /// router still shares the authority's state; then its handle leaves the runtime and is
+    /// invalid forever; then the core's explicit release runs and its result is mapped. A failed
+    /// release never restores the handle or any host. Admitted in the fatal state, as cleanup.
     pub(super) fn release_authority(&self, runtime: u64, authority: AuthorityHandle) -> i32 {
         let released = self.with_runtime(runtime, Admission::Cleanup, |live| {
+            let handle = owned(authority)?;
+            if !live.authorities.contains_key(&handle) {
+                return Err(SAS_PAIRING_INVALID_HANDLE);
+            }
+            live.destroy_hosts_of(handle);
             let authority = live
                 .authorities
-                .remove(&owned(authority)?)
+                .remove(&handle)
                 .ok_or(SAS_PAIRING_INVALID_HANDLE)?;
             enter_core(|| authority.release()).map_err(map_core_error)
         });

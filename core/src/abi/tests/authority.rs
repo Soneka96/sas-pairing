@@ -37,6 +37,8 @@ use super::{
     },
     PanicOnDrop, release, sas_pairing_abi_version,
 };
+#[cfg(not(windows))]
+use super::{host_create, host_destroy};
 use crate::{DOMAIN, Error, Registration, Status, registry};
 #[cfg(windows)]
 use crate::{Role, TrustedAuthority, test_hook};
@@ -51,7 +53,7 @@ fn identity(scope: &[u8]) -> Vec<u8> {
 /// The core registry's view of `scope`, read without registering: the registration state, the
 /// remaining budget, and the address of the process session's accounting (equal addresses mean
 /// the same session, which the registry keeps alive). `None` when the core never owned it.
-fn session(scope: &[u8]) -> Option<(Registration, u8, usize)> {
+pub(super) fn session(scope: &[u8]) -> Option<(Registration, u8, usize)> {
     let sessions = registry().lock().unwrap();
     let session = sessions.get(&identity(scope))?;
     let remaining = session.shared.lock().unwrap().remaining;
@@ -63,14 +65,14 @@ fn session(scope: &[u8]) -> Option<(Registration, u8, usize)> {
 }
 
 #[cfg(windows)]
-fn registration(scope: &[u8]) -> Option<Registration> {
+pub(super) fn registration(scope: &[u8]) -> Option<Registration> {
     session(scope).map(|(registration, _, _)| registration)
 }
 
 /// Runs `op` on the real core authority behind an ABI handle (test-side access, under the
 /// runtime slot like an export). Never call an export from `op`: the slot is held.
 #[cfg(windows)]
-fn with_authority<T>(
+pub(super) fn with_authority<T>(
     state: &AbiState,
     runtime: u64,
     authority: u64,
@@ -86,7 +88,7 @@ fn with_authority<T>(
 /// Spends one opportunity through the core's own authorize/reserve path, then terminates. No
 /// ceremony ABI exists yet; this is test-side use of the reviewed core API.
 #[cfg(windows)]
-fn spend(authority: &TrustedAuthority) -> Result<u8, Error> {
+pub(super) fn spend(authority: &TrustedAuthority) -> Result<u8, Error> {
     let executor = authority.executor();
     let mut ceremony = executor.begin(Role::Initiator).unwrap();
     let token = authority.authorize(&mut ceremony).unwrap();
@@ -97,7 +99,7 @@ fn spend(authority: &TrustedAuthority) -> Result<u8, Error> {
 
 /// Runs `op(index)` on `threads` threads released together by a barrier.
 #[cfg(windows)]
-fn race<T: Send + 'static>(
+pub(super) fn race<T: Send + 'static>(
     threads: usize,
     op: impl Fn(usize) -> T + Send + Sync + 'static,
 ) -> Vec<T> {
@@ -117,12 +119,11 @@ fn race<T: Send + 'static>(
         .collect()
 }
 
-#[cfg(windows)]
 /// Races `first` against `second`, returning `[first's result, second's result]`. The thread
 /// that reaches the barrier last usually proceeds first, so the roles swap threads every other
 /// round to exercise both admission orders.
 #[cfg(windows)]
-fn race_pair<T: Send + 'static>(
+pub(super) fn race_pair<T: Send + 'static>(
     round: usize,
     first: impl Fn() -> T + Send + Sync + 'static,
     second: impl Fn() -> T + Send + Sync + 'static,
@@ -144,8 +145,8 @@ fn race_pair<T: Send + 'static>(
 }
 
 #[cfg(windows)]
-const READY_10: (i32, u32, u32) = (SAS_PAIRING_OK, SAS_PAIRING_AUTHORITY_READY, 10);
-const NO_STATUS: (i32, u32, u32) = (
+pub(super) const READY_10: (i32, u32, u32) = (SAS_PAIRING_OK, SAS_PAIRING_AUTHORITY_READY, 10);
+pub(super) const NO_STATUS: (i32, u32, u32) = (
     SAS_PAIRING_INVALID_HANDLE,
     SAS_PAIRING_AUTHORITY_STATE_INVALID,
     0,
@@ -1126,6 +1127,12 @@ fn child_unsupported_platform() {
     assert_eq!(session(scope), None, "nothing was registered");
     for authority in [runtime + 1, runtime + 2, runtime + 3] {
         assert_eq!(authority_status(runtime, authority), NO_STATUS);
+        // No authority can exist here, so no host can be created for one (P7.3).
+        assert_eq!(
+            host_create(runtime, authority),
+            (SAS_PAIRING_INVALID_HANDLE, 0)
+        );
+        assert_eq!(host_destroy(runtime, authority), SAS_PAIRING_INVALID_HANDLE);
     }
     assert_eq!(destroy(runtime), SAS_PAIRING_OK);
     assert!(!PROCESS.fatal.is_set());

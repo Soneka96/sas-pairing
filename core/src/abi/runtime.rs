@@ -1,11 +1,12 @@
-//! Native runtime lifecycle and handles (P7-D-001, P7-D-003).
+//! Native runtime lifecycle and handles (P7-D-001, P7-D-003, P7-D-005).
 //!
 //! At most one runtime is active per OS process, and the runtime is the fatal-containment unit.
-//! Handles of every kind (runtimes, authorities) are opaque process-local `u64` values drawn from
-//! one monotonic counter: never zero, never reused, never wrapped, and never equal across kinds.
-//! Creating a runtime registers no authority, takes no OS lock, starts no listener, and generates
-//! no protocol randomness. The runtime owns the authorities registered through it, and every
-//! authority operation runs while holding the runtime slot, so it serializes with destroy.
+//! Handles of every kind (runtimes, authorities, hosts) are opaque process-local `u64` values
+//! drawn from one monotonic counter: never zero, never reused, never wrapped, and never equal
+//! across kinds. Creating a runtime registers no authority, takes no OS lock, starts no listener,
+//! and generates no protocol randomness. The runtime owns the authorities registered through it
+//! and the hosts created for them, and every authority and host operation runs while holding the
+//! runtime slot, so it serializes with release and destroy.
 
 use std::{
     collections::BTreeMap,
@@ -17,6 +18,7 @@ use std::{
 };
 
 use super::{
+    hosting::HostContext,
     panic_boundary::FatalState,
     status::{
         SAS_PAIRING_ALREADY_INITIALIZED, SAS_PAIRING_FATAL, SAS_PAIRING_HANDLES_EXHAUSTED,
@@ -59,21 +61,33 @@ impl HandleCounter {
     }
 }
 
-/// The active runtime: the owning root of the authorities registered through it.
+/// The active runtime: the owning root of the authorities registered through it and of the
+/// hosts created for them.
 pub(super) struct Runtime {
     handle: NonZeroU64,
     /// The real core authorities, keyed by their opaque handles. The map owns them, so Rust
     /// RAII stays authoritative: removing an entry is the only way to end its ABI lifetime.
     pub(super) authorities: BTreeMap<NonZeroU64, TrustedAuthority>,
+    /// The hosting contexts, keyed by their opaque handles; each names its parent authority in
+    /// `authorities` and owns its router (P7-D-005).
+    pub(super) hosts: BTreeMap<NonZeroU64, HostContext>,
 }
 
 impl Runtime {
-    /// Best-effort destruction, run after the runtime handle is already invalid: drops every
-    /// owned authority, which releases its OS lease through the core's own `Drop` (an uncertain
-    /// release is recorded by the core and fails that authority's registration closed). Never
-    /// starts protocol work, clears fatal state, or creates accounting.
+    /// Best-effort destruction, run after the runtime handle (and with it every child handle)
+    /// is already invalid. Hosts go first: their routers hold executor clones of the
+    /// authorities, so every router must be gone before authority ownership ends. Then every
+    /// owned authority drops, which releases its OS lease through the core's own `Drop` (an
+    /// uncertain release is recorded by the core and fails that authority's registration
+    /// closed). Never starts protocol work, clears fatal state, or creates accounting.
     fn destroy(self) {
-        drop(self.authorities);
+        let Self {
+            handle: _,
+            authorities,
+            hosts,
+        } = self;
+        drop(hosts);
+        drop(authorities);
     }
 }
 
@@ -83,8 +97,8 @@ pub(super) enum Admission {
     /// A normal operation that may enter the core: refused with `FATAL` once the process is
     /// fatal, and a poisoned runtime slot makes the process fatal.
     Normal,
-    /// Cleanup (authority release): admitted in the fatal state and on a poisoned slot, like
-    /// runtime destroy. It never clears fatal state.
+    /// Cleanup (authority release, host destroy): admitted in the fatal state and on a poisoned
+    /// slot, like runtime destroy. It never clears fatal state.
     Cleanup,
 }
 
@@ -127,6 +141,7 @@ impl AbiState {
         *active = Some(Runtime {
             handle,
             authorities: BTreeMap::new(),
+            hosts: BTreeMap::new(),
         });
         Ok(handle)
     }
@@ -170,10 +185,10 @@ impl AbiState {
         }
     }
 
-    /// Destroys the runtime named by `handle`, cascading to every authority it owns. This is
-    /// the cleanup path, so fatal state and a poisoned slot do not prevent it; it never clears
-    /// fatal state. The runtime leaves the slot first, so its handle and every child authority
-    /// handle are invalid before cleanup starts; cleanup finishes before the slot is released,
+    /// Destroys the runtime named by `handle`, cascading to every host and authority it owns.
+    /// This is the cleanup path, so fatal state and a poisoned slot do not prevent it; it never
+    /// clears fatal state. The runtime leaves the slot first, so its handle and every child
+    /// authority and host handle are invalid before cleanup starts; cleanup finishes before the slot is released,
     /// so no operation can observe a half-destroyed runtime.
     pub(super) fn destroy(&self, handle: u64) -> i32 {
         let Some(handle) = NonZeroU64::new(handle) else {
