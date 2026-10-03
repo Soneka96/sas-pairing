@@ -1,8 +1,10 @@
-// P8.2 public surface (P8-D-002 A, M; P8.2.1): a package consumer that imports only the public
-// entrypoint sees exactly the lifecycle, status, and exception types, including the public
-// initialization failure; raw FFI, handles, the loader and its exception, and the native
-// lifecycle service are not part of it.
+// Public surface (P8-D-002 A, M; P8.2.1; P8-D-003 B): a package consumer that imports only the
+// public entrypoint sees exactly the lifecycle, status, and exception types, including the
+// public initialization failure, and the P8.3 Bootstrap, listener-transfer, drive, event, and
+// connection types; raw FFI, handles, sockets, event records, run and result references, the
+// loader and its exception, and the native services are not part of it.
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:sas_pairing/sas_pairing.dart';
 import 'package:test/test.dart';
@@ -21,6 +23,20 @@ const publicNames = {
   'SasPairingContractException',
   'SasPairingInitializationException',
   'SasPairingInitializationFailure',
+  'SasPairingBootstrap',
+  'SasPairingWindowsListenerSocket',
+  'SasPairingHostNetworkState',
+  'SasPairingConnection',
+  'SasPairingDriveBatch',
+  'SasPairingDriveFailure',
+  'SasPairingEvent',
+  'SasPairingEventKind',
+  'SasPairingStepKind',
+  'SasPairingProtocolEvent',
+  'SasPairingEventReason',
+  'SasPairingDeadlineKind',
+  'SasPairingCancelState',
+  'SasPairingCancelReason',
 };
 
 const prohibitedNames = [
@@ -36,6 +52,19 @@ const prohibitedNames = [
   'NativeLoadFailure',
   'createRuntime',
   'initializeProcessContext',
+  'NativeNetworkApi',
+  'FfiNativeNetworkApi',
+  'NativeEventRecord',
+  'NativeRunRef',
+  'NativeResultRef',
+  'NativeResultStore',
+  'HostNetwork',
+  'runReferenceOf',
+  'resultReferenceOf',
+  'runReferencesOf',
+  'resultStoreOf',
+  'sas_pairing_event_t',
+  'sas_pairing_bootstrap_view_t',
 ];
 
 /// The files the entrypoint exports from.
@@ -43,6 +72,8 @@ const publicFiles = [
   'lib/src/lifecycle.dart',
   'lib/src/status.dart',
   'lib/src/exceptions.dart',
+  'lib/src/bootstrap.dart',
+  'lib/src/network.dart',
 ];
 
 String code(String source) => source
@@ -64,6 +95,20 @@ void main() {
       SasPairingContractException,
       SasPairingInitializationException,
       SasPairingInitializationFailure,
+      SasPairingBootstrap,
+      SasPairingWindowsListenerSocket,
+      SasPairingHostNetworkState,
+      SasPairingConnection,
+      SasPairingDriveBatch,
+      SasPairingDriveFailure,
+      SasPairingEvent,
+      SasPairingEventKind,
+      SasPairingStepKind,
+      SasPairingProtocolEvent,
+      SasPairingEventReason,
+      SasPairingDeadlineKind,
+      SasPairingCancelState,
+      SasPairingCancelReason,
     ];
     expect(types.map((t) => '$t').toSet(), publicNames);
     expect(SasPairingStatus.values, hasLength(48));
@@ -83,6 +128,115 @@ void main() {
       SasPairingContractException('op', 'x').processRestartRequired,
       isTrue,
     );
+  });
+
+  test('a consumer can use the P8.3 network API from the entrypoint alone', () {
+    // Compiles only if every P8.3 member is reachable through the entrypoint; no native library
+    // is needed to type-check a consumer.
+    void consumer(SasPairingHost host, int alreadyBoundSocket) {
+      final listener = SasPairingWindowsListenerSocket.fromNativeSocket(
+        alreadyBoundSocket,
+      );
+      final local = SasPairingBootstrap(
+        applicationIdentity: Uint8List.fromList([1]),
+        keyAlgorithm: Uint8List.fromList([2]),
+        publicKey: Uint8List.fromList([3]),
+        sharedContext: Uint8List(0),
+      );
+      host.attachWindowsListener(listener: listener, local: local);
+      host.attachWindowsListener(
+        listener: listener,
+        local: local,
+        expected: local,
+      );
+      final bool transferred = listener.isTransferred;
+      final SasPairingHostNetworkState state = host.networkState;
+      final SasPairingDriveBatch batch = host.drive();
+      final SasPairingDriveBatch resumed = host.recheckAfterResume();
+      final SasPairingDriveFailure? failure = batch.failure;
+      for (final SasPairingEvent event in [
+        ...batch.events,
+        ...resumed.events,
+      ]) {
+        final values = <Object?>[
+          event.kind,
+          event.stepKind,
+          event.protocolEvent,
+          event.reason,
+          event.deadlineKind,
+          event.cancelState,
+          event.cancelReason,
+          event.writePending,
+          event.runUntracked,
+          event.requestId,
+          event.hasTrackedRun,
+          event.hasResult,
+        ];
+        final SasPairingConnection? connection = event.connection;
+        if (event.shouldCloseConnection) connection?.close();
+        expect([values, connection?.isClosed, transferred, state], isNotNull);
+      }
+      expect([
+        failure?.statusCode,
+        failure?.knownStatus,
+        failure?.processRestartRequired,
+      ], isNotNull);
+      host.detachListener();
+    }
+
+    expect(consumer, isNotNull);
+    expect(SasPairingHostNetworkState.values.map((s) => s.name), [
+      'detached',
+      'attached',
+      'listenerDisabled',
+      'failedClosed',
+    ]);
+    expect(SasPairingEventKind.values, hasLength(5));
+    expect(SasPairingStepKind.values, hasLength(8));
+    expect(SasPairingProtocolEvent.values, hasLength(13));
+    expect(SasPairingEventReason.values, hasLength(16));
+    expect(SasPairingDeadlineKind.values, hasLength(5));
+    expect(SasPairingCancelState.values, hasLength(4));
+    expect(SasPairingCancelReason.values, hasLength(5));
+  });
+
+  test('no public P8.3 member exposes a private native type or raw value', () {
+    final network = code(readPackageFile('lib/src/network.dart'));
+    final bootstrap = code(readPackageFile('lib/src/bootstrap.dart'));
+    for (final source in [network, bootstrap]) {
+      for (final m in RegExp(
+        r'final class (SasPairing\w+)\b[^{]*\{(.*?)\n\}',
+        dotAll: true,
+      ).allMatches(source)) {
+        final body = m[2]!;
+        // A public field or getter typed by a private native type, or a raw-value getter.
+        expect(
+          RegExp(
+            r'(final\s+|^\s+)(Native\w*|HostNetwork|int)\??\s+(get\s+)?(?!_)\w*'
+            r'([Hh]andle|[Ss]ocket|[Rr]aw|[Ff]lags|[Cc]ode|[Rr]un|[Rr]esult)\w*\b',
+            multiLine: true,
+          ).firstMatch(body)?.group(0),
+          m[1] == 'SasPairingDriveFailure' ? 'final int statusCode' : null,
+          reason: m[1],
+        );
+        expect(
+          RegExp(
+            r'^\s+(final\s+)?(Native\w*|HostNetwork)\??\s+(get\s+)?(?!_)\w+',
+            multiLine: true,
+          ).firstMatch(body)?.group(0),
+          isNull,
+          reason: m[1],
+        );
+      }
+    }
+    // The enums keep their raw ABI values private.
+    for (final m in RegExp(
+      r'enum (SasPairing\w+) \{(.*?)\n\}',
+      dotAll: true,
+    ).allMatches(network)) {
+      expect(m[2], isNot(contains('final int code')), reason: m[1]);
+      expect(m[2], isNot(contains('get code')), reason: m[1]);
+    }
   });
 
   test(
@@ -105,7 +259,7 @@ void main() {
       expect(shown, publicNames);
       for (final name in prohibitedNames) {
         expect(shown, isNot(contains(name)));
-        expect(entry, isNot(contains(name)), reason: name);
+        expect(RegExp('\\b$name\\b').hasMatch(entry), isFalse, reason: name);
       }
       expect(entry, isNot(contains('src/native')));
       expect(
@@ -118,11 +272,12 @@ void main() {
   test('public files expose no raw FFI type, handle, pointer, or binding', () {
     final rawAccess = RegExp(
       r"\b(Pointer|DynamicLibrary|SasPairingNativeBindings|NativeLibraryLoader|"
-      r"LoadedNativeLibrary|NativeLifecycleApi|FfiNativeLifecycleApi|Struct|nullptr)\b|"
+      r"LoadedNativeLibrary|NativeLifecycleApi|FfiNativeLifecycleApi|FfiNativeNetworkApi|"
+      r"Struct|nullptr|sas_pairing_event_t|sas_pairing_bootstrap_view_t)\b|"
       r"import 'dart:ffi'|import 'package:ffi",
     );
     final publicHandle = RegExp(
-      r'\bget\s+(?!_)\w*([Hh]andle|[Pp]ointer|[Bb]inding|[Aa]ddress|[Ss]cope)\w*\b|'
+      r'\bget\s+(?!_)\w*([Hh]andle|[Pp]ointer|[Bb]inding|[Aa]ddress|[Ss]cope|[Ss]ocket)\w*\b|'
       r'\bfinal\s+[\w<>?]+\s+(?!_)\w*([Hh]andle|[Pp]ointer|[Bb]inding|[Aa]ddress|[Ss]cope)\w*\s*[;=]',
     );
     for (final path in publicFiles) {
@@ -250,22 +405,30 @@ void main() {
     expect(create, contains('initializeProcessContext('));
   });
 
-  test('lifecycle wrappers use object identity and print no handle', () {
-    final source = code(readPackageFile('lib/src/lifecycle.dart'));
-    for (final kind in [
-      'SasPairingRuntime',
-      'SasPairingAuthority',
-      'SasPairingHost',
-    ]) {
-      final body = RegExp(
-        'final class $kind \\{(.*?)\\n\\}',
-        dotAll: true,
-      ).firstMatch(source)!.group(1)!;
-      expect(body, isNot(contains('operator ==')), reason: kind);
-      expect(body, isNot(contains('hashCode')), reason: kind);
-      expect(body, isNot(contains('toString')), reason: kind);
-    }
-  });
+  test(
+    'lifecycle and network wrappers use object identity and print no handle',
+    () {
+      final source =
+          code(readPackageFile('lib/src/lifecycle.dart')) +
+          code(readPackageFile('lib/src/network.dart'));
+      for (final kind in [
+        'SasPairingRuntime',
+        'SasPairingAuthority',
+        'SasPairingHost',
+        'SasPairingConnection',
+        'SasPairingWindowsListenerSocket',
+        'SasPairingEvent',
+      ]) {
+        final body = RegExp(
+          'final class $kind \\{(.*?)\\n\\}',
+          dotAll: true,
+        ).firstMatch(source)!.group(1)!;
+        expect(body, isNot(contains('operator ==')), reason: kind);
+        expect(body, isNot(contains('hashCode')), reason: kind);
+        expect(body, isNot(contains('toString')), reason: kind);
+      }
+    },
+  );
 
   test('no public lifecycle file is reachable except through the entrypoint', () {
     // Only lib/sas_pairing.dart may export; lib/src is private by Dart convention.

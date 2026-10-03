@@ -1,8 +1,12 @@
 /// `package:sas_pairing`: experimental, pre-alpha Dart binding of the sas-pairing native core.
 ///
-/// P8.2 provides the native lifecycle only: [SasPairingRuntime], [SasPairingAuthority], and
-/// [SasPairingHost], with the status and exception model. There is no listener, network,
-/// connection, ceremony, or SAS API yet. Raw FFI types, pointers, native handles, the
+/// It provides the native lifecycle ([SasPairingRuntime], [SasPairingAuthority], and
+/// [SasPairingHost], with the status and exception model; P8.2) and the Windows listener
+/// ownership transfer and cooperative network driver (a [SasPairingBootstrap] value, the
+/// [SasPairingWindowsListenerSocket] transfer token, `attachWindowsListener`, `detachListener`,
+/// one bounded `drive()` or `recheckAfterResume()` per call returning a [SasPairingDriveBatch]
+/// of [SasPairingEvent] values, and [SasPairingConnection]; P8.3). There is no ceremony, SAS,
+/// run, or result API yet. Raw FFI types, pointers, native handles, sockets, event records, the
 /// `DynamicLibrary`, the generated bindings, and the loader stay private.
 ///
 /// A native library that cannot be loaded or verified is a [SasPairingInitializationException];
@@ -14,11 +18,16 @@
 /// normal operation is refused for the rest of the process and only an OS process restart
 /// recovers. Statuses are operation outcomes, never trust verdicts.
 ///
+/// Network calls are synchronous and bounded; the caller decides their cadence and nothing runs
+/// in the background. Consume every event of a batch, also when its `failure` is set. When an
+/// event's `shouldCloseConnection` is true, close that connection after consuming the batch.
+///
 /// Not production-security approved, not audited, and not formally verified. The protocol is
 /// implemented only by the native Rust core; this package implements no protocol or
 /// cryptography. Pairing networking is supported on Windows only.
 library;
 
+export 'src/bootstrap.dart' show SasPairingBootstrap;
 export 'src/exceptions.dart'
     show
         SasPairingClosedException,
@@ -33,4 +42,19 @@ export 'src/lifecycle.dart'
         SasPairingAuthorityStatus,
         SasPairingHost,
         SasPairingRuntime;
+export 'src/network.dart'
+    show
+        SasPairingCancelReason,
+        SasPairingCancelState,
+        SasPairingConnection,
+        SasPairingDeadlineKind,
+        SasPairingDriveBatch,
+        SasPairingDriveFailure,
+        SasPairingEvent,
+        SasPairingEventKind,
+        SasPairingEventReason,
+        SasPairingHostNetworkState,
+        SasPairingProtocolEvent,
+        SasPairingStepKind,
+        SasPairingWindowsListenerSocket;
 export 'src/status.dart' show SasPairingStatus;

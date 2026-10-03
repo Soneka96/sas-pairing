@@ -1,19 +1,23 @@
-/// The public runtime, authority, and host lifecycle (P8-D-002).
+/// The public runtime, authority, and host lifecycle (P8-D-002), with the host's network
+/// operations (P8-D-003).
 ///
-/// Ownership mirrors the native ABI: a runtime owns its authorities and an authority owns its
-/// hosts. Native cleanup of a parent already cascades to its children, so closing a parent makes
-/// exactly one native cleanup call and then marks every child wrapper closed locally; no child
-/// cleanup call is made. Every `close()` consumes its wrapper on the first call, whatever the
+/// Ownership mirrors the native ABI: a runtime owns its authorities, an authority owns its
+/// hosts, and a host owns its network context and connections. Native cleanup of a parent
+/// already cascades to its children, so closing a parent makes exactly one native cleanup call
+/// and then marks every child wrapper closed locally; no child cleanup call is made. Every `close()` consumes its wrapper on the first call, whatever the
 /// native result, and later calls do nothing.
 library;
 
 import 'dart:typed_data';
 
+import 'bootstrap.dart';
 import 'exceptions.dart';
 import 'native/generated/sas_pairing_bindings.g.dart' as raw;
 import 'native/native_library_loader.dart'
     show NativeLibraryInitializationException, NativeLoadFailure;
 import 'native/native_process_context.dart';
+import 'network.dart';
+import 'network_refs.dart';
 
 /// The largest remaining-opportunity count a successful `READY` status can report (ABI contract
 /// §15: 1–10). Used only to validate one native success output; Dart keeps no budget.
@@ -69,6 +73,9 @@ SasPairingRuntime createRuntime(NativeProcessContext context) {
   );
 }
 
+/// The private result references of [runtime] (P8-D-003 N). Package-private.
+NativeResultStore resultStoreOf(SasPairingRuntime runtime) => runtime._results;
+
 /// The one native runtime of this process: the owning root of authorities and hosts.
 ///
 /// A runtime is a native object lifetime, not a security session. Closing it and creating a new
@@ -107,6 +114,9 @@ final class SasPairingRuntime {
   final NativeProcessContext _context;
   final int _handle;
   final Set<SasPairingAuthority> _authorities = {};
+  // Native results are runtime-owned: they outlive connections, listeners, hosts, and
+  // authorities, and end only with result destruction (later) or runtime destruction.
+  final NativeResultStore _results = NativeResultStore();
   bool _closed = false;
 
   /// Whether this runtime was closed. A closed runtime stays closed.
@@ -134,7 +144,8 @@ final class SasPairingRuntime {
   }
 
   /// Destroys the native runtime with exactly one native call, which also releases every
-  /// authority and destroys every host it owns; all of those objects are then closed too.
+  /// authority, destroys every host, closes every listener and connection, and drops every
+  /// result it owns; all of those objects are then closed too, with no other native call.
   ///
   /// The runtime is closed after the first call whatever the native result, and a failure is
   /// thrown once as a [SasPairingNativeException]; it is never retried. Later calls do nothing.
@@ -150,6 +161,7 @@ final class SasPairingRuntime {
         authority._invalidateByParent();
       }
       _authorities.clear();
+      _results.invalidateAll();
     }
     _context.check('SasPairingRuntime.close', status);
   }
@@ -226,16 +238,19 @@ final class SasPairingAuthority {
     context.admitNormal(operation);
     final result = context.api.hostCreate(_runtime._handle, _handle);
     context.check(operation, result.status);
+    final handle = context.requireHandle(operation, result.handle);
     final host = SasPairingHost._(
       this,
-      context.requireHandle(operation, result.handle),
+      handle,
+      HostNetwork(context, _runtime._handle, handle, _runtime._results),
     );
     _hosts.add(host);
     return host;
   }
 
   /// Releases the registration with exactly one native call, which also destroys every host of
-  /// this authority; those hosts are then closed too. The runtime stays open.
+  /// this authority with its listener and connections; those objects are then closed too, with
+  /// no other native call. The runtime and native results stay.
   ///
   /// The authority is closed after the first call whatever the native result (for example
   /// `ownershipUncertain`), and a failure is thrown once as a [SasPairingNativeException]; it is
@@ -264,7 +279,7 @@ final class SasPairingAuthority {
 
   void _invalidateHosts() {
     for (final host in _hosts) {
-      host._closed = true;
+      host._invalidateByParent();
     }
     _hosts.clear();
   }
@@ -276,19 +291,92 @@ final class SasPairingAuthority {
   }
 }
 
-/// One hosting context of an authority, owned by that authority. It has no network behavior in
-/// this version: it exists only as a lifecycle object.
+/// One hosting context of an authority, owned by that authority. It may hold one Windows
+/// listener at a time ([attachWindowsListener]) and is driven cooperatively by the caller
+/// ([drive]); it owns the [SasPairingConnection] objects its listener accepts.
+///
+/// Pairing networking is supported on Windows only. Nothing happens in the background: no
+/// thread, timer, stream, isolate, or callback exists, and network progress happens only inside
+/// [drive] and [recheckAfterResume].
 final class SasPairingHost {
-  SasPairingHost._(this._authority, this._handle);
+  SasPairingHost._(this._authority, this._handle, this._network);
 
   final SasPairingAuthority _authority;
   final int _handle;
+  final HostNetwork _network;
   bool _closed = false;
 
   /// Whether this host was closed, by [close] or by closing its authority or runtime.
   bool get isClosed => _closed;
 
-  /// Destroys the host with exactly one native call. Its authority stays registered and open.
+  /// The host's network state. `detached` once the host is closed.
+  SasPairingHostNetworkState get networkState => _network.state;
+
+  /// Attaches the caller's already-bound, already-listening Windows socket [listener] to this
+  /// host, with [local] as the host's Responder Bootstrap and [expected] as the exact expected
+  /// peer Bootstrap (null: none). One native call; nothing is driven or accepted, and no
+  /// connection exists afterwards.
+  ///
+  /// Ownership of the socket follows the native in/out slot and is recorded on [listener] before
+  /// any error is thrown: when `listener.isTransferred` is true afterwards (success, or
+  /// `listenerSetupFailed` or `fatal` after the native library took the socket), never close or
+  /// use the old socket value; when it is false (any earlier failure, such as
+  /// `invalidBootstrap`, `listenerAlreadyAttached`, or `unsupportedPlatform`), the socket is
+  /// still the caller's to close. On success the network state is `attached`. A host holds one
+  /// listener: replace it with [detachListener] and a new attach. A transferred [listener]
+  /// cannot be attached again (`StateError`).
+  void attachWindowsListener({
+    required SasPairingWindowsListenerSocket listener,
+    required SasPairingBootstrap local,
+    SasPairingBootstrap? expected,
+  }) {
+    _requireOpen('attachWindowsListener');
+    _network.attach(listener, local, expected);
+  }
+
+  /// Detaches the listener with exactly one native call (cleanup: allowed after
+  /// `SAS_PAIRING_FATAL`; native detach is idempotent). The native library closes the listener
+  /// and every connection itself; afterwards the network state is `detached` and every
+  /// [SasPairingConnection] of this host is closed, whatever the native result, and a failure
+  /// (for example `ownershipUncertain`) is thrown once and never retried. The host, its
+  /// authority, its runtime, and all accounting stay; a new listener may be attached. Does
+  /// nothing on a closed host.
+  void detachListener() {
+    if (_closed) return;
+    _network.detach();
+  }
+
+  /// Drives the host's owner loop once: exactly one bounded native call (deadline sweeps, at
+  /// most one readiness wait of at most about 250 ms, at most one socket operation per
+  /// connection, at most one accept), returning every event it produced.
+  ///
+  /// The call is synchronous and may block for up to about 250 ms, so blindly calling it on a
+  /// Flutter UI isolate is not recommended; the caller decides the cadence. Do not spin
+  /// `while (true) host.drive();` without a scheduling or yield policy: persistent readiness can
+  /// make calls return at once.
+  ///
+  /// A nonzero native result (for example `listenerNotAttached`, `handlesExhausted`, or
+  /// `fatal`) is thrown as a [SasPairingNativeException] and returns no batch. When the call ran
+  /// but the owner loop failed during it, the batch still carries every event and reports the
+  /// failure in `failure`; the network state is then `failedClosed` and every connection is
+  /// closed. Consume every event, then call [detachListener] or [close].
+  SasPairingDriveBatch drive() {
+    _requireOpen('drive');
+    return _network.drive();
+  }
+
+  /// One resume recheck of the owner loop: a single deadline sweep with no readiness wait,
+  /// socket read or write, or accept, with exactly the batch, failure, and connection rules of
+  /// [drive]. Only for trusted outer code that observed an OS resume notification; the package
+  /// does not detect resume and never calls this by itself.
+  SasPairingDriveBatch recheckAfterResume() {
+    _requireOpen('recheckAfterResume');
+    return _network.recheckAfterResume();
+  }
+
+  /// Destroys the host with exactly one native call, which also closes its listener and every
+  /// connection; those connections are then closed too, with no other native call. Its
+  /// authority stays registered and open, and native results stay.
   ///
   /// The host is closed after the first call whatever the native result, and a failure is
   /// thrown once as a [SasPairingNativeException]; it is never retried. Later calls do nothing.
@@ -301,9 +389,21 @@ final class SasPairingHost {
     try {
       status = runtime._context.api.hostDestroy(runtime._handle, _handle);
     } finally {
+      _network.invalidateLocally();
       _authority._hosts.remove(this);
     }
     runtime._context.check('SasPairingHost.close', status);
+  }
+
+  void _invalidateByParent() {
+    _closed = true;
+    _network.invalidateLocally();
+  }
+
+  void _requireOpen(String operation) {
+    if (_closed) {
+      throw SasPairingClosedException('SasPairingHost', operation);
+    }
   }
 }
 

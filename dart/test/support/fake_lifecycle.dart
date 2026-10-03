@@ -1,11 +1,13 @@
-// A deterministic fake of the private native lifecycle service: no native library is loaded.
-// Every call is recorded; each operation answers from its script queue first and otherwise
-// succeeds (new nonzero handles, READY with 10 remaining).
+// A deterministic fake of the private native lifecycle and network services: no native library
+// is loaded. Every call is recorded in one log; each operation answers from its script queue
+// first and otherwise succeeds (new nonzero handles, READY with 10 remaining, attach adopting the
+// socket, an empty drive).
 import 'dart:typed_data';
 
 import 'package:sas_pairing/src/lifecycle.dart';
 import 'package:sas_pairing/src/native/abi_v1.dart';
 import 'package:sas_pairing/src/native/native_lifecycle_api.dart';
+import 'package:sas_pairing/src/native/native_network_api.dart';
 import 'package:sas_pairing/src/native/native_process_context.dart';
 
 int status(String name) => abiV1Statuses[name]!;
@@ -33,7 +35,7 @@ final class Scripted {
   final int remaining;
 }
 
-final class FakeLifecycleApi implements NativeLifecycleApi {
+final class FakeLifecycleApi implements NativeLifecycleApi, NativeNetworkApi {
   final List<FakeCall> calls = [];
 
   /// Copies of the scope bytes each authorityRegister call received.
@@ -107,12 +109,107 @@ final class FakeLifecycleApi implements NativeLifecycleApi {
   @override
   int hostDestroy(int runtime, int host) =>
       _cleanup('hostDestroy', [runtime, host]);
+
+  // --- Network (P8.3) ---------------------------------------------------------------------
+
+  /// Copies of the Bootstrap fields each attach received: (local, expected or null).
+  final List<(NativeBootstrapBytes, NativeBootstrapBytes?)> attachedBootstraps =
+      [];
+
+  final List<FakeAttach> _attaches = [];
+  final List<FakeDrive> _drives = [];
+
+  /// Queues the next attach answer.
+  void scriptAttach(FakeAttach answer) => _attaches.add(answer);
+
+  /// Queues the next drive or recheck answer (one queue, shared, in call order).
+  void scriptDrive(FakeDrive answer) => _drives.add(answer);
+
+  static NativeBootstrapBytes _copy(NativeBootstrapBytes bootstrap) => (
+    applicationIdentity: Uint8List.fromList(bootstrap.applicationIdentity),
+    keyAlgorithm: Uint8List.fromList(bootstrap.keyAlgorithm),
+    publicKey: Uint8List.fromList(bootstrap.publicKey),
+    sharedContext: Uint8List.fromList(bootstrap.sharedContext),
+  );
+
+  @override
+  NativeAttachResult attachWindowsListener(
+    int runtime,
+    int host,
+    int socket,
+    NativeBootstrapBytes local,
+    NativeBootstrapBytes? expected,
+  ) {
+    calls.add(FakeCall('attachWindowsListener', [runtime, host, socket]));
+    attachedBootstraps.add((
+      _copy(local),
+      expected == null ? null : _copy(expected),
+    ));
+    if (_attaches.isEmpty) return (status: ok, socketAfterCall: socketInvalid);
+    final answer = _attaches.removeAt(0);
+    return (
+      status: answer.status,
+      socketAfterCall: answer.adopted ? socketInvalid : (answer.slot ?? socket),
+    );
+  }
+
+  @override
+  int detachListener(int runtime, int host) =>
+      _cleanup('detachListener', [runtime, host]);
+
+  NativeDriveResult _drive(String operation, int runtime, int host) {
+    calls.add(FakeCall(operation, [runtime, host]));
+    if (_drives.isEmpty) {
+      return (status: ok, count: 0, failure: ok, events: const []);
+    }
+    final answer = _drives.removeAt(0);
+    return (
+      status: answer.status,
+      count: answer.count ?? answer.events.length,
+      failure: answer.failure,
+      events: answer.status == ok ? answer.events : const [],
+    );
+  }
+
+  @override
+  NativeDriveResult drive(int runtime, int host) =>
+      _drive('drive', runtime, host);
+
+  @override
+  NativeDriveResult recheckAfterResume(int runtime, int host) =>
+      _drive('recheckAfterResume', runtime, host);
+
+  @override
+  int connectionClose(int runtime, int host, int connection) =>
+      _cleanup('connectionClose', [runtime, host, connection]);
+}
+
+final int socketInvalid = abiV1Scalars['SAS_PAIRING_SOCKET_INVALID']!;
+
+/// One scripted attach answer: a status, and the slot after the call (`adopted`: INVALID;
+/// otherwise [slot], defaulting to the offered socket).
+final class FakeAttach {
+  FakeAttach(this.status, {this.adopted = false, this.slot});
+  final int status;
+  final bool adopted;
+  final int? slot;
+}
+
+/// One scripted drive or recheck answer. [count] defaults to the number of [events].
+final class FakeDrive {
+  FakeDrive({int? status, this.events = const [], int? failure, this.count})
+    : status = status ?? ok,
+      failure = failure ?? ok;
+  final int status;
+  final List<NativeEventRecord> events;
+  final int failure;
+  final int? count;
 }
 
 /// A fresh fake process context and its fake service.
 (NativeProcessContext, FakeLifecycleApi) fakeContext() {
   final api = FakeLifecycleApi();
-  return (NativeProcessContext(api), api);
+  return (NativeProcessContext(api, api), api);
 }
 
 /// A runtime over a fresh fake context.

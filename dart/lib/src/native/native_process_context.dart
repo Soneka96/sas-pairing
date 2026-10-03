@@ -1,8 +1,8 @@
 /// The package-private process context of the loaded native image (P8-D-002 B, G, H).
 ///
 /// Private to the package. One context belongs to each loaded image, so for the one process
-/// loader there is one per owner isolate (P8-D-001 N). It holds the native lifecycle service
-/// and the two latches that live below every runtime: the native FATAL latch and the
+/// loader there is one per owner isolate (P8-D-001 N). It holds the native lifecycle and network
+/// services (P8-D-002 L, P8-D-003 Q) and the two latches that live below every runtime: the native FATAL latch and the
 /// contract-violation latch. Neither latch can be cleared: closing or recreating a runtime and
 /// closing wrappers leave them set, and the only recovery is an OS process restart.
 library;
@@ -11,6 +11,7 @@ import '../exceptions.dart';
 import '../status.dart';
 import 'native_library_loader.dart';
 import 'native_lifecycle_api.dart';
+import 'native_network_api.dart';
 
 LoadedNativeLibrary _processLoad(String libraryPath) =>
     NativeLibraryLoader.initialize(libraryPath: libraryPath);
@@ -18,8 +19,11 @@ LoadedNativeLibrary _processLoad(String libraryPath) =>
 NativeLifecycleApi _ffiApi(LoadedNativeLibrary library) =>
     FfiNativeLifecycleApi(library.bindings);
 
+NativeNetworkApi _ffiNetwork(LoadedNativeLibrary library) =>
+    FfiNativeNetworkApi(library.bindings);
+
 final class NativeProcessContext {
-  NativeProcessContext(this.api);
+  NativeProcessContext(this.api, this.network);
 
   // One context per loaded image; the process loader returns the identical image every time.
   static final Expando<NativeProcessContext> _contexts = Expando(
@@ -28,17 +32,26 @@ final class NativeProcessContext {
 
   /// The context of the image at [libraryPath]: [load] initializes the loader (production: the
   /// P8.1 process loader, which opens nothing once ready), and the context is created once per
-  /// loaded image. Tests pass their own [load] and [apiFor].
+  /// loaded image. Tests pass their own [load], [apiFor], and [networkFor].
   static NativeProcessContext forLibrary(
     String libraryPath, {
     LoadedNativeLibrary Function(String libraryPath) load = _processLoad,
     NativeLifecycleApi Function(LoadedNativeLibrary library) apiFor = _ffiApi,
+    NativeNetworkApi Function(LoadedNativeLibrary library) networkFor =
+        _ffiNetwork,
   }) {
     final library = load(libraryPath);
-    return _contexts[library] ??= NativeProcessContext(apiFor(library));
+    return _contexts[library] ??= NativeProcessContext(
+      apiFor(library),
+      networkFor(library),
+    );
   }
 
+  /// The lifecycle exports (P8.2).
   final NativeLifecycleApi api;
+
+  /// The network exports (P8.3).
+  final NativeNetworkApi network;
 
   bool _fatal = false;
   String? _contractViolation;
@@ -77,6 +90,12 @@ final class NativeProcessContext {
     if (status == SasPairingStatus.ok.code) return;
     if (status == SasPairingStatus.fatal.code) _fatal = true;
     throw SasPairingNativeException(operation, status);
+  }
+
+  /// Records [status] without throwing: latches FATAL for status 900 and does nothing else. For
+  /// a status that is reported as data rather than thrown (a drive's `out_failure`).
+  void observe(int status) {
+    if (status == SasPairingStatus.fatal.code) _fatal = true;
   }
 
   /// Latches a contract violation and returns the exception to throw.

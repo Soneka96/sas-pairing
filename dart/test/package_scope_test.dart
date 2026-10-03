@@ -1,8 +1,10 @@
-// Package scope guards (P8-D-001, P8-D-002): the public entrypoint exports only the P8.2
-// lifecycle surface, the package is pure Dart with one runtime dependency, the native library
-// has no escape hatch (close, unload, reload, reset), lifecycle cleanup is explicit (no
-// finalizer, no child-by-child cleanup), and there is no background machinery, socket, network,
-// later-increment API, or protocol code. Updated in P8.2, never removed.
+// Package scope guards (P8-D-001, P8-D-002, P8-D-003): the public entrypoint exports only the
+// P8.2 lifecycle and P8.3 network surface, the package is pure Dart with one runtime dependency,
+// the native library has no escape hatch (close, unload, reload, reset), cleanup is explicit (no
+// finalizer, no child-by-child cleanup), and there is no background machinery (timer, stream,
+// isolate, callback, loop), socket binding, later-increment API (ceremony, SAS, run, result), or
+// protocol code. P8.3 allows the Windows listener transfer, the cooperative drive, events, and
+// connections. Updated in P8.2 and P8.3, never removed.
 import 'dart:io';
 
 import 'package:test/test.dart';
@@ -27,21 +29,26 @@ String code(String source) => source
 String slashes(File file) => file.path.replaceAll(r'\', '/');
 
 void main() {
-  test('the public entrypoint exports only the P8.2 lifecycle surface', () {
-    final entry = code(readPackageFile('lib/sas_pairing.dart'));
-    expect(
-      entry,
-      isNot(matches(RegExp(r'^\s*(import|part)\b', multiLine: true))),
-    );
-    final targets = [
-      for (final m in RegExp(r"export\s+'([^']+)'").allMatches(entry)) m[1],
-    ];
-    expect(targets, [
-      'src/exceptions.dart',
-      'src/lifecycle.dart',
-      'src/status.dart',
-    ]);
-  });
+  test(
+    'the public entrypoint exports only the lifecycle and network surface',
+    () {
+      final entry = code(readPackageFile('lib/sas_pairing.dart'));
+      expect(
+        entry,
+        isNot(matches(RegExp(r'^\s*(import|part)\b', multiLine: true))),
+      );
+      final targets = [
+        for (final m in RegExp(r"export\s+'([^']+)'").allMatches(entry)) m[1],
+      ];
+      expect(targets, [
+        'src/bootstrap.dart',
+        'src/exceptions.dart',
+        'src/lifecycle.dart',
+        'src/network.dart',
+        'src/status.dart',
+      ]);
+    },
+  );
 
   test('only the entrypoint exports, and nothing exports the native layer', () {
     for (final file in Directory(
@@ -85,12 +92,32 @@ void main() {
         'timers, isolates, streams, async loops': RegExp(
           r'\b(Timer|Isolate|ReceivePort|SendPort|Stream\w*|Future|async|await)\b',
         ),
-        'sockets': RegExp(r'\b(Raw)?(Server)?Socket\b'),
-        'listener, network drive, or later-increment objects': RegExp(
-          r'\b(\w*Listener\w*|attach\w*|detach\w*|drive\w*|recheck\w*|'
-          r'Bootstrap|SasBootstrap|PeerBootstrap|SasPairingBootstrap\w*|'
-          r'SasPairingConnection\w*|SasPairingRun(?!time)\w*|SasPairingResult\w*|'
-          r'SasPresentation\w*|SasPairingSasPresentation\w*|SasPairingCeremony\w*)\b',
+        'native callbacks': RegExp(
+          r'\b(NativeCallable|NativeFunction|fromFunction)\b',
+        ),
+        'automatic drive loops': RegExp(r'\bwhile\s*\(|\bdo\s*\{|for\s*\(\s*;'),
+        'sockets and socket binding': RegExp(
+          r'\b(Raw)?(Server)?Socket\b|\b(WSAStartup|WSACleanup|closesocket|'
+          r'getsockname|setsockopt|ioctlsocket|InternetAddress)\b|'
+          r'ws2_32|\bWSA\w+|\blisten\s*\(',
+        ),
+        'ceremony, SAS, run, result, or presentation API (later increments)': RegExp(
+          r'\b(SasPairingRun(?!time)\w*|SasPairingResult\w*|SasPresentation\w*|'
+          r'SasPairingSasPresentation\w*|SasPairingCeremony\w*|\w*[Pp]resentation\w*|'
+          r'startInitiator|authorizeExposure|exposeKey|approve\w*|reject\w*|'
+          r'cancelSas|emitBootstrapMac|emitInitiatorFinish|resultInfo|resultCopy|'
+          r'resultDestroy)\b',
+        ),
+        'SAS logic': RegExp(
+          r'(?<![A-Za-z_])(sas|Sas|SAS)(?!Pairing|_pairing|_PAIRING)',
+        ),
+        'protocol frames, transcripts, deadlines, or attempt accounting': RegExp(
+          // Frozen value names such as `abandonedPartialFrame` or `transcriptMismatch` are
+          // reported data, not protocol code.
+          r'\b(encode|decode|parse|serialize|build|write|read|emit|send|confirm|hash|'
+          r'compute|generate)\w*(Frame|Mac|Ack|Sas|Transcript|RequestId)\w*\b|'
+          r'\b\w*([Ll]imiter|[Oo]pportunityBudget)\w*\b|'
+          r'\b(DateTime|Stopwatch|Duration|clock)\b',
         ),
         'cryptography, hashing, or randomness': RegExp(
           r'\b(sha\d+|hmac|hkdf|x25519|Digest|Random)\b',
@@ -129,46 +156,86 @@ void main() {
         // Exactly the three wrapper declarations; no child-by-child cleanup call.
         expect(closes, 3, reason: path);
         expect(RegExp(r'void close\(\) \{').allMatches(source), hasLength(3));
+      } else if (path == 'lib/src/network.dart') {
+        // Exactly the connection's declaration: the drive never closes a connection itself.
+        expect(closes, 1, reason: path);
+        expect(RegExp(r'void close\(\) \{').allMatches(source), hasLength(1));
       } else {
         expect(closes, 0, reason: path);
       }
     }
   });
 
+  test('closing a host or parent issues no detach or connection close first', () {
+    final lifecycle = code(readPackageFile('lib/src/lifecycle.dart'));
+    for (final kind in [
+      'SasPairingRuntime',
+      'SasPairingAuthority',
+      'SasPairingHost',
+    ]) {
+      final body = RegExp(
+        'final class $kind \\{.*?\\n  void close\\(\\) \\{(.*?)\\n  \\}',
+        dotAll: true,
+      ).firstMatch(lifecycle)!.group(1)!;
+      expect(
+        RegExp(
+          r'\.(detach\w*|connectionClose|hostDestroy|authorityRelease|runtimeDestroy)\(',
+        ).allMatches(body).map((m) => m[1]).toList(),
+        [
+          {
+            'SasPairingRuntime': 'runtimeDestroy',
+            'SasPairingAuthority': 'authorityRelease',
+            'SasPairingHost': 'hostDestroy',
+          }[kind],
+        ],
+        reason: kind,
+      );
+    }
+  });
+
   test(
-    'stateful native calls: the seven lifecycle exports, only in the lifecycle service',
+    'stateful native calls: the seven lifecycle and five network exports, each in its service',
     () {
-      const service = 'lib/src/native/native_lifecycle_api.dart';
-      final call = RegExp(r'\.(sas_pairing_\w+)\(');
+      const services = {
+        'lib/src/native/native_lifecycle_api.dart': {
+          'sas_pairing_runtime_create',
+          'sas_pairing_runtime_destroy',
+          'sas_pairing_authority_register',
+          'sas_pairing_authority_release',
+          'sas_pairing_authority_status',
+          'sas_pairing_host_create',
+          'sas_pairing_host_destroy',
+        },
+        // No ceremony action, presentation, or result export is called anywhere.
+        'lib/src/native/native_network_api.dart': {
+          'sas_pairing_host_attach_windows_listener',
+          'sas_pairing_host_detach_listener',
+          'sas_pairing_host_drive',
+          'sas_pairing_host_recheck_after_resume',
+          'sas_pairing_connection_close',
+        },
+      };
+      final call = RegExp(r'\.(sas_pairing_\w+)\b');
       for (final file in handWrittenSources()) {
         final path = slashes(file);
         final called = {
           for (final m in call.allMatches(code(file.readAsStringSync()))) m[1]!,
         }..remove('sas_pairing_abi_version');
-        if (path == service) {
-          expect(called, {
-            'sas_pairing_runtime_create',
-            'sas_pairing_runtime_destroy',
-            'sas_pairing_authority_register',
-            'sas_pairing_authority_release',
-            'sas_pairing_authority_status',
-            'sas_pairing_host_create',
-            'sas_pairing_host_destroy',
-          });
-        } else {
-          expect(called, isEmpty, reason: path);
-        }
+        expect(called, services[path] ?? isEmpty, reason: path);
       }
     },
   );
 
-  test('FFI memory is handled only by the lifecycle service', () {
+  test('FFI memory is handled only by the lifecycle and network services', () {
     final memory = RegExp(
       r'\b(calloc|malloc|using|Arena|nullptr|asTypedList)\b|Pointer<',
     );
     for (final file in handWrittenSources()) {
       final path = slashes(file);
-      if (path == 'lib/src/native/native_lifecycle_api.dart') continue;
+      if (path == 'lib/src/native/native_lifecycle_api.dart' ||
+          path == 'lib/src/native/native_network_api.dart') {
+        continue;
+      }
       expect(
         memory.firstMatch(code(file.readAsStringSync()))?.group(0),
         isNull,
