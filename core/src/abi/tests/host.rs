@@ -770,9 +770,11 @@ fn drop_panicking_router_panic() -> RouteError {
 
 /// A panic right after the real `Router::new`, with the new router still alive, reached through
 /// `sas_pairing_host_create`: contained, fatal, nothing installed, cleanup still works.
+///
+/// The two payload kinds run in parallel child processes; the OS ownership lease excludes a scope
+/// across processes, so each passes its own `scope`.
 #[cfg(windows)]
-fn assert_router_panic_is_contained(fault: fn() -> RouteError) {
-    let scope = b"p7-host-router-panic";
+fn assert_router_panic_is_contained(scope: &[u8], fault: fn() -> RouteError) {
     let (_, runtime) = create();
     let (_, authority) = register(runtime, scope);
     let (_, earlier) = host_create(runtime, authority);
@@ -830,7 +832,7 @@ fn child_router_panic_ordinary() {
     if !is_child("host::child_router_panic_ordinary") {
         return;
     }
-    assert_router_panic_is_contained(ordinary_router_panic);
+    assert_router_panic_is_contained(b"p7-host-router-panic", ordinary_router_panic);
 }
 
 #[cfg(windows)]
@@ -846,7 +848,7 @@ fn child_router_panic_on_drop() {
     if !is_child("host::child_router_panic_on_drop") {
         return;
     }
-    assert_router_panic_is_contained(drop_panicking_router_panic);
+    assert_router_panic_is_contained(b"p7-host-router-panic-on-drop", drop_panicking_router_panic);
 }
 
 /// The child aborts if the payload destructor runs (its panic would cross `extern "C"`).

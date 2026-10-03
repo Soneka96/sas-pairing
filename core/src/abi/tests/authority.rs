@@ -994,8 +994,16 @@ fn status_racing_release_sees_a_live_or_no_authority() {
 fn assert_real_core_panic_is_contained(drop_panicking_payload: bool) {
     static HOOK_FIRES: AtomicUsize = AtomicUsize::new(0);
     static PAYLOAD_DROPS: AtomicUsize = AtomicUsize::new(0);
-    let held = b"p7-abi-core-panic-held";
-    let panicking = b"p7-abi-core-panic-registering";
+    // The two payload kinds run in parallel child processes; the OS ownership lease excludes a
+    // scope across processes, so each kind uses its own scopes.
+    let (held, panicking): (&[u8], &[u8]) = if drop_panicking_payload {
+        (
+            b"p7-abi-core-panic-on-drop-held",
+            b"p7-abi-core-panic-on-drop-registering",
+        )
+    } else {
+        (b"p7-abi-core-panic-held", b"p7-abi-core-panic-registering")
+    };
     let (_, runtime) = create();
     let (status, authority) = register(runtime, held);
     assert_eq!(status, SAS_PAIRING_OK);

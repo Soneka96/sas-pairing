@@ -1030,9 +1030,11 @@ fn drop_panicking_adoption_panic() {
 /// A panic right after adoption and before the owner loop exists, through the real export:
 /// exactly one owner (Rust, whose unwinding closes the socket), the caller's slot `INVALID`,
 /// nothing installed, fatal, and cleanup still works.
+///
+/// The two payload kinds run in parallel child processes; the OS ownership lease excludes a scope
+/// across processes, so each passes its own `scope`.
 #[cfg(windows)]
-fn assert_adoption_panic_is_contained(fault: fn()) {
-    let scope = b"p7-listener-adoption-panic";
+fn assert_adoption_panic_is_contained(scope: &[u8], fault: fn()) {
     let (_, runtime) = create();
     let (_, authority) = register(runtime, scope);
     let (_, host) = host_create(runtime, authority);
@@ -1090,7 +1092,7 @@ fn child_adoption_panic_ordinary() {
     if !is_child("listener::child_adoption_panic_ordinary") {
         return;
     }
-    assert_adoption_panic_is_contained(ordinary_adoption_panic);
+    assert_adoption_panic_is_contained(b"p7-listener-adoption-panic", ordinary_adoption_panic);
 }
 
 #[cfg(windows)]
@@ -1106,7 +1108,10 @@ fn child_adoption_panic_on_drop() {
     if !is_child("listener::child_adoption_panic_on_drop") {
         return;
     }
-    assert_adoption_panic_is_contained(drop_panicking_adoption_panic);
+    assert_adoption_panic_is_contained(
+        b"p7-listener-adoption-panic-on-drop",
+        drop_panicking_adoption_panic,
+    );
 }
 
 /// The child aborts if the payload destructor runs (its panic would cross `extern "C"`).
