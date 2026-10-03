@@ -11,7 +11,50 @@ import 'dart:typed_data';
 
 import 'exceptions.dart';
 import 'native/generated/sas_pairing_bindings.g.dart' as raw;
+import 'native/native_library_loader.dart'
+    show NativeLibraryInitializationException, NativeLoadFailure;
 import 'native/native_process_context.dart';
+
+/// The largest remaining-opportunity count a successful `READY` status can report (ABI contract
+/// §15: 1–10). Used only to validate one native success output; Dart keeps no budget.
+const int _maxAuthorityOpportunities = 10;
+
+/// Returns the process context that [initialize] obtains from the native-library loader,
+/// translating a loader failure into the public [SasPairingInitializationException]: the one
+/// boundary where the private loader failure becomes public (P8-D-002 M). Package-private:
+/// [SasPairingRuntime.create] uses it with the process loader, tests with a fake loader.
+NativeProcessContext initializeProcessContext(
+  NativeProcessContext Function() initialize,
+) {
+  try {
+    return initialize();
+  } on NativeLibraryInitializationException catch (error) {
+    throw SasPairingInitializationException(
+      _publicFailure(error.failure),
+      error.message,
+    );
+  }
+}
+
+// Exhaustive by design: a new loader failure category does not compile until it is given a
+// public meaning.
+SasPairingInitializationFailure _publicFailure(NativeLoadFailure failure) =>
+    switch (failure) {
+      NativeLoadFailure.unsupportedPointerWidth =>
+        SasPairingInitializationFailure.unsupportedPointerWidth,
+      NativeLoadFailure.invalidLibraryPath =>
+        SasPairingInitializationFailure.invalidLibraryPath,
+      NativeLoadFailure.openFailed =>
+        SasPairingInitializationFailure.openFailed,
+      NativeLoadFailure.missingSymbol =>
+        SasPairingInitializationFailure.missingSymbol,
+      NativeLoadFailure.abiVersionQueryFailed =>
+        SasPairingInitializationFailure.abiVersionQueryFailed,
+      NativeLoadFailure.abiVersionMismatch =>
+        SasPairingInitializationFailure.abiVersionMismatch,
+      NativeLoadFailure.verificationFailed =>
+        SasPairingInitializationFailure.verificationFailed,
+    };
 
 /// Creates a runtime over [context]. Package-private: [SasPairingRuntime.create] is the public
 /// entry, and tests use this with a fake context.
@@ -38,13 +81,28 @@ final class SasPairingRuntime {
 
   /// Creates the native runtime, loading the native library from the absolute
   /// [nativeLibraryPath] the first time (it is never loaded twice; later calls ignore the
-  /// path). Throws [SasPairingNativeException] with the native status, for example
-  /// `alreadyInitialized` while another runtime is open (the open runtime is never returned
-  /// again), or with `fatal` once `SAS_PAIRING_FATAL` was observed in this process; and
-  /// [SasPairingContractException] once the native library broke its contract. A failure to
-  /// load the native library is reported by the loader's own exception.
+  /// path).
+  ///
+  /// Three failure classes stay distinct:
+  ///
+  /// * [SasPairingInitializationException]: the native library could not be loaded or set up;
+  ///   no native status exists. When its `processRestartRequired` is false (pointer width,
+  ///   invalid path, OS load failure) no image was retained, and `create` may be called again
+  ///   after correcting the cause. When it is true (missing export, failed or mismatched ABI
+  ///   version query, failed verification) an image is already loaded: every later `create` in
+  ///   this process fails the same way, and only an OS process restart recovers.
+  /// * [SasPairingNativeException]: `runtime_create` returned a nonzero status, for example
+  ///   `alreadyInitialized` while another runtime is open (the open runtime is never returned
+  ///   again), or `fatal` (900) once `SAS_PAIRING_FATAL` was observed in this process, which
+  ///   requires an OS process restart.
+  /// * [SasPairingContractException]: the native library reported success but broke a frozen
+  ///   ABI v1 invariant, now or earlier in this process; an OS process restart is required.
   static SasPairingRuntime create({required String nativeLibraryPath}) =>
-      createRuntime(NativeProcessContext.forLibrary(nativeLibraryPath));
+      createRuntime(
+        initializeProcessContext(
+          () => NativeProcessContext.forLibrary(nativeLibraryPath),
+        ),
+      );
 
   final NativeProcessContext _context;
   final int _handle;
@@ -120,7 +178,9 @@ final class SasPairingAuthority {
   bool get isClosed => _closed;
 
   /// The authority's current native state. Native failures are thrown as
-  /// [SasPairingNativeException].
+  /// [SasPairingNativeException]. A success output outside the frozen invariant (`READY` with
+  /// other than 1–10 remaining, `BUSY` or `EXHAUSTED` with nonzero remaining, or another state)
+  /// is a [SasPairingContractException].
   SasPairingAuthorityStatus queryStatus() {
     const operation = 'SasPairingAuthority.queryStatus';
     _requireOpen('queryStatus');
@@ -129,8 +189,11 @@ final class SasPairingAuthority {
     final result = context.api.authorityStatus(_runtime._handle, _handle);
     context.check(operation, result.status);
     final (state, remaining) = (result.state, result.remaining);
+    // Validates this one success output against the frozen invariant (READY: 1–10; BUSY and
+    // EXHAUSTED: 0). Nothing is remembered or compared with an earlier answer.
     switch (state) {
-      case raw.SAS_PAIRING_AUTHORITY_READY when remaining > 0:
+      case raw.SAS_PAIRING_AUTHORITY_READY
+          when remaining >= 1 && remaining <= _maxAuthorityOpportunities:
         return SasPairingAuthorityStatus._(
           SasPairingAuthorityState.ready,
           remaining,
@@ -264,7 +327,7 @@ final class SasPairingAuthorityStatus {
 
   final SasPairingAuthorityState state;
 
-  /// The remaining opportunities when [state] is `ready`; otherwise 0.
+  /// The remaining opportunities when [state] is `ready` (1–10); otherwise 0.
   final int remainingOpportunities;
 
   @override

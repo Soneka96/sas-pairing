@@ -265,6 +265,36 @@ void main() {
       expect(api.calls.last.arguments, [1000, 1001]);
     });
 
+    test('status READY accepts exactly the frozen bounds 1 and 10', () {
+      final (runtime, api, context) = fakeRuntime();
+      final authority = runtime.registerAuthority(scope);
+      for (final remaining in [1, 10]) {
+        api.script(
+          'authorityStatus',
+          Scripted(
+            ok,
+            state: namespaceValue('SAS_PAIRING_AUTHORITY_READY'),
+            remaining: remaining,
+          ),
+        );
+        final status = authority.queryStatus();
+        expect(status.state, SasPairingAuthorityState.ready);
+        expect(status.remainingOpportunities, remaining);
+      }
+      expect(context.isContractViolated, isFalse);
+      // Validation is per snapshot: a value is never compared with an earlier one.
+      api.script(
+        'authorityStatus',
+        Scripted(
+          ok,
+          state: namespaceValue('SAS_PAIRING_AUTHORITY_READY'),
+          remaining: 4,
+        ),
+      );
+      expect(authority.queryStatus().remainingOpportunities, 4);
+      expect(context.isContractViolated, isFalse);
+    });
+
     test('status BUSY and EXHAUSTED report 0 remaining', () {
       final (runtime, api, _) = fakeRuntime();
       final authority = runtime.registerAuthority(scope);
@@ -299,6 +329,21 @@ void main() {
         'READY with 0 remaining': Scripted(
           ok,
           state: namespaceValue('SAS_PAIRING_AUTHORITY_READY'),
+        ),
+        'READY with 11 remaining': Scripted(
+          ok,
+          state: namespaceValue('SAS_PAIRING_AUTHORITY_READY'),
+          remaining: 11,
+        ),
+        'READY with 500 remaining': Scripted(
+          ok,
+          state: namespaceValue('SAS_PAIRING_AUTHORITY_READY'),
+          remaining: 500,
+        ),
+        'READY with UINT32_MAX remaining': Scripted(
+          ok,
+          state: namespaceValue('SAS_PAIRING_AUTHORITY_READY'),
+          remaining: 0xFFFFFFFF,
         ),
         'BUSY with remaining': Scripted(
           ok,

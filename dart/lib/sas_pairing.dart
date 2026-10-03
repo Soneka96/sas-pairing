@@ -5,6 +5,9 @@
 /// connection, ceremony, or SAS API yet. Raw FFI types, pointers, native handles, the
 /// `DynamicLibrary`, the generated bindings, and the loader stay private.
 ///
+/// A native library that cannot be loaded or verified is a [SasPairingInitializationException];
+/// its `processRestartRequired` says whether a corrected retry is possible in this process.
+///
 /// Close every object explicitly (`try`/`finally`); no finalizer does it. `close()` consumes
 /// the object on its first call even when the native cleanup reports an error, and closing a
 /// parent closes its children. If the native library reports `SAS_PAIRING_FATAL`, every new or
@@ -20,6 +23,8 @@ export 'src/exceptions.dart'
     show
         SasPairingClosedException,
         SasPairingContractException,
+        SasPairingInitializationException,
+        SasPairingInitializationFailure,
         SasPairingNativeException;
 export 'src/lifecycle.dart'
     show

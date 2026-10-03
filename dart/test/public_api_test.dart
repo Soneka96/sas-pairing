@@ -1,6 +1,7 @@
-// P8.2 public surface (P8-D-002 A): a package consumer that imports only the public entrypoint
-// sees exactly the lifecycle, status, and exception types; raw FFI, handles, the loader, and
-// the native lifecycle service are not part of it.
+// P8.2 public surface (P8-D-002 A, M; P8.2.1): a package consumer that imports only the public
+// entrypoint sees exactly the lifecycle, status, and exception types, including the public
+// initialization failure; raw FFI, handles, the loader and its exception, and the native
+// lifecycle service are not part of it.
 import 'dart:io';
 
 import 'package:sas_pairing/sas_pairing.dart';
@@ -18,6 +19,8 @@ const publicNames = {
   'SasPairingNativeException',
   'SasPairingClosedException',
   'SasPairingContractException',
+  'SasPairingInitializationException',
+  'SasPairingInitializationFailure',
 };
 
 const prohibitedNames = [
@@ -29,7 +32,10 @@ const prohibitedNames = [
   'NativeLifecycleApi',
   'FfiNativeLifecycleApi',
   'NativeProcessContext',
+  'NativeLibraryInitializationException',
+  'NativeLoadFailure',
   'createRuntime',
+  'initializeProcessContext',
 ];
 
 /// The files the entrypoint exports from.
@@ -56,6 +62,8 @@ void main() {
       SasPairingNativeException,
       SasPairingClosedException,
       SasPairingContractException,
+      SasPairingInitializationException,
+      SasPairingInitializationFailure,
     ];
     expect(types.map((t) => '$t').toSet(), publicNames);
     expect(SasPairingStatus.values, hasLength(48));
@@ -122,6 +130,124 @@ void main() {
       expect(rawAccess.firstMatch(source)?.group(0), isNull, reason: path);
       expect(publicHandle.firstMatch(source)?.group(0), isNull, reason: path);
     }
+  });
+
+  group('initialization failures are public and typed', () {
+    test('the seven categories and their restart classes', () {
+      final restart = {
+        for (final failure in SasPairingInitializationFailure.values)
+          failure.name: SasPairingInitializationException(
+            failure,
+            'm',
+          ).processRestartRequired,
+      };
+      expect(restart, {
+        'unsupportedPointerWidth': false,
+        'invalidLibraryPath': false,
+        'openFailed': false,
+        'missingSymbol': true,
+        'abiVersionQueryFailed': true,
+        'abiVersionMismatch': true,
+        'verificationFailed': true,
+      });
+    });
+
+    // The real process loader of this test isolate: these pre-load failures open nothing, so
+    // it stays uninitialized and no native library is ever loaded here.
+    final cases = {
+      'an empty path': ('', SasPairingInitializationFailure.invalidLibraryPath),
+      'a relative path': (
+        'sas_pairing_core.dll',
+        SasPairingInitializationFailure.invalidLibraryPath,
+      ),
+      'a missing absolute file': (
+        File('sas_pairing_missing_${pid}_library').absolute.path,
+        SasPairingInitializationFailure.invalidLibraryPath,
+      ),
+      'a file the OS cannot load': (
+        File('pubspec.yaml').absolute.path,
+        SasPairingInitializationFailure.openFailed,
+      ),
+    };
+    for (final MapEntry(key: name, value: (path, failure)) in cases.entries) {
+      test('SasPairingRuntime.create with $name', () {
+        Object? caught;
+        try {
+          SasPairingRuntime.create(nativeLibraryPath: path);
+        } on SasPairingInitializationException catch (error) {
+          caught = error;
+          expect(error.failure, failure);
+          expect(error.processRestartRequired, isFalse);
+          expect(error.message, isNotEmpty);
+          expect(error.toString(), contains('(${failure.name})'));
+        }
+        expect(caught.runtimeType, SasPairingInitializationException);
+        expect(
+          '$caught',
+          isNot(
+            anyOf(
+              contains('NativeLibraryInitializationException'),
+              contains('NativeLoadFailure'),
+            ),
+          ),
+        );
+      });
+    }
+  });
+
+  test('the private loader failure types are no part of the public contract', () {
+    final exceptions = readPackageFile('lib/src/exceptions.dart');
+    final lifecycle = readPackageFile('lib/src/lifecycle.dart');
+    final private = RegExp(
+      r'\b(NativeLibraryInitializationException|NativeLoadFailure)\b',
+    );
+    // The public exception file knows nothing of the loader.
+    expect(private.hasMatch(exceptions), isFalse);
+    expect(exceptions, isNot(contains('native/')));
+    // The public exception holds only its public category and message: no cause, no inner
+    // exception, no private field.
+    final body = RegExp(
+      r'final class SasPairingInitializationException implements Exception \{(.*?)\n\}',
+      dotAll: true,
+    ).firstMatch(exceptions)!.group(1)!;
+    expect(
+      {
+        for (final m in RegExp(
+          r'^\s*final\s+(\w+)\s+(\w+);',
+          multiLine: true,
+        ).allMatches(body))
+          '${m[1]} ${m[2]}',
+      },
+      {'SasPairingInitializationFailure failure', 'String message'},
+    );
+    // No documentation in the lifecycle names the private types; in code they appear only in
+    // the import and the one translation boundary below SasPairingRuntime.create.
+    final docs = lifecycle
+        .split('\n')
+        .where((line) => line.trimLeft().startsWith('///'))
+        .join('\n');
+    expect(private.hasMatch(docs), isFalse);
+    expect(docs, contains('[SasPairingInitializationException]'));
+    final boundary = RegExp(
+      r"^import 'native/native_library_loader\.dart'.*?;$|"
+      r'^NativeProcessContext initializeProcessContext\(.*?^\}$|'
+      r'^SasPairingInitializationFailure _publicFailure\(.*?^    \};$',
+      multiLine: true,
+      dotAll: true,
+    );
+    expect(boundary.allMatches(lifecycle), hasLength(3));
+    expect(private.hasMatch(code(lifecycle.replaceAll(boundary, ''))), isFalse);
+    expect(
+      RegExp(
+        r'on NativeLibraryInitializationException catch',
+      ).allMatches(lifecycle),
+      hasLength(1),
+    );
+    final create = RegExp(
+      r'static SasPairingRuntime create\(\{required String nativeLibraryPath\}\) =>(.*?);\n',
+      dotAll: true,
+    ).firstMatch(lifecycle)!.group(1)!;
+    expect(create, contains('initializeProcessContext('));
   });
 
   test('lifecycle wrappers use object identity and print no handle', () {

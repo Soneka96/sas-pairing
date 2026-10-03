@@ -1,10 +1,72 @@
-/// The exceptions of the public lifecycle API (P8-D-002 F, H, I).
+/// The exceptions of the public lifecycle API (P8-D-002 F, H, I, M).
 ///
 /// None of them carries a native handle, pointer, or authority scope, and none is a trust
 /// verdict.
 library;
 
 import 'status.dart';
+
+/// Why the native library could not be initialized for [SasPairingInitializationException].
+enum SasPairingInitializationFailure {
+  /// The process pointer width is not the supported 64-bit width. Nothing was opened.
+  unsupportedPointerWidth,
+
+  /// The library path is empty, relative, or not an existing file. Nothing was opened.
+  invalidLibraryPath,
+
+  /// The operating system could not load the file. No native image was retained.
+  openFailed,
+
+  /// The loaded native library lacks one or more of the frozen ABI v1 exports.
+  missingSymbol,
+
+  /// The native ABI version query failed inside the native library (it reported version 0).
+  abiVersionQueryFailed,
+
+  /// The native library implements an ABI version other than 1.
+  abiVersionMismatch,
+
+  /// Verifying the loaded native library failed unexpectedly.
+  verificationFailed,
+}
+
+/// The native library could not be initialized, so no runtime was created and no lifecycle
+/// operation ran. There is no native status: the failure happened before any lifecycle export
+/// was called.
+///
+/// When [processRestartRequired] is false (`unsupportedPointerWidth`, `invalidLibraryPath`,
+/// `openFailed`), no native image was retained by the failed attempt: after correcting the
+/// cause, `SasPairingRuntime.create` may be called again. When it is true (`missingSymbol`,
+/// `abiVersionQueryFailed`, `abiVersionMismatch`, `verificationFailed`), a native image was
+/// already loaded and cannot be unloaded or replaced: every later `SasPairingRuntime.create` in
+/// this process fails with this same failure; correct the native library and restart the OS
+/// process.
+final class SasPairingInitializationException implements Exception {
+  SasPairingInitializationException(this.failure, this.message);
+
+  /// The failure category.
+  final SasPairingInitializationFailure failure;
+
+  /// What failed, including the library path where it is known.
+  final String message;
+
+  /// Whether a native image was already loaded, so only an OS process restart recovers.
+  bool get processRestartRequired => switch (failure) {
+    SasPairingInitializationFailure.unsupportedPointerWidth ||
+    SasPairingInitializationFailure.invalidLibraryPath ||
+    SasPairingInitializationFailure.openFailed => false,
+    SasPairingInitializationFailure.missingSymbol ||
+    SasPairingInitializationFailure.abiVersionQueryFailed ||
+    SasPairingInitializationFailure.abiVersionMismatch ||
+    SasPairingInitializationFailure.verificationFailed => true,
+  };
+
+  @override
+  String toString() =>
+      'SasPairingInitializationException(${failure.name}): $message'
+      '${processRestartRequired ? ' Restart the OS process after correcting the native '
+                'library; the loaded image cannot be unloaded or replaced.' : ''}';
+}
 
 /// A native operation returned a nonzero `sas_pairing_status_t`, or was refused locally because
 /// `SAS_PAIRING_FATAL` was already observed in this process.
