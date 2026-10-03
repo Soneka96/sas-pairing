@@ -1,12 +1,31 @@
 /// `package:sas_pairing`: experimental, pre-alpha Dart binding of the sas-pairing native core.
 ///
-/// **No pairing API is available yet.** P8 is in progress: P8.1 adds only the private
-/// foundation (the generated raw bindings of the frozen native ABI v1 and the process-lifetime
-/// native-library loader under `lib/src/native/`). This entrypoint intentionally exports
-/// nothing: raw FFI types, pointers, the `DynamicLibrary`, and the generated bindings stay
-/// private, and the high-level API begins in a later P8 increment.
+/// P8.2 provides the native lifecycle only: [SasPairingRuntime], [SasPairingAuthority], and
+/// [SasPairingHost], with the status and exception model. There is no listener, network,
+/// connection, ceremony, or SAS API yet. Raw FFI types, pointers, native handles, the
+/// `DynamicLibrary`, the generated bindings, and the loader stay private.
+///
+/// Close every object explicitly (`try`/`finally`); no finalizer does it. `close()` consumes
+/// the object on its first call even when the native cleanup reports an error, and closing a
+/// parent closes its children. If the native library reports `SAS_PAIRING_FATAL`, every new or
+/// normal operation is refused for the rest of the process and only an OS process restart
+/// recovers. Statuses are operation outcomes, never trust verdicts.
 ///
 /// Not production-security approved, not audited, and not formally verified. The protocol is
 /// implemented only by the native Rust core; this package implements no protocol or
 /// cryptography. Pairing networking is supported on Windows only.
 library;
+
+export 'src/exceptions.dart'
+    show
+        SasPairingClosedException,
+        SasPairingContractException,
+        SasPairingNativeException;
+export 'src/lifecycle.dart'
+    show
+        SasPairingAuthority,
+        SasPairingAuthorityState,
+        SasPairingAuthorityStatus,
+        SasPairingHost,
+        SasPairingRuntime;
+export 'src/status.dart' show SasPairingStatus;

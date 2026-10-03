@@ -1,0 +1,283 @@
+/// The public runtime, authority, and host lifecycle (P8-D-002).
+///
+/// Ownership mirrors the native ABI: a runtime owns its authorities and an authority owns its
+/// hosts. Native cleanup of a parent already cascades to its children, so closing a parent makes
+/// exactly one native cleanup call and then marks every child wrapper closed locally; no child
+/// cleanup call is made. Every `close()` consumes its wrapper on the first call, whatever the
+/// native result, and later calls do nothing.
+library;
+
+import 'dart:typed_data';
+
+import 'exceptions.dart';
+import 'native/generated/sas_pairing_bindings.g.dart' as raw;
+import 'native/native_process_context.dart';
+
+/// Creates a runtime over [context]. Package-private: [SasPairingRuntime.create] is the public
+/// entry, and tests use this with a fake context.
+SasPairingRuntime createRuntime(NativeProcessContext context) {
+  const operation = 'SasPairingRuntime.create';
+  context.admitNormal(operation);
+  final result = context.api.runtimeCreate();
+  context.check(operation, result.status);
+  return SasPairingRuntime._(
+    context,
+    context.requireHandle(operation, result.handle),
+  );
+}
+
+/// The one native runtime of this process: the owning root of authorities and hosts.
+///
+/// A runtime is a native object lifetime, not a security session. Closing it and creating a new
+/// one reuses the same loaded native library and resets nothing: authority opportunity
+/// accounting, the START limiter, and every process-session security state continue, and a
+/// recorded `SAS_PAIRING_FATAL` stays recorded. Close it explicitly, in a `finally` block; no
+/// finalizer does it for you.
+final class SasPairingRuntime {
+  SasPairingRuntime._(this._context, this._handle);
+
+  /// Creates the native runtime, loading the native library from the absolute
+  /// [nativeLibraryPath] the first time (it is never loaded twice; later calls ignore the
+  /// path). Throws [SasPairingNativeException] with the native status, for example
+  /// `alreadyInitialized` while another runtime is open (the open runtime is never returned
+  /// again), or with `fatal` once `SAS_PAIRING_FATAL` was observed in this process; and
+  /// [SasPairingContractException] once the native library broke its contract. A failure to
+  /// load the native library is reported by the loader's own exception.
+  static SasPairingRuntime create({required String nativeLibraryPath}) =>
+      createRuntime(NativeProcessContext.forLibrary(nativeLibraryPath));
+
+  final NativeProcessContext _context;
+  final int _handle;
+  final Set<SasPairingAuthority> _authorities = {};
+  bool _closed = false;
+
+  /// Whether this runtime was closed. A closed runtime stays closed.
+  bool get isClosed => _closed;
+
+  /// Registers the authority named by the exact bytes of [scope] and takes its OS ownership.
+  ///
+  /// The bytes are arbitrary (they are not text and may contain `0x00`); they are copied for
+  /// the call and not kept. An empty scope is passed to the native core, which rejects it
+  /// (`invalidScope`). Native failures such as `alreadyRegistered`, `ownershipUnavailable`,
+  /// `ownershipUncertain`, or `unsupportedPlatform` are thrown as
+  /// [SasPairingNativeException]; no authority object exists then.
+  SasPairingAuthority registerAuthority(Uint8List scope) {
+    const operation = 'SasPairingRuntime.registerAuthority';
+    _requireOpen('registerAuthority');
+    _context.admitNormal(operation);
+    final result = _context.api.authorityRegister(_handle, scope);
+    _context.check(operation, result.status);
+    final authority = SasPairingAuthority._(
+      this,
+      _context.requireHandle(operation, result.handle),
+    );
+    _authorities.add(authority);
+    return authority;
+  }
+
+  /// Destroys the native runtime with exactly one native call, which also releases every
+  /// authority and destroys every host it owns; all of those objects are then closed too.
+  ///
+  /// The runtime is closed after the first call whatever the native result, and a failure is
+  /// thrown once as a [SasPairingNativeException]; it is never retried. Later calls do nothing.
+  /// Allowed after `SAS_PAIRING_FATAL`.
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    final int status;
+    try {
+      status = _context.api.runtimeDestroy(_handle);
+    } finally {
+      for (final authority in _authorities) {
+        authority._invalidateByParent();
+      }
+      _authorities.clear();
+    }
+    _context.check('SasPairingRuntime.close', status);
+  }
+
+  void _requireOpen(String operation) {
+    if (_closed) {
+      throw SasPairingClosedException('SasPairingRuntime', operation);
+    }
+  }
+}
+
+/// One registered authority: one active registration holding the authority's OS ownership,
+/// owned by its runtime.
+///
+/// Its opportunity budget and START limiter belong to the process, not to this object:
+/// registering the same scope again after closing it continues them.
+final class SasPairingAuthority {
+  SasPairingAuthority._(this._runtime, this._handle);
+
+  final SasPairingRuntime _runtime;
+  final int _handle;
+  final Set<SasPairingHost> _hosts = {};
+  bool _closed = false;
+
+  /// Whether this authority was closed, by [close] or by closing its runtime.
+  bool get isClosed => _closed;
+
+  /// The authority's current native state. Native failures are thrown as
+  /// [SasPairingNativeException].
+  SasPairingAuthorityStatus queryStatus() {
+    const operation = 'SasPairingAuthority.queryStatus';
+    _requireOpen('queryStatus');
+    final context = _runtime._context;
+    context.admitNormal(operation);
+    final result = context.api.authorityStatus(_runtime._handle, _handle);
+    context.check(operation, result.status);
+    final (state, remaining) = (result.state, result.remaining);
+    switch (state) {
+      case raw.SAS_PAIRING_AUTHORITY_READY when remaining > 0:
+        return SasPairingAuthorityStatus._(
+          SasPairingAuthorityState.ready,
+          remaining,
+        );
+      case raw.SAS_PAIRING_AUTHORITY_BUSY when remaining == 0:
+        return const SasPairingAuthorityStatus._(
+          SasPairingAuthorityState.busy,
+          0,
+        );
+      case raw.SAS_PAIRING_AUTHORITY_EXHAUSTED when remaining == 0:
+        return const SasPairingAuthorityStatus._(
+          SasPairingAuthorityState.exhausted,
+          0,
+        );
+      default:
+        throw context.violation(
+          operation,
+          'SAS_PAIRING_OK with authority state $state and $remaining remaining '
+          'opportunities',
+        );
+    }
+  }
+
+  /// Creates a host (one native hosting context) for this authority. No networking happens and
+  /// no accounting changes. Native failures are thrown as [SasPairingNativeException].
+  SasPairingHost createHost() {
+    const operation = 'SasPairingAuthority.createHost';
+    _requireOpen('createHost');
+    final context = _runtime._context;
+    context.admitNormal(operation);
+    final result = context.api.hostCreate(_runtime._handle, _handle);
+    context.check(operation, result.status);
+    final host = SasPairingHost._(
+      this,
+      context.requireHandle(operation, result.handle),
+    );
+    _hosts.add(host);
+    return host;
+  }
+
+  /// Releases the registration with exactly one native call, which also destroys every host of
+  /// this authority; those hosts are then closed too. The runtime stays open.
+  ///
+  /// The authority is closed after the first call whatever the native result (for example
+  /// `ownershipUncertain`), and a failure is thrown once as a [SasPairingNativeException]; it is
+  /// never retried. Later calls do nothing. Allowed after `SAS_PAIRING_FATAL`. Process-session
+  /// accounting is not reset.
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    final int status;
+    try {
+      status = _runtime._context.api.authorityRelease(
+        _runtime._handle,
+        _handle,
+      );
+    } finally {
+      _invalidateHosts();
+      _runtime._authorities.remove(this);
+    }
+    _runtime._context.check('SasPairingAuthority.close', status);
+  }
+
+  void _invalidateByParent() {
+    _closed = true;
+    _invalidateHosts();
+  }
+
+  void _invalidateHosts() {
+    for (final host in _hosts) {
+      host._closed = true;
+    }
+    _hosts.clear();
+  }
+
+  void _requireOpen(String operation) {
+    if (_closed) {
+      throw SasPairingClosedException('SasPairingAuthority', operation);
+    }
+  }
+}
+
+/// One hosting context of an authority, owned by that authority. It has no network behavior in
+/// this version: it exists only as a lifecycle object.
+final class SasPairingHost {
+  SasPairingHost._(this._authority, this._handle);
+
+  final SasPairingAuthority _authority;
+  final int _handle;
+  bool _closed = false;
+
+  /// Whether this host was closed, by [close] or by closing its authority or runtime.
+  bool get isClosed => _closed;
+
+  /// Destroys the host with exactly one native call. Its authority stays registered and open.
+  ///
+  /// The host is closed after the first call whatever the native result, and a failure is
+  /// thrown once as a [SasPairingNativeException]; it is never retried. Later calls do nothing.
+  /// Allowed after `SAS_PAIRING_FATAL`.
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    final runtime = _authority._runtime;
+    final int status;
+    try {
+      status = runtime._context.api.hostDestroy(runtime._handle, _handle);
+    } finally {
+      _authority._hosts.remove(this);
+    }
+    runtime._context.check('SasPairingHost.close', status);
+  }
+}
+
+/// The successful state of an authority. Not a status code: the native failure status
+/// `SasPairingStatus.busy` is a different thing.
+enum SasPairingAuthorityState {
+  /// The authority can host a ceremony; `remainingOpportunities` says how many remain.
+  ready,
+
+  /// An exposed ceremony currently holds the authority.
+  busy,
+
+  /// The authority's opportunity budget for this process session is spent.
+  exhausted,
+}
+
+/// An immutable snapshot of an authority's native state. The native core stays authoritative:
+/// this is a report, not an accounting copy.
+final class SasPairingAuthorityStatus {
+  const SasPairingAuthorityStatus._(this.state, this.remainingOpportunities);
+
+  final SasPairingAuthorityState state;
+
+  /// The remaining opportunities when [state] is `ready`; otherwise 0.
+  final int remainingOpportunities;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SasPairingAuthorityStatus &&
+      other.state == state &&
+      other.remainingOpportunities == remainingOpportunities;
+
+  @override
+  int get hashCode => Object.hash(state, remainingOpportunities);
+
+  @override
+  String toString() =>
+      'SasPairingAuthorityStatus(${state.name}, '
+      'remainingOpportunities: $remainingOpportunities)';
+}
