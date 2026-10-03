@@ -2,11 +2,12 @@
  * sas_pairing.h - native ABI of the sas-pairing core, ABI version 1.
  *
  * Experimental, pre-alpha, not production-security approved. Exposes the version query, the
- * runtime lifecycle, the authority lifecycle (P7.2), and hosting contexts (P7.3). No networking
- * or ceremony operation is exposed yet.
+ * runtime lifecycle, the authority lifecycle (P7.2), hosting contexts (P7.3), and Windows listener
+ * ownership for a host (P7.4). No network driving, connection, run, event, result, or ceremony
+ * operation is exposed yet: an attached listener is inert until a later increment adds driving.
  *
  * Contract: docs/p7-native-abi/abi-contract.md. Decisions: docs/p7-native-abi/decisions.md
- * (P7-D-001 to P7-D-005). Kept in sync with core/src/abi by the abi::tests::header consistency
+ * (P7-D-001 to P7-D-007). Kept in sync with core/src/abi by the abi::tests::header consistency
  * test.
  *
  * LIBRARY LIFETIME (P7-D-002): supported use loads exactly one image of this library per OS
@@ -43,7 +44,7 @@ extern "C" {
 /* Status codes. Values are frozen and never reused; treat every non-zero value, including
  * unknown ones, as failure. Reserved ranges: 1-99 ABI/lifecycle/argument, 100-199
  * authority/resource/core, 200-299 ceremony/protocol, 300-399 buffer/data result,
- * 900-999 fatal/internal. */
+ * 400-499 host/listener/transport-boundary lifecycle, 900-999 fatal/internal. */
 typedef int32_t sas_pairing_status_t;
 
 #define SAS_PAIRING_OK 0
@@ -65,11 +66,15 @@ typedef int32_t sas_pairing_status_t;
 #define SAS_PAIRING_MISSING_AUTHORIZATION 200
 #define SAS_PAIRING_STALE_AUTHORIZATION 201
 #define SAS_PAIRING_TERMINATED 202
+/* The supplied Bootstrap configuration failed the core's own Bootstrap validation. */
+#define SAS_PAIRING_INVALID_BOOTSTRAP 203
+/* 400-499: host, listener, and transport-boundary lifecycle. */
+#define SAS_PAIRING_LISTENER_ALREADY_ATTACHED 400
+#define SAS_PAIRING_LISTENER_SETUP_FAILED 401
 /* A Rust panic was contained. The native ABI state of this process is permanently fatal:
- * every later create and normal operation returns this without entering the core, runtime
- * destroy, authority release, and host destroy still work as cleanup, and only a new OS process
- * recovers
- * (a library reload is not recovery). */
+ * every later create and normal operation returns this without entering the core; runtime
+ * destroy, authority release, host destroy, and listener detach still work as cleanup; only a
+ * new OS process recovers (a library reload is not recovery). */
 #define SAS_PAIRING_FATAL 900
 
 /* Opaque process-local handles. Never a pointer, secret, network identity, authority identity,
@@ -95,6 +100,30 @@ typedef uint32_t sas_pairing_authority_state_t;
 #define SAS_PAIRING_AUTHORITY_BUSY ((sas_pairing_authority_state_t)2)
 #define SAS_PAIRING_AUTHORITY_EXHAUSTED ((sas_pairing_authority_state_t)3)
 
+/* A Windows SOCKET handed to the library by sas_pairing_host_attach_windows_listener
+ * (P7-D-006). An OS resource, not a handle of the library's counter, and never a peer,
+ * connection, authority, or protocol identity. SAS_PAIRING_SOCKET_INVALID equals Windows
+ * INVALID_SOCKET. */
+typedef uintptr_t sas_pairing_socket_t;
+
+#define SAS_PAIRING_SOCKET_INVALID ((sas_pairing_socket_t)UINTPTR_MAX)
+
+/* Borrowed caller bytes, input only: data may be NULL only when len is 0. The library copies
+ * the bytes during the call and keeps no pointer. */
+typedef struct sas_pairing_bytes_view {
+    const uint8_t *data;
+    size_t len;
+} sas_pairing_bytes_view_t;
+
+/* One Bootstrap configuration, input only: four byte strings, copied during the call and
+ * validated by the core's own Bootstrap rules (SAS_PAIRING_INVALID_BOOTSTRAP otherwise). */
+typedef struct sas_pairing_bootstrap_view {
+    sas_pairing_bytes_view_t application_identity;
+    sas_pairing_bytes_view_t key_algorithm;
+    sas_pairing_bytes_view_t public_key;
+    sas_pairing_bytes_view_t shared_context;
+} sas_pairing_bootstrap_view_t;
+
 /* Returns SAS_PAIRING_ABI_VERSION. Returns 0 only if the query itself failed. */
 uint32_t sas_pairing_abi_version(void);
 
@@ -106,8 +135,8 @@ uint32_t sas_pairing_abi_version(void);
 sas_pairing_status_t sas_pairing_runtime_create(sas_pairing_runtime_t *out_runtime);
 
 /* Destroys the runtime; its handle and every authority and host handle it owns are invalid
- * forever afterwards; its hosts are destroyed first, then its authorities released. Allowed in
- * the fatal state. Returns
+ * forever afterwards; its hosts' listeners are closed first, then its hosts destroyed, then its
+ * authorities released. Allowed in the fatal state. Returns
  * SAS_PAIRING_OK, SAS_PAIRING_INVALID_HANDLE (0, unknown, or destroyed), or SAS_PAIRING_FATAL. */
 sas_pairing_status_t sas_pairing_runtime_destroy(sas_pairing_runtime_t runtime);
 
@@ -124,7 +153,7 @@ sas_pairing_status_t sas_pairing_runtime_destroy(sas_pairing_runtime_t runtime);
 sas_pairing_status_t sas_pairing_authority_register(sas_pairing_runtime_t runtime, const uint8_t *scope, size_t scope_len, sas_pairing_authority_t *out_authority);
 
 /* Releases the authority's registration (its OS ownership), after first destroying every host
- * of the authority. The handle and all of its host handles are consumed: invalid forever once
+ * of the authority (closing any attached listener before its host's router). The handle and all of its host handles are consumed: invalid forever once
  * this returns, even when a core error such as SAS_PAIRING_OWNERSHIP_UNCERTAIN is returned.
  * Process-session accounting is not reset.
  * Allowed in the fatal state. Returns SAS_PAIRING_OK, SAS_PAIRING_INVALID_HANDLE, a core error,
@@ -145,11 +174,41 @@ sas_pairing_status_t sas_pairing_authority_status(sas_pairing_runtime_t runtime,
  * SAS_PAIRING_OWNERSHIP_UNCERTAIN. */
 sas_pairing_status_t sas_pairing_host_create(sas_pairing_runtime_t runtime, sas_pairing_authority_t authority, sas_pairing_host_t *out_host);
 
-/* Destroys the host and its router; the handle is invalid forever afterwards. The authority is
- * not released and its other hosts stay valid. Releasing the authority or destroying the
- * runtime also destroys its hosts. Allowed in the fatal state. Returns SAS_PAIRING_OK,
- * SAS_PAIRING_INVALID_HANDLE, or SAS_PAIRING_FATAL. */
+/* Destroys the host: an attached listener and its owner loop are closed first, then the router;
+ * the handle is invalid forever afterwards, whatever is returned. The authority is not released
+ * and its other hosts stay valid. Releasing the authority or destroying the runtime also
+ * destroys its hosts. Allowed in the fatal state. Returns SAS_PAIRING_OK,
+ * SAS_PAIRING_INVALID_HANDLE, SAS_PAIRING_OWNERSHIP_UNCERTAIN (a connection's cleanup could not
+ * be established), or SAS_PAIRING_FATAL. */
 sas_pairing_status_t sas_pairing_host_destroy(sas_pairing_runtime_t runtime, sas_pairing_host_t host);
+
+/* Attaches an ALREADY-BOUND Windows listening socket to the host (P7-D-006, P7-D-007). The
+ * library never binds, chooses an address, interface, or port, or configures discovery or a
+ * firewall: the caller does all of that before this call. local (required) is the host's
+ * Responder Bootstrap; expected is the exact expected peer Bootstrap, or NULL for none. Both are
+ * copied; no pointer is kept. Nothing is driven: no accept, connection, or event happens here.
+ *
+ * SOCKET OWNERSHIP: *inout_listener must hold the caller's socket on entry. If the call fails
+ * before adoption, *inout_listener is unchanged and the socket is still the caller's (close it
+ * yourself): SAS_PAIRING_INVALID_ARGUMENT, SAS_PAIRING_UNSUPPORTED_PLATFORM (not Windows),
+ * SAS_PAIRING_INVALID_BOOTSTRAP, SAS_PAIRING_FATAL, SAS_PAIRING_INVALID_HANDLE, or
+ * SAS_PAIRING_LISTENER_ALREADY_ATTACHED. Once the library adopts the socket it writes
+ * SAS_PAIRING_SOCKET_INVALID to *inout_listener and owns and closes the socket, also when it then
+ * returns SAS_PAIRING_LISTENER_SETUP_FAILED or SAS_PAIRING_FATAL. Whenever *inout_listener reads
+ * SAS_PAIRING_SOCKET_INVALID after the call, never close, use, or hand on that socket again.
+ *
+ * Caller precondition (not checkable): a socket value other than SAS_PAIRING_SOCKET_INVALID is
+ * one valid, already-bound Windows listening SOCKET that the caller owns exclusively and that
+ * nobody closes or uses during the call. One listener per host: replace it with
+ * sas_pairing_host_detach_listener, then attach again. Changes no accounting. */
+sas_pairing_status_t sas_pairing_host_attach_windows_listener(sas_pairing_runtime_t runtime, sas_pairing_host_t host, sas_pairing_socket_t *inout_listener, const sas_pairing_bootstrap_view_t *local, const sas_pairing_bootstrap_view_t *expected);
+
+/* Detaches the host's listener: its owner loop closes the listener and every connection it owns
+ * while the host's router stays alive. The host, its router, its authority, and all accounting
+ * stay. Idempotent: SAS_PAIRING_OK also when no listener is attached. Allowed in the fatal state
+ * (it never clears it). Returns SAS_PAIRING_OK, SAS_PAIRING_INVALID_HANDLE,
+ * SAS_PAIRING_OWNERSHIP_UNCERTAIN, or SAS_PAIRING_FATAL. */
+sas_pairing_status_t sas_pairing_host_detach_listener(sas_pairing_runtime_t runtime, sas_pairing_host_t host);
 
 #ifdef __cplusplus
 }

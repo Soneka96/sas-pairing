@@ -1,5 +1,6 @@
 //! Native ABI tests (P7.1 foundation; the P7.2 authority lifecycle is in `authority`, the P7.3
-//! hosting contexts in `host`).
+//! hosting contexts in `host`, the P7.4 listener ownership and owner-loop lifetime in
+//! `listener`).
 //!
 //! Logic tests use test-local `AbiState`/`FatalState` instances. Tests of the real exports and
 //! the process-global state run in isolated child processes (this test binary re-run with one
@@ -8,6 +9,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     env, fs,
+    mem::{align_of, offset_of},
     panic::panic_any,
     process::Command,
     ptr,
@@ -20,17 +22,19 @@ use std::{
 };
 
 use super::{
-    ABI_VERSION, INVALID_ABI_VERSION, PROCESS, RuntimeHandle,
+    ABI_VERSION, BootstrapView, BytesView, INVALID_ABI_VERSION, PROCESS, RuntimeHandle,
     authority::{
         AuthorityHandle, CORE_ENTRIES, SAS_PAIRING_AUTHORITY_BUSY, SAS_PAIRING_AUTHORITY_EXHAUSTED,
         SAS_PAIRING_AUTHORITY_READY, SAS_PAIRING_AUTHORITY_STATE_INVALID,
     },
     dispatch,
     hosting::{HostHandle, ROUTER_CONSTRUCTIONS},
+    listener::{SAS_PAIRING_SOCKET_INVALID, SocketHandle},
     panic_boundary::{FatalState, contain},
     runtime::{AbiState, HandleCounter},
     sas_pairing_abi_version, sas_pairing_authority_register, sas_pairing_authority_release,
-    sas_pairing_authority_status, sas_pairing_host_create, sas_pairing_host_destroy,
+    sas_pairing_authority_status, sas_pairing_host_attach_windows_listener,
+    sas_pairing_host_create, sas_pairing_host_destroy, sas_pairing_host_detach_listener,
     sas_pairing_runtime_create, sas_pairing_runtime_destroy,
     status::*,
 };
@@ -39,18 +43,21 @@ use super::{
 mod authority;
 /// P7.3 hosting contexts: host lifecycle, cascades, accounting neutrality, races.
 mod host;
+/// P7.4 Windows listener ownership, socket adoption, owner-loop lifetime bridge, races.
+mod listener;
 
 const HEADER: &str = include_str!("../../include/sas_pairing.h");
 const MANIFEST: &str = include_str!("../../Cargo.toml");
-const ABI_SOURCES: [(&str, &str); 6] = [
+const ABI_SOURCES: [(&str, &str); 7] = [
     ("mod.rs", include_str!("mod.rs")),
     ("authority.rs", include_str!("authority.rs")),
     ("hosting.rs", include_str!("hosting.rs")),
+    ("listener.rs", include_str!("listener.rs")),
     ("panic_boundary.rs", include_str!("panic_boundary.rs")),
     ("runtime.rs", include_str!("runtime.rs")),
     ("status.rs", include_str!("status.rs")),
 ];
-const STATUSES: [(&str, i32); 17] = [
+const STATUSES: [(&str, i32); 20] = [
     ("SAS_PAIRING_OK", SAS_PAIRING_OK),
     ("SAS_PAIRING_INVALID_ARGUMENT", SAS_PAIRING_INVALID_ARGUMENT),
     ("SAS_PAIRING_INVALID_HANDLE", SAS_PAIRING_INVALID_HANDLE),
@@ -91,6 +98,18 @@ const STATUSES: [(&str, i32); 17] = [
         SAS_PAIRING_STALE_AUTHORIZATION,
     ),
     ("SAS_PAIRING_TERMINATED", SAS_PAIRING_TERMINATED),
+    (
+        "SAS_PAIRING_INVALID_BOOTSTRAP",
+        SAS_PAIRING_INVALID_BOOTSTRAP,
+    ),
+    (
+        "SAS_PAIRING_LISTENER_ALREADY_ATTACHED",
+        SAS_PAIRING_LISTENER_ALREADY_ATTACHED,
+    ),
+    (
+        "SAS_PAIRING_LISTENER_SETUP_FAILED",
+        SAS_PAIRING_LISTENER_SETUP_FAILED,
+    ),
     ("SAS_PAIRING_FATAL", SAS_PAIRING_FATAL),
 ];
 const AUTHORITY_STATES: [(&str, u32); 4] = [
@@ -145,6 +164,9 @@ fn abi_constants_are_frozen() {
             ("SAS_PAIRING_MISSING_AUTHORIZATION", 200),
             ("SAS_PAIRING_STALE_AUTHORIZATION", 201),
             ("SAS_PAIRING_TERMINATED", 202),
+            ("SAS_PAIRING_INVALID_BOOTSTRAP", 203),
+            ("SAS_PAIRING_LISTENER_ALREADY_ATTACHED", 400),
+            ("SAS_PAIRING_LISTENER_SETUP_FAILED", 401),
             ("SAS_PAIRING_FATAL", 900),
         ]
     );
@@ -163,12 +185,34 @@ fn abi_constants_are_frozen() {
     assert_eq!(size_of::<AuthorityHandle>(), 8);
     assert_eq!(size_of::<HostHandle>(), 8);
     assert_eq!(size_of::<i32>(), 4);
+    // `sas_pairing_socket_t` is `uintptr_t`; its invalid value is `UINTPTR_MAX` (Windows
+    // `INVALID_SOCKET`, also checked at compile time on Windows).
+    assert_eq!(size_of::<SocketHandle>(), size_of::<*const ()>());
+    assert_eq!(SAS_PAIRING_SOCKET_INVALID, usize::MAX);
     // Zero is never a valid handle: destroy rejects it, and the counter never issues it.
     assert_eq!(
         AbiState::new().destroy(0),
         SAS_PAIRING_INVALID_HANDLE,
         "handle 0 must be invalid"
     );
+}
+
+/// The C layouts of the two input views: `{const uint8_t *data; size_t len;}` and four of them,
+/// in declaration order, with no padding, aligned like a pointer.
+#[test]
+fn input_view_layouts_are_pinned() {
+    let word = size_of::<usize>();
+    assert_eq!(size_of::<*const u8>(), word);
+    assert_eq!(size_of::<BytesView>(), 2 * word);
+    assert_eq!(align_of::<BytesView>(), align_of::<usize>());
+    assert_eq!(offset_of!(BytesView, data), 0);
+    assert_eq!(offset_of!(BytesView, len), word);
+    assert_eq!(size_of::<BootstrapView>(), 8 * word);
+    assert_eq!(align_of::<BootstrapView>(), align_of::<usize>());
+    assert_eq!(offset_of!(BootstrapView, application_identity), 0);
+    assert_eq!(offset_of!(BootstrapView, key_algorithm), 2 * word);
+    assert_eq!(offset_of!(BootstrapView, public_key), 4 * word);
+    assert_eq!(offset_of!(BootstrapView, shared_context), 6 * word);
 }
 
 #[test]
@@ -187,6 +231,14 @@ fn export_signatures_are_pinned() {
     let _: unsafe extern "C" fn(u64, u64, *mut u32, *mut u32) -> i32 = sas_pairing_authority_status;
     let _: unsafe extern "C" fn(u64, u64, *mut u64) -> i32 = sas_pairing_host_create;
     let _: extern "C" fn(u64, u64) -> i32 = sas_pairing_host_destroy;
+    let _: unsafe extern "C" fn(
+        u64,
+        u64,
+        *mut usize,
+        *const BootstrapView,
+        *const BootstrapView,
+    ) -> i32 = sas_pairing_host_attach_windows_listener;
+    let _: extern "C" fn(u64, u64) -> i32 = sas_pairing_host_detach_listener;
 }
 
 /// The checked-in header and the Rust ABI agree on the version, status values, type widths,
@@ -219,6 +271,10 @@ fn header_matches_the_rust_abi() {
         defines.get("SAS_PAIRING_HOST_INVALID"),
         Some(&"((sas_pairing_host_t)0)")
     );
+    assert_eq!(
+        defines.get("SAS_PAIRING_SOCKET_INVALID"),
+        Some(&"((sas_pairing_socket_t)UINTPTR_MAX)")
+    );
     for (name, value) in AUTHORITY_STATES {
         assert_eq!(
             defines.get(name),
@@ -244,8 +300,23 @@ fn header_matches_the_rust_abi() {
             "typedef uint64_t sas_pairing_authority_t;",
             "typedef uint64_t sas_pairing_host_t;",
             "typedef uint32_t sas_pairing_authority_state_t;",
+            "typedef uintptr_t sas_pairing_socket_t;",
+            "typedef struct sas_pairing_bytes_view {",
+            "typedef struct sas_pairing_bootstrap_view {",
         ])
     );
+    // The two input views, field for field, in the order `BytesView` and `BootstrapView` pin.
+    assert!(HEADER.contains(
+        "typedef struct sas_pairing_bytes_view {\n    const uint8_t *data;\n    size_t len;\n} \
+         sas_pairing_bytes_view_t;"
+    ));
+    assert!(HEADER.contains(
+        "typedef struct sas_pairing_bootstrap_view {\n    \
+         sas_pairing_bytes_view_t application_identity;\n    \
+         sas_pairing_bytes_view_t key_algorithm;\n    \
+         sas_pairing_bytes_view_t public_key;\n    \
+         sas_pairing_bytes_view_t shared_context;\n} sas_pairing_bootstrap_view_t;"
+    ));
     assert!(HEADER.contains("#include <stddef.h>"));
     assert!(HEADER.contains("#include <stdint.h>"));
 
@@ -269,6 +340,12 @@ fn header_matches_the_rust_abi() {
             "sas_pairing_status_t sas_pairing_host_create(sas_pairing_runtime_t runtime, \
              sas_pairing_authority_t authority, sas_pairing_host_t *out_host);",
             "sas_pairing_status_t sas_pairing_host_destroy(sas_pairing_runtime_t runtime, \
+             sas_pairing_host_t host);",
+            "sas_pairing_status_t sas_pairing_host_attach_windows_listener(\
+             sas_pairing_runtime_t runtime, sas_pairing_host_t host, \
+             sas_pairing_socket_t *inout_listener, const sas_pairing_bootstrap_view_t *local, \
+             const sas_pairing_bootstrap_view_t *expected);",
+            "sas_pairing_status_t sas_pairing_host_detach_listener(sas_pairing_runtime_t runtime, \
              sas_pairing_host_t host);",
         ])
     );
@@ -317,8 +394,10 @@ fn every_export_runs_inside_the_central_panic_boundary() {
             "sas_pairing_authority_register",
             "sas_pairing_authority_release",
             "sas_pairing_authority_status",
+            "sas_pairing_host_attach_windows_listener",
             "sas_pairing_host_create",
             "sas_pairing_host_destroy",
+            "sas_pairing_host_detach_listener",
             "sas_pairing_runtime_create",
             "sas_pairing_runtime_destroy",
         ]

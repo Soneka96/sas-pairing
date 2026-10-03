@@ -5,8 +5,9 @@
 //! drawn from one monotonic counter: never zero, never reused, never wrapped, and never equal
 //! across kinds. Creating a runtime registers no authority, takes no OS lock, starts no listener,
 //! and generates no protocol randomness. The runtime owns the authorities registered through it
-//! and the hosts created for them, and every authority and host operation runs while holding the
-//! runtime slot, so it serializes with release and destroy.
+//! and the hosts created for them (and, through the hosts, their listeners and owner loops), and
+//! every authority, host, and listener operation runs while holding the runtime slot, so it
+//! serializes with release and destroy.
 
 use std::{
     collections::BTreeMap,
@@ -69,23 +70,30 @@ pub(super) struct Runtime {
     /// RAII stays authoritative: removing an entry is the only way to end its ABI lifetime.
     pub(super) authorities: BTreeMap<NonZeroU64, TrustedAuthority>,
     /// The hosting contexts, keyed by their opaque handles; each names its parent authority in
-    /// `authorities` and owns its router (P7-D-005).
-    pub(super) hosts: BTreeMap<NonZeroU64, HostContext>,
+    /// `authorities` and owns its router (P7-D-005) and any network context (P7-D-007). Each is
+    /// boxed, so a host context never moves once created: map changes and removal move only
+    /// the outer box, never the router box an owner loop borrows through.
+    pub(super) hosts: BTreeMap<NonZeroU64, Box<HostContext>>,
 }
 
 impl Runtime {
     /// Best-effort destruction, run after the runtime handle (and with it every child handle)
-    /// is already invalid. Hosts go first: their routers hold executor clones of the
-    /// authorities, so every router must be gone before authority ownership ends. Then every
-    /// owned authority drops, which releases its OS lease through the core's own `Drop` (an
-    /// uncertain release is recorded by the core and fails that authority's registration
-    /// closed). Never starts protocol work, clears fatal state, or creates accounting.
+    /// is already invalid. First every host's network context (its owner loop, listener, and
+    /// connections) ends while its router is still alive (P7-D-007). Then the hosts drop: their
+    /// routers hold executor clones of the authorities, so every router must be gone before
+    /// authority ownership ends. Then every owned authority drops, which releases its OS lease
+    /// through the core's own `Drop` (an uncertain release is recorded by the core and fails
+    /// that authority's registration closed). Never starts protocol work, clears fatal state, or
+    /// creates accounting.
     fn destroy(self) {
         let Self {
             handle: _,
             authorities,
-            hosts,
+            mut hosts,
         } = self;
+        for host in hosts.values_mut() {
+            let _ = host.detach_network();
+        }
         drop(hosts);
         drop(authorities);
     }

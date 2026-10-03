@@ -58,7 +58,7 @@ fn hosts(state: &AbiState, runtime: u64) -> Vec<(u64, u64, usize)> {
                     (
                         handle.get(),
                         host.authority.get(),
-                        ptr::from_ref(host.router.as_ref()).addr(),
+                        ptr::from_ref(host.router()).addr(),
                     )
                 })
                 .collect())
@@ -418,7 +418,7 @@ fn every_router_keeps_one_heap_address_while_the_maps_change() {
         .with_runtime(runtime, Admission::Normal, |live| {
             let boxed = Box::new(mem::take(&mut live.hosts));
             let moved = vec![*boxed];
-            let router = moved[0][&NonZeroU64::new(first).unwrap()].router.as_ref();
+            let router = moved[0][&NonZeroU64::new(first).unwrap()].router();
             assert_eq!(ptr::from_ref(router).addr(), before, "map moved");
             live.hosts = moved.into_iter().next().unwrap();
             Ok(())
@@ -433,9 +433,9 @@ fn every_router_keeps_one_heap_address_while_the_maps_change() {
         .with_runtime(runtime, Admission::Normal, |live| {
             for host in live.hosts.values() {
                 let parent = &live.authorities[&host.authority];
-                assert!(Arc::ptr_eq(&host.router.authority().0, &parent.0));
+                assert!(Arc::ptr_eq(&host.router().authority().0, &parent.0));
                 for (handle, other) in &live.authorities {
-                    let shared = Arc::ptr_eq(&host.router.authority().0, &other.0);
+                    let shared = Arc::ptr_eq(&host.router().authority().0, &other.0);
                     assert_eq!(shared, *handle == host.authority);
                 }
             }

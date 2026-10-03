@@ -2,7 +2,8 @@
 //!
 //! Values are explicit and never renumbered or reused. Ranges reserved for later increments:
 //! 1–99 ABI, lifecycle, and arguments; 100–199 authority, resource, and core; 200–299 ceremony
-//! and protocol; 300–399 buffers and data results; 900–999 fatal and internal. Wrappers treat
+//! and protocol; 300–399 buffers and data results; 400–499 host, listener, and transport-boundary
+//! lifecycle; 900–999 fatal and internal. Wrappers treat
 //! every non-zero value, including unknown ones, as failure. The core `Error` discriminant is
 //! never exposed: [`map_core_error`] is the one explicit translation (P7-D-004).
 
@@ -47,6 +48,28 @@ pub const SAS_PAIRING_MISSING_AUTHORIZATION: i32 = 200;
 pub const SAS_PAIRING_STALE_AUTHORIZATION: i32 = 201;
 /// The ceremony is already terminal.
 pub const SAS_PAIRING_TERMINATED: i32 = 202;
+/// The supplied trusted-local Bootstrap configuration failed the core's own Bootstrap
+/// validation (`Bootstrap::new`); nothing was created (P7-D-006).
+#[cfg_attr(
+    all(not(windows), not(test)),
+    expect(dead_code, reason = "no listener can be attached off Windows")
+)]
+pub const SAS_PAIRING_INVALID_BOOTSTRAP: i32 = 203;
+
+// Host, listener, and transport-boundary lifecycle (400–499).
+
+/// The host already has a listener and owner loop; the new socket was not adopted.
+#[cfg_attr(
+    all(not(windows), not(test)),
+    expect(dead_code, reason = "no listener can be attached off Windows")
+)]
+pub const SAS_PAIRING_LISTENER_ALREADY_ATTACHED: i32 = 400;
+/// The adopted listener could not be configured for the owner loop; Rust closed it.
+#[cfg_attr(
+    all(not(windows), not(test)),
+    expect(dead_code, reason = "no listener can be attached off Windows")
+)]
+pub const SAS_PAIRING_LISTENER_SETUP_FAILED: i32 = 401;
 
 /// A Rust panic was contained: the native ABI state of this process is permanently fatal, and
 /// only a new OS process recovers (P6-D-004, P7-D-001). Distinct from every ordinary error.

@@ -7,9 +7,11 @@
 //! enum, `Result`, or object pointer does. Every export enters Rust work through [`dispatch`],
 //! the one panic-containment boundary (P6-D-004).
 //!
-//! Argument precedence for every export (contract §15.7, §16.2): raw-memory validation, then
-//! output slots set to their invalid values, then the fatal state (normal operations only), then
-//! the runtime handle, then the authority or host handle, then the core.
+//! Argument precedence for every export (contract §15.7, §16.2, §17.5): raw-memory validation,
+//! then output slots set to their invalid values, then the fatal state (normal operations only),
+//! then the runtime handle, then the authority or host handle, then the core. Listener attach
+//! validates its Bootstrap configuration (a stateless value check) before the fatal state, and
+//! adopts the caller's socket only after every other check passed.
 
 // A caught panic is the containment model, so the supported artifact must unwind (P6-D-004
 // item 12). Profile settings can be overridden, so the build itself refuses `panic = "abort"`.
@@ -21,16 +23,20 @@ compile_error!(
 
 mod authority;
 mod hosting;
+mod listener;
 mod panic_boundary;
 mod runtime;
 mod status;
 #[cfg(test)]
 mod tests;
 
-use std::slice;
+use std::{marker::PhantomData, slice};
 
+#[cfg(windows)]
+use crate::protocol::{Bootstrap, MAX_BOOTSTRAP_FRAME};
 use authority::{AuthorityHandle, SAS_PAIRING_AUTHORITY_STATE_INVALID};
 use hosting::HostHandle;
+use listener::{ListenerSlot, SAS_PAIRING_SOCKET_INVALID, SocketHandle};
 use runtime::AbiState;
 use status::{SAS_PAIRING_FATAL, SAS_PAIRING_INVALID_ARGUMENT, SAS_PAIRING_OK};
 
@@ -44,6 +50,133 @@ type RuntimeHandle = u64;
 
 /// The one native ABI state of this OS process. It is never reset.
 static PROCESS: AbiState = AbiState::new();
+
+/// `sas_pairing_bytes_view_t`: borrowed caller bytes, an input view only. `data` may be null
+/// only when `len` is `0`. The ABI copies the bytes during the call and keeps no pointer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BytesView {
+    data: *const u8,
+    len: usize,
+}
+
+/// `sas_pairing_bootstrap_view_t`: one Bootstrap configuration as four borrowed byte strings, an
+/// input view only. Copied during the call into `Bootstrap::new`; no pointer is kept.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BootstrapView {
+    application_identity: BytesView,
+    key_algorithm: BytesView,
+    public_key: BytesView,
+    shared_context: BytesView,
+}
+
+impl BytesView {
+    /// Whether a Rust slice can describe these bytes (nothing is dereferenced).
+    fn is_well_formed(self) -> bool {
+        byte_range(self.data, self.len).is_some()
+    }
+}
+
+impl BootstrapView {
+    fn fields(self) -> [BytesView; 4] {
+        [
+            self.application_identity,
+            self.key_algorithm,
+            self.public_key,
+            self.shared_context,
+        ]
+    }
+
+    /// Whether every byte view is well formed (nothing is dereferenced).
+    fn is_well_formed(self) -> bool {
+        self.fields().into_iter().all(BytesView::is_well_formed)
+    }
+}
+
+/// A caller's Bootstrap view that passed structural validation and whose bytes are readable for
+/// the call `'a`. Its bytes are read only by [`BootstrapInput::to_bootstrap`], which copies them.
+#[cfg_attr(
+    not(windows),
+    expect(dead_code, reason = "no Bootstrap is built off Windows")
+)]
+pub(super) struct BootstrapInput<'a> {
+    view: BootstrapView,
+    _call: PhantomData<&'a [u8]>,
+}
+
+impl BootstrapInput<'_> {
+    /// # Safety
+    ///
+    /// `view` is well formed, and each of its non-empty byte views addresses `len` readable
+    /// bytes that the caller owns and does not mutate for the call `'a`.
+    unsafe fn new(view: BootstrapView) -> Self {
+        debug_assert!(view.is_well_formed());
+        Self {
+            view,
+            _call: PhantomData,
+        }
+    }
+
+    /// Copies the four byte strings and builds the core `Bootstrap` with the reviewed
+    /// `Bootstrap::new`, which alone decides validity; `None` if it refuses. A field longer
+    /// than `MAX_BOOTSTRAP_FRAME` can never fit the canonical bootstrap frame, so it is refused
+    /// without being copied: an allocation bound, with the same outcome `Bootstrap::new` gives.
+    #[cfg(windows)]
+    pub(super) fn to_bootstrap(&self) -> Option<Bootstrap> {
+        let fields = self.view.fields();
+        if fields.iter().any(|field| field.len > MAX_BOOTSTRAP_FRAME) {
+            return None;
+        }
+        // SAFETY: each view is well formed and readable for the call (constructor contract).
+        // `caller_bytes` borrows them only until `to_vec` has copied them; nothing is kept.
+        let [
+            application_identity,
+            key_algorithm,
+            public_key,
+            shared_context,
+        ] = fields.map(|field| unsafe { caller_bytes(field.data, field.len) }.to_vec());
+        Bootstrap::new(
+            application_identity,
+            key_algorithm,
+            public_key,
+            shared_context,
+        )
+        .ok()
+    }
+}
+
+/// The address range `[start, end)` of `len` caller bytes at `data`, when a Rust slice can
+/// describe it: `data` is non-null unless `len` is `0`, `len` fits `isize`, and the range does
+/// not wrap the address space. Addresses are compared as integers; nothing is dereferenced.
+fn byte_range(data: *const u8, len: usize) -> Option<(usize, usize)> {
+    if len == 0 {
+        return Some((data.addr(), data.addr()));
+    }
+    if data.is_null() || isize::try_from(len).is_err() {
+        return None;
+    }
+    Some((data.addr(), data.addr().checked_add(len)?))
+}
+
+/// Borrows `len` caller bytes at `data` for the current call. A zero length never dereferences
+/// `data`, which may then be null.
+///
+/// # Safety
+///
+/// `byte_range(data, len)` is `Some`, and when `len > 0` the caller guarantees `len` readable
+/// bytes at `data`, not mutated while the returned slice is used. The slice must not outlive
+/// the call that received `data`.
+unsafe fn caller_bytes<'a>(data: *const u8, len: usize) -> &'a [u8] {
+    debug_assert!(byte_range(data, len).is_some());
+    if len == 0 {
+        return &[];
+    }
+    // SAFETY: `data` is non-null, `len` fits `isize`, and the range does not wrap (the
+    // precondition); `u8` needs no alignment; the caller guarantees `len` readable, unmutated
+    // bytes for as long as the slice is used.
+    unsafe { slice::from_raw_parts(data, len) }
+}
 
 /// The central export dispatcher: runs `op` on the process state inside the containment
 /// boundary. A caught panic marks the process fatal and returns `fallback`.
@@ -135,16 +268,11 @@ pub unsafe extern "C" fn sas_pairing_authority_register(
         // destructor, so plain writes are sound.
         let write_out = |value: AuthorityHandle| unsafe { out_authority.write(value) };
         write_out(0);
-        let scope: &[u8] = if scope_len == 0 {
-            &[]
-        } else {
-            // SAFETY: `scope` is non-null (checked above), `u8` needs no alignment, the length
-            // fits `isize` and the range does not wrap the address space (checked above), and
-            // the caller guarantees `scope_len` readable bytes left unmutated for this call.
-            // The slice is borrowed only until `register_authority` returns; the core copies
-            // the bytes into its own identity and keeps no reference.
-            unsafe { slice::from_raw_parts(scope, scope_len) }
-        };
+        // SAFETY: the scope range is well formed (checked above) and the caller guarantees
+        // `scope_len` readable bytes left unmutated for this call. The slice is borrowed only
+        // until `register_authority` returns; the core copies the bytes into its own identity
+        // and keeps no reference.
+        let scope = unsafe { caller_bytes(scope, scope_len) };
         match state.register_authority(runtime, scope) {
             Ok(handle) => {
                 write_out(handle.get());
@@ -159,20 +287,17 @@ pub unsafe extern "C" fn sas_pairing_authority_register(
 /// length fits `isize`, the byte range does not wrap the address space, and it does not overlap
 /// the `uint64_t` at `out`. Addresses are compared as integers; nothing is dereferenced.
 fn scope_range_is_valid(scope: *const u8, scope_len: usize, out: *mut AuthorityHandle) -> bool {
+    let Some((scope_start, scope_end)) = byte_range(scope, scope_len) else {
+        return false;
+    };
     if scope_len == 0 {
         return true;
     }
-    if isize::try_from(scope_len).is_err() {
-        return false;
-    }
-    let Some(scope_end) = scope.addr().checked_add(scope_len) else {
-        return false;
-    };
     let out_start = out.addr();
     let Some(out_end) = out_start.checked_add(size_of::<AuthorityHandle>()) else {
         return false;
     };
-    scope_end <= out_start || out_end <= scope.addr()
+    scope_end <= out_start || out_end <= scope_start
 }
 
 /// Releases `authority`. Its handle is invalid forever once this returns, whatever the result:
@@ -278,4 +403,85 @@ pub unsafe extern "C" fn sas_pairing_host_create(
 #[unsafe(no_mangle)]
 pub extern "C" fn sas_pairing_host_destroy(runtime: RuntimeHandle, host: HostHandle) -> i32 {
     dispatch(SAS_PAIRING_FATAL, |state| state.destroy_host(runtime, host))
+}
+
+/// Attaches the caller's ALREADY-BOUND Windows listening socket to `host`: the host's owner loop
+/// is built over it, with `local` as the Responder Bootstrap for accepted connections and
+/// `expected` (or none, when null) as the exact expected peer Bootstrap. Nothing is driven.
+///
+/// Ownership transfer (contract §17.4): on entry `*inout_listener` is the caller's socket. Every
+/// failure before adoption (bad arguments, an unsupported platform, an invalid Bootstrap, fatal,
+/// bad handles, a listener already attached) leaves the slot unchanged and the socket with the
+/// caller. At adoption `*inout_listener` becomes `SAS_PAIRING_SOCKET_INVALID` and Rust owns and
+/// closes the socket, also if a later step fails (`LISTENER_SETUP_FAILED`, `FATAL`).
+///
+/// # Safety
+///
+/// Non-null, aligned `inout_listener` must address one caller-owned, writable
+/// `sas_pairing_socket_t`, and non-null, aligned `local` and `expected` one readable
+/// `sas_pairing_bootstrap_view_t` each, none accessed concurrently, for the duration of the call.
+/// Every non-empty byte view must address `len` readable bytes not mutated during the call. A
+/// socket value other than `SAS_PAIRING_SOCKET_INVALID` must be one valid, already-bound Windows
+/// listening `SOCKET` that the caller owns exclusively and nobody closes or uses during the
+/// call. Rust cannot validate other invalid addresses or socket values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sas_pairing_host_attach_windows_listener(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+    inout_listener: *mut SocketHandle,
+    local: *const BootstrapView,
+    expected: *const BootstrapView,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        if inout_listener.is_null()
+            || !inout_listener.is_aligned()
+            || local.is_null()
+            || !local.is_aligned()
+            || !expected.is_aligned()
+        {
+            return SAS_PAIRING_INVALID_ARGUMENT;
+        }
+        // SAFETY: `inout_listener`, `local`, and a non-null `expected` are non-null and aligned
+        // (checked above), and the caller guarantees each addresses one readable value of its
+        // type for this call. Each type is plain integers and raw pointers, so every bit pattern
+        // is valid and nothing is dropped; the values are copied out and no reference is formed.
+        let (socket, local, expected) = unsafe {
+            (
+                inout_listener.read(),
+                local.read(),
+                (!expected.is_null()).then(|| expected.read()),
+            )
+        };
+        if socket == SAS_PAIRING_SOCKET_INVALID
+            || !local.is_well_formed()
+            || !expected.is_none_or(BootstrapView::is_well_formed)
+        {
+            return SAS_PAIRING_INVALID_ARGUMENT;
+        }
+        // SAFETY: every byte view is well formed (checked above), and the caller guarantees
+        // their bytes readable and unmutated for this call; the inputs do not outlive it.
+        let local = unsafe { BootstrapInput::new(local) };
+        // SAFETY: as for `local`.
+        let expected = expected.map(|view| unsafe { BootstrapInput::new(view) });
+        // SAFETY: `inout_listener` is non-null and aligned (checked above) and the caller's
+        // writable, unaliased slot for this call; `socket` is its entry value and not INVALID
+        // (checked above); the caller guarantees it is one valid, already-bound listening SOCKET
+        // it owns exclusively.
+        let slot = unsafe { ListenerSlot::new(inout_listener, socket) };
+        state.attach_listener(runtime, host, slot, &local, expected.as_ref())
+    })
+}
+
+/// Detaches `host`'s listener: the owner loop closes the listener and every connection it owns
+/// while the host's router is alive. The host, its router, its authority, and all accounting
+/// stay; a new listener may be attached later. Idempotent (`OK` when none is attached). Allowed
+/// in the fatal state as cleanup; it never clears fatal state.
+#[unsafe(no_mangle)]
+pub extern "C" fn sas_pairing_host_detach_listener(
+    runtime: RuntimeHandle,
+    host: HostHandle,
+) -> i32 {
+    dispatch(SAS_PAIRING_FATAL, |state| {
+        state.detach_listener(runtime, host)
+    })
 }
