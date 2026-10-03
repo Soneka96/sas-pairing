@@ -24,7 +24,8 @@ jobs:
       - name: Native ABI tests
         shell: bash
         run: |
-          set -uo pipefail
+          # GitHub runs bash with -e; keep going after a failed run to report it.
+          set +e -uo pipefail
           cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests \
             2>&1 | tee abi-tests.log
           status=${PIPESTATUS[0]}
@@ -65,7 +66,8 @@ jobs:
       - name: Native ABI tests
         shell: bash
         run: |
-          set -uo pipefail
+          # GitHub runs bash with -e; keep going after a failed run to report it.
+          set +e -uo pipefail
           cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests \
             2>&1 | tee abi-tests.log
           status=${PIPESTATUS[0]}
