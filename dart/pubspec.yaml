@@ -1,0 +1,20 @@
+name: sas_pairing
+description: >-
+  Experimental, pre-alpha Dart binding foundation for the sas-pairing native
+  ABI v1. No pairing API yet; not production-security approved.
+version: 0.1.0-dev.1
+repository: https://github.com/Soneka96/sas-pairing
+# Not published: P8 is in progress and native binary distribution is not decided.
+publish_to: none
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  ffi: ^2.2.0
+
+dev_dependencies:
+  # Pinned exactly: the committed bindings must regenerate byte-for-byte.
+  ffigen: 22.0.0
+  lints: ^6.1.0
+  test: ^1.32.0
