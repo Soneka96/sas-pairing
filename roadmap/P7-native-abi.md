@@ -2,13 +2,14 @@
 
 ## Status
 
-🔵 **IN PROGRESS — P7.1 COMPLETE (ABI foundation accepted after the P7.1.1 loader-lifetime correction).** Started 2026-10-02 from `main` at `5becd09` (the merge of the P6 pull request #12) on the one P7 branch `feature/p7-native-abi`; there is one P7 pull request, opened only at P7 closure. The prerequisites held: the P6 protocol candidate is frozen ([P6 final closure](../docs/p6-remediation/final-closure.md): `sas-pairing-vodozemac-profile-draft-01`, version 1, with owner decisions P6-D-001 to P6-D-005), and the P6 pull request is merged. Package: [docs/p7-native-abi](../docs/p7-native-abi/README.md) ([ABI contract](../docs/p7-native-abi/abi-contract.md), [decisions](../docs/p7-native-abi/decisions.md)).
+🔵 **IN PROGRESS — P7.2 COMPLETE (authority lifecycle + core error mapping; P7.1 ABI foundation accepted after the P7.1.1 loader-lifetime correction).** Started 2026-10-02 from `main` at `5becd09` (the merge of the P6 pull request #12) on the one P7 branch `feature/p7-native-abi`; there is one P7 pull request, opened only at P7 closure. The prerequisites held: the P6 protocol candidate is frozen ([P6 final closure](../docs/p6-remediation/final-closure.md): `sas-pairing-vodozemac-profile-draft-01`, version 1, with owner decisions P6-D-001 to P6-D-005), and the P6 pull request is merged. Package: [docs/p7-native-abi](../docs/p7-native-abi/README.md) ([ABI contract](../docs/p7-native-abi/abi-contract.md), [decisions](../docs/p7-native-abi/decisions.md)).
 
 | Increment | Scope | State |
 |---|---|---|
 | P7.1 | Native ABI foundation + runtime/panic containment ([P7-D-001](../docs/p7-native-abi/decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit)) | **Complete** (`b0aaee1`, `6b1b602`, `3dade72`, and the closure commit; [evidence](../docs/p7-native-abi/README.md#p71-evidence)). The P6-D-004 handoff is PARTIAL / FOUNDATION COMPLETE: the end-to-end exit test below still needs a core-entering export |
 | P7.1.1 | Native library lifetime / reload semantics ([P7-D-002](../docs/p7-native-abi/decisions.md#p7-d-002--native-library-residency-and-loader-lifetime)) | **Complete** (documentation and header comments only; [evidence](../docs/p7-native-abi/README.md#p711-evidence)). P7.1 is accepted |
-| P7.2 | Authority lifecycle + core error mapping | Next |
+| P7.2 | Authority lifecycle + core error mapping ([P7-D-003](../docs/p7-native-abi/decisions.md#p7-d-003--authority-handles-ownership-and-lifecycle), [P7-D-004](../docs/p7-native-abi/decisions.md#p7-d-004--stable-core-error-mapping)) | **Complete** (`286a4ff`, `2197322`, and the closure commit; [evidence](../docs/p7-native-abi/README.md#p72-evidence)). Opaque authority handles owned by the runtime, register/release/status, cascading runtime destroy, every core error mapped explicitly. P6-D-004: real core panic containment complete; consumed-accounting preservation evidence remains for a later ceremony increment |
+| P7.3 | Hosting context + bounded network driving (recommended next) | Not started |
 
 ## Goal
 

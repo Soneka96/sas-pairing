@@ -42,7 +42,7 @@ The P2 historical research phase concluded with Candidate B selected as an abstr
 
 - production-security approval and release readiness (not granted by experimental selection)
 - Candidate B's concrete commitment/hash instantiation justified for its random-oracle assumptions, if Candidate B is reconsidered
-- P7 native ABI around the frozen experimental candidate (in progress: the P7.1 foundation and central P6-D-004 panic containment are complete; authority, ceremony, and result operations and the end-to-end P6-D-004 panic exit test remain; [P7 package](p7-native-abi/README.md))
+- P7 native ABI around the frozen experimental candidate (in progress: the P7.1 foundation and central P6-D-004 panic containment, and the P7.2 authority lifecycle and core error mapping, are complete, including a real core panic contained through an authority export; hosting, ceremony, and result operations and the consumed-accounting part of the P6-D-004 exit test remain; [P7 package](p7-native-abi/README.md))
 - formal verification of the complete conditional per-pair argument is not claimed; residual cryptographic assumptions remain accepted for experimental development
 - remote Candidate B canonical wire format and state machine, if Candidate B is reconsidered
 - deterministic vectors and conformance cases are now recorded for the candidate drafts; they remain subject to whole-profile review and do not close production-profile gates

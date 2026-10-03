@@ -4,7 +4,7 @@
 
 ## Status
 
-**P7 IN PROGRESS — P7.1 COMPLETE (ABI FOUNDATION ACCEPTED).** P7.1 established the ABI version, type conventions, status namespace, opaque runtime handle, runtime lifecycle, and the central panic containment ([evidence](#p71-evidence)). The P7.1.1 correction then fixed the loader boundary those process-lifetime guarantees depend on: one native library image per process, resident until process exit, never unloaded or reloaded as recovery ([P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime), [evidence](#p711-evidence)). The P6-D-004 handoff is **PARTIAL / FOUNDATION COMPLETE**: its end-to-end exit test still needs an export that enters the core. Next: P7.2 — Authority Lifecycle + Core Error Mapping. P7 must not be marked complete before every [completion gate](#completion-gates) holds.
+**P7 IN PROGRESS — P7.2 COMPLETE.** P7.1 established the ABI version, type conventions, status namespace, opaque runtime handle, runtime lifecycle, and the central panic containment ([evidence](#p71-evidence)). The P7.1.1 correction fixed the loader boundary those process-lifetime guarantees depend on: one native library image per process, resident until process exit, never unloaded or reloaded as recovery ([P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime), [evidence](#p711-evidence)). P7.2 brought real core state across the ABI: opaque authority handles owned by the runtime, register, release, and status around `TrustedAuthority`, a cascading runtime destroy, and one explicit mapping of every core error ([P7-D-003](decisions.md#p7-d-003--authority-handles-ownership-and-lifecycle), [P7-D-004](decisions.md#p7-d-004--stable-core-error-mapping), [evidence](#p72-evidence)). The P6-D-004 handoff is now **REAL CORE PANIC CONTAINMENT COMPLETE; CONSUMED-ACCOUNTING PRESERVATION EVIDENCE REMAINS FOR A LATER CEREMONY INCREMENT**: a real panic inside `TrustedAuthority::register`, reached through `sas_pairing_authority_register`, is contained with both payload kinds, but no ABI operation consumes an opportunity yet. Next: P7.3 — Hosting context + bounded network driving (recommended; not started). P7 must not be marked complete before every [completion gate](#completion-gates) holds.
 
 ## Target
 
@@ -36,23 +36,24 @@ The ABI lives inside the core crate so later increments can call the reviewed cr
 |---|---|---|
 | P7.1 | ABI version, C type conventions, initial status namespace, opaque runtime handle, runtime create/destroy, central panic containment, permanent fatal state, payload-destructor suppression, unwind-only native build, checked-in header, CI, this package; [P7-D-001](decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit) | **Complete:** `b0aaee1` (contract), `6b1b602` (implementation, tests, CI), `3dade72` (CI YAML correction: the `abi::` test filter ended a plain scalar with a colon, so `rust-core.yml` did not parse on `6b1b602`), and the closure commit |
 | P7.1.1 | Native library lifetime / reload semantics: loader experiments, [P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime), the [loading and residency](abi-contract.md#14-native-library-loading-and-residency) contract section, header warning, P8/P9 loader handoffs. Documentation and header comments only; no `core/src` change | **Complete** (`docs: define native abi loader lifetime`; [evidence](#p711-evidence)). P7.1 is accepted |
-| P7.2 | Authority lifecycle and core error mapping | Next |
-| Later | Ceremony operations, network driving, SAS presentation, MATCH/REJECT, results, the real-core panic exit test, final header, P7 closure | Planned |
+| P7.2 | Authority lifecycle and core error mapping: opaque authority handles from the shared counter, runtime ownership of `TrustedAuthority`, register/release/status exports, cascading runtime destroy, authority/runtime concurrency, the core error mapping, and the real-core panic tests; [P7-D-003](decisions.md#p7-d-003--authority-handles-ownership-and-lifecycle), [P7-D-004](decisions.md#p7-d-004--stable-core-error-mapping) | **Complete:** `286a4ff` (decisions and contract), `2197322` (implementation, header, tests, CI), and the closure commit ([evidence](#p72-evidence)) |
+| P7.3 (recommended next) | Hosting context and bounded network driving: an authority-owned Router and owner loop over a host-supplied listener, a bounded `drive_once`-style export, connection and run references, owner-loop event and error mapping, and their destroy semantics | Not started |
+| Later | Ceremony start (Initiator/Responder), SAS presentation, local authorization, MATCH/REJECT, results (P6-D-005), the consumed-accounting part of the P6-D-004 exit test, final header, P7 closure | Planned |
 
 ## Mandatory P6 handoff
 
 | Obligation | Source | State |
 |---|---|---|
-| Every export runs inside a Rust `catch_unwind` boundary; no panic crosses `extern "C"`; no `C-unwind` | P6-D-004 items 3–4 | P7.1: one central dispatcher covers all current exports; later exports must use it |
-| Caught panic → permanent fatal state; later operations return the fatal error without entering the core | P6-D-004 item 5 | P7.1: process-wide fatal unit (P7-D-001); create refuses after fatal |
+| Every export runs inside a Rust `catch_unwind` boundary; no panic crosses `extern "C"`; no `C-unwind` | P6-D-004 items 3–4 | P7.1: one central dispatcher; P7.2: all six exports use it (source-scan test) |
+| Caught panic → permanent fatal state; later operations return the fatal error without entering the core | P6-D-004 item 5 | P7.1: process-wide fatal unit (P7-D-001); create refuses after fatal. P7.2: register and status refuse after fatal before any handle check, with a test-only core-entry counter showing no re-entry |
 | Payload destructor never runs; mark fatal → suppress destruction → return the fatal error; no payload inspection | P6-D-004 item 14 (P6.4.1) | P7.1: implemented and tested with a Drop-panicking payload |
-| Fatal handle stays destroyable; destroy never reactivates or resets | P6-D-004 item 7 | P7.1: implemented for the runtime handle |
+| Fatal handle stays destroyable; destroy never reactivates or resets | P6-D-004 item 7 | P7.1: runtime handle. P7.2: authority release and the cascading runtime destroy stay allowed as cleanup after fatal and never clear it |
 | Stable fatal error distinct from ordinary errors, carrying no payload data | P6-D-004 items 8–9 | P7.1: `SAS_PAIRING_FATAL = 900` |
 | Unwind-compatible supported artifact, pinned and checked in CI | P6-D-004 item 12 | P7.1: `[profile.release] panic = "unwind"`, `compile_error!` guard, negative CI check |
 | Rust-owned thread roots contained | P6-D-004 item 11 | Not applicable yet: P7.1 starts no thread |
-| Real core panic → ABI fatal → host survives → next operation fatal without core re-entry → no fresh accounting → destroy works (ordinary and Drop-panicking payloads) | P6-D-004 item 13; P7 exit criteria | **Open (PARTIAL / FOUNDATION COMPLETE):** P7.1 proves the primitive, the fatal runtime lifecycle, and payload-destructor suppression at an `extern "C"` seam; the end-to-end test needs an export that enters the core (later increment) |
-| No same-process accounting reset through any ABI path | P6-D-002 | P7.1 has no accounting; process-wide fatal unit prepared; to be shown with authorities (P7.2+) |
-| Loader lifetime invariant established before authority lifecycle: one native image per process, resident until process exit, no unload/reload or copied image as reset or recovery | P6-D-002, P6-D-004 via [P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime) | P7.1.1: normative in the contract and header; a host obligation, not enforced by the library. P8 and P9 must carry it into their loaders |
+| Real core panic → ABI fatal → host survives → next operation fatal without core re-entry → no fresh accounting → destroy works (ordinary and Drop-panicking payloads) | P6-D-004 item 13; P7 exit criteria | **REAL CORE PANIC CONTAINMENT COMPLETE (P7.2); CONSUMED-ACCOUNTING PRESERVATION EVIDENCE REMAINS FOR A LATER CEREMONY INCREMENT.** A panic inside `TrustedAuthority::register`, reached through `sas_pairing_authority_register`, is caught in Rust with an ordinary and a `PanicOnDrop` payload: fatal, `FATAL`, host alive, payload destructor never run, no core re-entry, cleanup allowed, no fresh accounting through the ABI. Not yet shown: a panic during an ABI operation that itself consumed an opportunity, because no ceremony export exists ([details](#p72-evidence)) |
+| No same-process accounting reset through any ABI path | P6-D-002 | P7.2: release, re-registration, runtime destroy, and a new runtime keep the same process session, budget, and exhaustion (opportunities spent through the core's own reserve path in tests); a fatal process cannot register again |
+| Loader lifetime invariant established before authority lifecycle: one native image per process, resident until process exit, no unload/reload or copied image as reset or recovery | P6-D-002, P6-D-004 via [P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime) | P7.1.1: normative in the contract and header; a host obligation, not enforced by the library. P8 and P9 must carry it into their loaders. P7.2: authority process-session accounting now crosses the ABI and depends on it (contract §15.6); still no self-pinning or shared-memory accounting |
 | Results presented as local verified completion, never a bilateral commit | P6-D-005 | Later increment (result access) |
 
 ## Completion gates
@@ -166,3 +167,120 @@ P7.1 wrote its guarantees for the OS process, but the state behind them is modul
 | `cargo test --manifest-path core/Cargo.toml --features native-abi --lib abi::tests` | Pass: 20 passed, 5 ignored (the child bodies), including the header consistency test |
 | `cargo build --manifest-path core/Cargo.toml --release --features native-abi` | Pass |
 | Repository consistency script, `git diff --check`, relative links and anchors of the changed documents | Pass |
+
+## P7.2 evidence
+
+Verified on Windows 11 (`rustc 1.99.0`) at `2197322`; Linux is covered by CI. Decisions: [P7-D-003](decisions.md#p7-d-003--authority-handles-ownership-and-lifecycle) (authority handles, ownership, lifecycle) and [P7-D-004](decisions.md#p7-d-004--stable-core-error-mapping) (core error mapping); contract [§15](abi-contract.md#15-authorities) and [§3](abi-contract.md#3-status-codes).
+
+### Source recheck (before implementing)
+
+`TrustedAuthority::register` (`core/src/lib.rs`) rejects an empty scope or one over `u32::MAX` bytes, builds the canonical identity (domain, big-endian length, scope), takes the process-wide `REGISTRY` lock, and either reactivates an existing `ProcessSession` (fails `AlreadyRegistered` when `Active`, `OwnershipUncertain` when `Uncertain` or when runtime resources are still held or the accounting is poisoned, then acquires the OS lease anew) or acquires the lease first and creates a fresh session (ten opportunities, a fresh START limiter and clock). `release` needs the only reference (`Busy` otherwise) and runs `State::end`, which `Drop` also runs: release the lease, then mark the session `Inactive` (or `Uncertain`). Sessions are never evicted. `Status` lives on `CeremonyExecutor::status` (`Busy` while the exposed-ceremony guard is held, `Exhausted` at zero, else `Ready { remaining }`). The core `Error` has eleven variants. The existing per-thread `test_hook` mechanism supported a new point without a second hook system.
+
+### Surface
+
+Six exports, all entering through `dispatch`: `sas_pairing_abi_version`, `sas_pairing_runtime_create`, `sas_pairing_runtime_destroy`, `sas_pairing_authority_register`, `sas_pairing_authority_release`, `sas_pairing_authority_status`. ABI version `1`; every P7.1 value and signature unchanged; new typedefs `sas_pairing_authority_t` (`uint64_t`) and `sas_pairing_authority_state_t` (`uint32_t`); new status values 100–107 and 200–202; `<stddef.h>` for `size_t`.
+
+### Implementation
+
+| Part | Where | What |
+|---|---|---|
+| Handles | `runtime.rs` | The P7.1 `HandleCounter` issues runtime and authority values alike (`AbiState::allocate_handle`) |
+| Ownership | `runtime.rs` | `Runtime.authorities: BTreeMap<NonZeroU64, TrustedAuthority>`; `Runtime::destroy` drops the map (the core's own `Drop` per authority) |
+| Admission | `runtime.rs` `AbiState::with_runtime` | Normal: fatal check, slot lock (poisoned → mark fatal, `FATAL`), fatal recheck, runtime handle. Cleanup: lock (poison tolerated), runtime handle. The operation runs while the slot is held |
+| Destroy | `runtime.rs` `AbiState::destroy` | Takes the runtime out of the slot and destroys it before releasing the slot |
+| Register / release / status | `authority.rs` | Reserve handle → `TrustedAuthority::register` → install; remove → `TrustedAuthority::release`; `executor().status()` → `authority_state`. Core calls go through `enter_core`, which counts entries in test builds only |
+| Mapping | `status.rs` `map_core_error` | One exhaustive, wildcard-free `match` |
+| Raw arguments | `mod.rs` | Null/misaligned outputs, null scope with a length, length over `isize::MAX`, wrapping scope range, scope overlapping `out_authority`, and `out_state == out_remaining` are rejected before any write |
+
+### Tests (`abi::tests` and `abi::tests::authority`, feature `native-abi`)
+
+| Area | Tests | What they show |
+|---|---|---|
+| Constants, header, coverage | `abi_constants_are_frozen`, `export_signatures_are_pinned`, `header_matches_the_rust_abi`, `every_export_runs_inside_the_central_panic_boundary` | All 17 status values pinned and distinct; the four authority-state values; the header's typedefs (exact set), defines, and six exact declarations equal the Rust ABI and the `no_mangle` set; exactly six exports, each starting with `dispatch(`; `catch_unwind` only in `panic_boundary.rs`; no panic hook, no `C-unwind` |
+| Mapping | `every_core_error_maps_to_its_frozen_abi_value`, `core_status_translates_to_fixed_authority_states` | All eleven variants → 100–107/200–202 by exact equality, one value each; a wildcard-free `match` in the test also stops compiling if the core gains a variant. `Ready{n}` → (1, n), `Busy` → (2, 0), `Exhausted` → (3, 0) |
+| Order and fatal (local state) | `authority_operations_reject_unknown_and_foreign_handles`, `a_fatal_state_refuses_normal_authority_operations_before_any_handle_check`, `a_poisoned_runtime_slot_makes_normal_operations_fatal_but_admits_cleanup` | Zero, random, stale, and runtime-as-authority handles give `INVALID_HANDLE` without a core session; fatal precedes handle checks for register and status; release stays admitted; a poisoned slot alone turns normal operations fatal |
+| Handles | `handle_exhaustion_fails_before_the_core_is_entered`, `authority_handles_share_the_runtime_counter_and_failures_burn_a_value`, `the_last_handle_value_can_name_an_authority_then_registration_fails_closed` | At `UINT64_MAX` exhaustion, register fails with `HANDLES_EXHAUSTED` and the core registry has no session for the scope (Linux too). Runtime 1, empty scope burns 2, authority 3, duplicate burns 4, authority 5, re-registration 6, next runtime 7. `UINT64_MAX` itself can name an authority |
+| Export lifecycle (child) | `authority_lifecycle_through_the_exports` | Every raw-argument rejection writes nothing and enters no core; empty scope (null or not) → `INVALID_SCOPE` with output 0; register → handle ≠ runtime; same scope → `ALREADY_REGISTERED`; a second scope coexists; status `READY`/10; bad status outputs write nothing; six wrong-handle combinations give `INVALID_HANDLE` for status and release; release → handle invalid at once, second release `INVALID_HANDLE`, the other authority untouched; re-register → a newer handle, **the same process-session accounting allocation**, registration `Active`; destroy invalidates all child handles and leaves both sessions `Inactive`; a new runtime sees none of the old handles and registers the scope under a new handle; a runtime without authorities destroys normally |
+| P6-D-002 across the ABI (child) | `abi_lifecycle_never_refreshes_process_session_accounting` | One opportunity spent through the core's authorize/reserve path → `READY`/9; an exposed ceremony → `BUSY`/0; terminate → `READY`/8; release + re-register → new handle, `READY`/8; runtime destroy + new runtime + register → `READY`/8, same session; a scope spent to zero is `EXHAUSTED` and stays `EXHAUSTED` after release and re-registration |
+| Release errors (child) | `a_failed_release_never_restores_the_handle` | Release while an executor shares the registration → `BUSY`, handle gone, registration ends when the holder drops, re-register gets a new handle; an uncertain lease release (test fault `FAIL_NEXT_RELEASE`) → `OWNERSHIP_UNCERTAIN`, handle gone, the scope fails `OWNERSHIP_UNCERTAIN` for the process, also after runtime destroy and re-creation |
+| Cross-process (child + 2 grandchildren) | `another_process_cannot_register_a_held_authority` | Process A holds the scope; process B gets `OWNERSHIP_UNAVAILABLE` with output 0 and creates no session; after A releases, process C registers (`READY`/10) and releases; A then registers again under a new handle |
+| Races (children) | `concurrent_registrations_of_one_scope_admit_exactly_one`, `different_scopes_coexist_under_one_runtime`, `register_racing_runtime_destroy_never_outlives_the_runtime`, `release_racing_runtime_destroy_releases_exactly_once`, `status_racing_release_sees_a_live_or_no_authority` | 24 rounds × 16 threads on one scope: exactly one `OK`, the rest `ALREADY_REGISTERED` with output 0, 24 distinct handles. 8 scopes concurrently: 8 distinct handles; releasing one leaves the others `READY`. The three pairwise races run 24 rounds each, with the barrier roles swapped every other round; locally each saw both admission orders 12/12. Every outcome was one of the allowed ones; afterwards the scope is never left `Active`, handles are invalid, and nothing deadlocked (120 s child deadline) |
+| Real core panic (children) | `a_real_core_panic_is_contained_and_fatal`, `a_real_core_drop_panicking_payload_is_never_dropped` | See below |
+| Unsupported platform (child, Linux) | `authority_registration_fails_closed_on_unsupported_platforms` | Runtime create `OK`; a valid scope enters the core twice (entry counter +2) and returns `UNSUPPORTED_PLATFORM` with output 0; no session; empty scope `INVALID_SCOPE`; destroy `OK`. Also run as its own CI step that requires exactly one passed test |
+| P7.1 fatal children, extended | `an_ordinary_panic_makes_the_process_permanently_fatal`, `a_drop_panicking_payload_is_contained_at_an_export` | After a panic that does not poison the slot, register and status return `FATAL` for valid, zero, and unknown runtimes with no core entry; release still validates handles |
+
+Counts: `cargo test --features native-abi --lib abi::tests` gives 39 passed and 18 ignored (the child bodies) on Windows. The full suite with the feature gives 454 unit tests passed (21 ignored: 3 P5 deep runs and 18 children), 2 + 9 integration, and 1 doc test, 0 failed. Without the feature: unchanged at 415 unit (3 ignored), 2 + 9 integration, and 1 doc test, 0 failed. On Linux the authority tests that need OS ownership are not compiled; the six platform-neutral ones and the unsupported-platform child run.
+
+### Real core panic (P6-D-004)
+
+**Hook point.** `TrustedAuthority::register` (`core/src/lib.rs`), after `register_with` has returned a complete registration (OS lease held, process session `Active`, registry lock already released) and before it is returned to the caller: `#[cfg(test)] test_hook::fire(Point::AuthorityRegistered)`. The point is safe because no core lock is held there: a panic unwinds through the new registration's own `Drop`, which releases the lease and marks the session `Inactive` (inside `register_with` the registry guard is still held, so that `Drop` would try to lock the registry mutex its own thread holds). The hook is per thread and exists only in test builds; it is not part of the ABI.
+
+**Sequence** (each payload kind in its own child process): create runtime; register scope H (authority `A`); spend one opportunity of H through the core; install a hook that counts and panics (ordinary `panic!`, or `panic_any(PanicOnDrop)` whose `Drop` counts and panics); `sas_pairing_authority_register(runtime, P)`.
+
+| Check | Ordinary | `PanicOnDrop` |
+|---|---|---|
+| Hook fired (panic raised inside the core) | 1 | 1 |
+| Core entries for the call | 1 | 1 |
+| Return, `*out_authority` | `FATAL`, 0 | `FATAL`, 0 |
+| Process fatal | set | set |
+| Payload destructor runs | — | 0 (the child would abort with `0xc0000409` otherwise) |
+| Scope P after the unwind | session `Inactive`, 10 remaining: the registration was made and its `Drop` cleaned it up | same |
+| Next normal operations ×3: status(A), register(P), register(H), runtime create | all `FATAL`, outputs `INVALID`/0; core entries unchanged; hook count still 1 | same |
+| Version query | 1 | 1 |
+| H's accounting after fatal | `Active`, 9 | `Active`, 9 |
+| Cleanup: release(A), release(A) again, destroy, destroy again | `OK`, `INVALID_HANDLE`, `OK`, `INVALID_HANDLE`; fatal still set | same |
+| After cleanup: create, register(H) | `FATAL`, `FATAL`; H `Inactive` with 9 remaining and the same accounting allocation | same |
+| Host process | survived; test passed | survived; test passed |
+
+**Remaining P6-D-004 work.** REAL CORE PANIC CONTAINMENT COMPLETE; CONSUMED-ACCOUNTING PRESERVATION EVIDENCE REMAINS FOR A LATER CEREMONY INCREMENT. The tests above spend an opportunity through the core's own reserve path (test-side) and show it stays spent across the fatal path, but no ABI operation consumes an opportunity yet, so "a panic during an ABI ceremony operation that consumed an opportunity leaves it consumed" cannot be shown until a ceremony export exists. No opportunity consumption was faked.
+
+### Mutation checks (temporary, not committed)
+
+Run with `cargo test --features native-abi --lib abi::tests --no-fail-fast`; every source restored byte for byte (SHA-256 checked).
+
+| Mutation | Result |
+|---|---|
+| A: swap `OwnershipUnavailable` and `OwnershipUncertain` in `map_core_error` | Fails: 3 tests: the mapping table (`OwnershipUnavailable` gave 104), the release-error child (uncertain release gave 102), and the cross-process child (contender got 104) |
+| B: release leaves the authority in the map (returns `OK` without removing or releasing) | Fails: 10 tests, including the lifecycle, accounting, release-error, cross-process, same-scope, different-scope, status/release, burn, and both real-core panic children |
+| C: normal admission behaves like cleanup (no fatal gate, poison tolerated) | Fails: 7 tests: both real-core panic children (status after fatal returned `OK`, `READY`, 9: the core was re-entered), both P7.1 fatal children and the clean-state test (register after fatal was admitted), and the local fatal and poisoned-slot tests |
+| D: `mem::forget(payload)` replaced by `drop(payload)` | Fails: 3 tests; both `PanicOnDrop` children (P7.1 seam and real core) aborted with `0xc0000409` ("panic in a function that cannot unwind"), and the local payload test |
+| E: runtime destroy leaves its authorities alive (stashed and re-attached to the next runtime) | Fails: 7 tests: the lifecycle, accounting, different-scope, register/destroy, and release/destroy children, and the two local handle tests (the destroyed runtime's authorities stayed `Active`) |
+
+### Artifact and header
+
+`cargo build --manifest-path core/Cargo.toml --release --features native-abi`: `llvm-readobj --coff-exports core/target/release/sas_pairing_core.dll` lists exactly the six exports above (no test hook, panic injector, or Rust-mangled symbol). A release build without the feature exports nothing. A throwaway C program (clang 19.1.5, `-std=c11 -Wall -Wextra -Werror -pedantic`, linked against the import library, not committed) ran: version 1; runtime create (1); empty scope → `INVALID_SCOPE`, output 0; register (3) and duplicate → `ALREADY_REGISTERED` (2 and 4 burned); status `READY`/10; release `OK`, second release `INVALID_HANDLE`; status after release `INVALID_HANDLE` with `INVALID`/0; re-register (5); destroy; status `INVALID_HANDLE`. The header also parses as strict C11 and C++17 (`-Werror -pedantic`).
+
+### Unsafe audit (new in P7.2)
+
+| Site | Why | Precondition, prior validation, lifetime |
+|---|---|---|
+| `mod.rs`, `sas_pairing_authority_register`: `out_authority.write(value)` (one block, used for the entry `0` and the handle) | Fill the caller's output slot | After the null, alignment, and overlap checks. The caller guarantees one writable, caller-owned, unaliased `uint64_t` for the call. Plain `u64` write; nothing retained |
+| `mod.rs`, `sas_pairing_authority_register`: `slice::from_raw_parts(scope, scope_len)` | Read the caller's scope bytes | Only for `scope_len > 0`, after the non-null check, `scope_len ≤ isize::MAX`, no address wrap, no overlap with the output. `u8` needs no alignment. The caller guarantees `scope_len` readable bytes left unmutated for the call. The slice lives only until `register_authority` returns; the core copies the bytes into its identity; no reference escapes |
+| `mod.rs`, `sas_pairing_authority_status`: `out_state.write`, `out_remaining.write` (one block, used for the zeroing and the result) | Fill the caller's two output slots | After null, alignment, and distinctness checks (two aligned `u32` slots at different addresses cannot overlap). Caller-owned, writable, unaliased for the call; nothing retained |
+| `pub unsafe extern "C" fn` × 2 (register, status) | Mark the raw-pointer preconditions | Not blocks; `# Safety` sections match the header. Release takes no pointer and is a safe `extern "C" fn` |
+| `#[unsafe(no_mangle)]` × 3 | Symbol export (edition 2024) | `sas_pairing_` prefix; the header test pins the exact set |
+| Tests | Exercise the exports | Live, aligned, exclusive slots and slices; or pointers the export rejects before any access (null, misaligned, an over-long length, `ptr::without_provenance` near the top of the address space, overlapping ranges) |
+
+No unchecked pointer arithmetic: range checks compare addresses as integers (`addr()`, `checked_add`). No Rust allocation, reference, `Box`, `Arc`, `String`, or `Vec` crosses the boundary; authority handles are integers.
+
+### Frozen-core check
+
+`git diff 600e0a7 -- core/src ':!core/src/abi'` touches two files:
+
+| File | Change | Classification |
+|---|---|---|
+| `core/src/test_hook.rs` | New variant `Point::AuthorityRegistered` | Test-only: the whole module is `#[cfg(test)] mod test_hook;` |
+| `core/src/lib.rs`, `TrustedAuthority::register` | `Self::register_with(scope, system_clock)` became `let authority = Self::register_with(scope, system_clock)?;` + a `#[cfg(test)]` hook statement + `Ok(authority)` | Test-only hook. In non-test builds the function returns the same value on every path (the `?` converts `Error` to `Error` by identity); no production behavior change |
+
+Everything else is `core/src/abi/*` (production ABI and its tests), the header, `core/README.md`, CI, and documents. No change to the ceremony, cryptography, protocol codec, deadlines, router, transport, owner loop, START limiter, process-session behavior, or any P6 decision.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| `cargo fmt --manifest-path core/Cargo.toml -- --check` | Pass |
+| `cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings`, and with `--all-features` | Pass (Windows; also `--target x86_64-unknown-linux-gnu`) |
+| `cargo test --manifest-path core/Cargo.toml`, with and without `--features native-abi` | Pass (counts above) |
+| `cargo build --manifest-path core/Cargo.toml --release --features native-abi` | Pass |
+| Repository consistency script, `git diff --check`, Markdown links and anchors | Pass |
+| GitHub Actions on `2197322` | Pass: Repository consistency; Rust security core `windows-core` (fmt, both clippy runs, core tests, native-ABI tests including the real-core panic children, release build, artifact check) and `unsupported-platform-fails-closed` (the same, plus the new step that requires the unsupported-platform authority test to run and pass exactly once, and the negative `panic = "abort"` check) |
