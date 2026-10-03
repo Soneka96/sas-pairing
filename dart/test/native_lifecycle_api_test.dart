@@ -145,17 +145,14 @@ void main() {
   });
   tearDown(() => exports.close());
 
+  // One output slot per call. Slots are freed when their call returns, so a later call may
+  // reuse an address; distinctness only matters within one call.
   void expectAlignedOutputs(int count) {
     expect(exports.outputAddresses, hasLength(count));
     for (final address in exports.outputAddresses) {
       expect(address, isNot(0));
       expect(address % 8, 0, reason: 'aligned for the slot type');
     }
-    expect(
-      exports.outputAddresses.toSet(),
-      hasLength(count),
-      reason: 'distinct slots',
-    );
   }
 
   test(
@@ -195,6 +192,12 @@ void main() {
         0x00,
       ], reason: 'caller buffer untouched');
       expectAlignedOutputs(1);
+      final out = exports.outputAddresses.single;
+      expect(
+        out >= seen.scopeAddress + 6 || out + 8 <= seen.scopeAddress,
+        isTrue,
+        reason: 'the output slot does not overlap the scope copy',
+      );
     },
   );
 
