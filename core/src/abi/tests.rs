@@ -1,7 +1,8 @@
 //! Native ABI tests (P7.1 foundation; the P7.2 authority lifecycle is in `authority`, the P7.3
 //! hosting contexts in `host`, the P7.4 listener ownership and owner-loop lifetime in
 //! `listener`, the P7.5 network drive, connection, run, event, and result ABI in `network`, the
-//! P7.6 trusted local ceremony actions and SAS presentation in `control`).
+//! P7.6 trusted local ceremony actions and SAS presentation in `control`, and the P6-D-004
+//! consumed-opportunity panic evidence in `consumed_panic`).
 //!
 //! Logic tests use test-local `AbiState`/`FatalState` instances. Tests of the real exports and
 //! the process-global state run in isolated child processes (this test binary re-run with one
@@ -51,6 +52,8 @@ use super::{
 
 /// P7.2 authority lifecycle, error mapping, concurrency, and real-core panic tests.
 mod authority;
+/// The P6-D-004 consumed-opportunity panic evidence through the P7.6 key-exposure export.
+mod consumed_panic;
 /// P7.6 trusted local ceremony actions, SAS presentation, local-action statuses, races.
 mod control;
 /// P7.3 hosting contexts: host lifecycle, cascades, accounting neutrality, races.
