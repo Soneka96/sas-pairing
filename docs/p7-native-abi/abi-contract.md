@@ -2,7 +2,7 @@
 
 > **Pre-alpha, experimental.** This is the language-neutral boundary that the future Dart (P8) and .NET (P9) wrappers call. It wraps the frozen experimental candidate `sas-pairing-vodozemac-profile-draft-01`, version 1, and is not production-security approved.
 
-This document is normative for the native ABI. The C declarations are in [`core/include/sas_pairing.h`](../../core/include/sas_pairing.h), and the Rust implementation is in [`core/src/abi`](../../core/src/abi/mod.rs). The decision behind the runtime and fatal model is [P7-D-001](decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit); the loader invariant it depends on is [P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime) (§14); the authority lifecycle is [P7-D-003](decisions.md#p7-d-003--authority-handles-ownership-and-lifecycle) (§15), the core error mapping is [P7-D-004](decisions.md#p7-d-004--stable-core-error-mapping) (§3), hosting contexts are [P7-D-005](decisions.md#p7-d-005--hosting-context-ownership-and-router-lifetime) (§16), and Windows listener ownership and the owner-loop lifetime bridge are [P7-D-006](decisions.md#p7-d-006--windows-listener-ownership-and-responder-configuration) and [P7-D-007](decisions.md#p7-d-007--owner-loop--router-lifetime-bridge) (§17). Wherever this contract says "per OS process" or "for the rest of the process", it means under that invariant. The current contents are the P7.1 foundation (a version query and the runtime lifecycle), the P7.2 authority lifecycle (register, release, status), the P7.3 hosting-context foundation (host create and destroy), and P7.4 Windows listener ownership (attach and detach of a caller-bound listener). No network driving, connection, run, event, result, or ceremony operation is exposed yet.
+This document is normative for the native ABI. The C declarations are in [`core/include/sas_pairing.h`](../../core/include/sas_pairing.h), and the Rust implementation is in [`core/src/abi`](../../core/src/abi/mod.rs). The decision behind the runtime and fatal model is [P7-D-001](decisions.md#p7-d-001--native-runtime-handle-and-fatal-containment-unit); the loader invariant it depends on is [P7-D-002](decisions.md#p7-d-002--native-library-residency-and-loader-lifetime) (§14); the authority lifecycle is [P7-D-003](decisions.md#p7-d-003--authority-handles-ownership-and-lifecycle) (§15), the core error mapping is [P7-D-004](decisions.md#p7-d-004--stable-core-error-mapping) (§3), hosting contexts are [P7-D-005](decisions.md#p7-d-005--hosting-context-ownership-and-router-lifetime) (§16), Windows listener ownership and the owner-loop lifetime bridge are [P7-D-006](decisions.md#p7-d-006--windows-listener-ownership-and-responder-configuration) and [P7-D-007](decisions.md#p7-d-007--owner-loop--router-lifetime-bridge) (§17), and the bounded network drive with its connection, run, and event representation and the result access are [P7-D-008](decisions.md#p7-d-008--bounded-drive-and-foreign-event-model), [P7-D-009](decisions.md#p7-d-009--connection--run-reference-semantics) (§18), and [P7-D-010](decisions.md#p7-d-010--pairingresult-ownership-and-foreign-access) (§19). Wherever this contract says "per OS process" or "for the rest of the process", it means under that invariant. The current contents are the P7.1 foundation (a version query and the runtime lifecycle), the P7.2 authority lifecycle (register, release, status), the P7.3 hosting-context foundation (host create and destroy), P7.4 Windows listener ownership (attach and detach of a caller-bound listener), and the P7.5 network drive (drive, resume recheck, connection close, result info, copy, and destroy). No local ceremony action (Initiator START, exposure authorization, key exposure, SAS presentation, MATCH, REJECT, CANCEL, own BOOTSTRAP_MAC or INITIATOR_FINISH) is exposed yet; that is P7.6.
 
 ## 1. ABI version
 
@@ -19,7 +19,8 @@ The ABI version, the protocol profile version, and the crate version are separat
 Only stable, language-neutral representations cross the ABI:
 
 - `uint8_t`, `uint32_t`, `uint64_t`, and `int32_t` for contract values; `size_t` only where a host-memory length needs it;
-- raw pointers to caller-owned memory, with explicit lengths where the size is variable.
+- raw pointers to caller-owned memory, with explicit lengths where the size is variable;
+- fixed, padding-free C records of the above (the input views of §17.1, the event record of §18.2, the result info of §19.2), whose layout is pinned by tests.
 
 Never exposed: Rust `bool`, Rust enum layout, `String`, `Vec`, slices, `Result`, `Option`, references, `Box`, `Arc`, trait objects, or any Rust object pointer. Truth values, when needed later, use fixed-width integers with documented values.
 
@@ -46,11 +47,15 @@ ABI operations that can fail return `sas_pairing_status_t` (`int32_t`). The valu
 | `SAS_PAIRING_STALE_AUTHORIZATION` | 201 | Core `StaleAuthorization`: the authorization or ceremony does not belong to this exact ceremony and authority |
 | `SAS_PAIRING_TERMINATED` | 202 | Core `Terminated`: the ceremony is already terminal |
 | `SAS_PAIRING_INVALID_BOOTSTRAP` | 203 | The supplied trusted-local Bootstrap configuration failed the core's own Bootstrap validation (`Bootstrap::new`); nothing was created (§17.2) |
+| `SAS_PAIRING_BUFFER_TOO_SMALL` | 300 | A caller array or buffer is smaller than required: nothing was copied or driven, and the required size was reported (§18.3, §19.3) |
 | `SAS_PAIRING_LISTENER_ALREADY_ATTACHED` | 400 | The host already has a listener; the offered socket was not adopted and stays the caller's (§17.5) |
 | `SAS_PAIRING_LISTENER_SETUP_FAILED` | 401 | The adopted listener could not be configured for the owner loop; the library closed it (§17.5) |
+| `SAS_PAIRING_LISTENER_NOT_ATTACHED` | 402 | The host has no listener: nothing was driven or closed (§18.3, §18.7) |
+| `SAS_PAIRING_OWNER_LOOP_CLOSED` | 403 | As a drive's `out_failure`: the host's owner loop had already failed closed, and nothing was driven (§18.3) |
+| `SAS_PAIRING_NETWORK_POLL_FAILED` | 404 | As a drive's `out_failure`: the owner loop's readiness wait failed, so it failed closed during this call (§18.3) |
 | `SAS_PAIRING_FATAL` | 900 | A Rust panic was contained; the native ABI state of this process is permanently fatal (§6) |
 
-**Core error mapping (P7-D-004).** Every core `Error` variant has exactly one ABI value above (100–107, 200–202), assigned by one exhaustive, wildcard-free mapping (`abi::status::map_core_error`); a new core variant does not compile until P7 assigns it a value. The ABI translates and never reinterprets: each meaning is the reviewed core's. The 200–202 values are frozen for exhaustiveness; no export returns them yet. 203 and 400–401 are ABI-level results of listener attach (P7-D-006), not core `Error` translations; P7.5 defines the translation of the owner-loop, TCP, host, and routing errors that driving needs.
+**Core error mapping (P7-D-004).** Every core `Error` variant has exactly one ABI value above (100–107, 200–202), assigned by one exhaustive, wildcard-free mapping (`abi::status::map_core_error`); a new core variant does not compile until P7 assigns it a value. The ABI translates and never reinterprets: each meaning is the reviewed core's. The 200–202 values are frozen for exhaustiveness; no export returns them yet. 203, 300, and 400–404 are ABI-level results (P7-D-006, P7-D-008, P7-D-010), not core `Error` translations. Connection-local outcomes of a drive are not statuses: they are event fields with their own frozen values (§18.2), and P7.6 defines the statuses of trusted local ceremony actions.
 
 Reserved ranges for later increments:
 
@@ -67,10 +72,10 @@ The core's Rust `Error` discriminants are never exposed directly. Wrappers must 
 
 ## 4. Handles
 
-- `typedef uint64_t sas_pairing_runtime_t;`, `typedef uint64_t sas_pairing_authority_t;`, and `typedef uint64_t sas_pairing_host_t;`. `0` (`SAS_PAIRING_RUNTIME_INVALID`, `SAS_PAIRING_AUTHORITY_INVALID`, `SAS_PAIRING_HOST_INVALID`) is never a valid handle.
+- `typedef uint64_t sas_pairing_runtime_t;`, `typedef uint64_t sas_pairing_authority_t;`, `typedef uint64_t sas_pairing_host_t;`, `typedef uint64_t sas_pairing_connection_t;`, `typedef uint64_t sas_pairing_run_t;`, and `typedef uint64_t sas_pairing_result_t;`. `0` (`SAS_PAIRING_RUNTIME_INVALID`, `SAS_PAIRING_AUTHORITY_INVALID`, `SAS_PAIRING_HOST_INVALID`, `SAS_PAIRING_CONNECTION_INVALID`, `SAS_PAIRING_RUN_INVALID`, `SAS_PAIRING_RESULT_INVALID`) is never a valid handle.
 - Handles are opaque and process-local. They are not pointers, network identities, security secrets, authority identities, or reusable protocol identifiers, and must not be persisted, sent to peers, or used as trust material.
-- Every handle kind (runtimes, authorities, hosts, and later connections and runs) comes from one shared counter that starts at `1` and only increases (P7-D-003, P7-D-005). Each value is issued once, to one kind, so a handle of one kind presented as another names nothing (`SAS_PAIRING_INVALID_HANDLE`). Under the loader invariant (§14) the counter lives as long as the OS process, so a value is issued at most once per OS process, a destroyed or released (stale) handle never aliases a later object, and using one returns `SAS_PAIRING_INVALID_HANDLE` forever: create H1, destroy H1, create H2 gives H2 ≠ H1. The counter is module state; a host that unloads the library or loads another image of it gets a new counter, and no uniqueness is promised across images.
-- After `UINT64_MAX` has been issued, creation and registration (runtime, authority, host) return `SAS_PAIRING_HANDLES_EXHAUSTED` for the rest of the process. The counter never wraps or resets.
+- Every handle kind (runtimes, authorities, hosts, connections, runs, and results) comes from one shared counter that starts at `1` and only increases (P7-D-003, P7-D-005). Each value is issued once, to one kind, so a handle of one kind presented as another names nothing (`SAS_PAIRING_INVALID_HANDLE`). Under the loader invariant (§14) the counter lives as long as the OS process, so a value is issued at most once per OS process, a destroyed or released (stale) handle never aliases a later object, and using one returns `SAS_PAIRING_INVALID_HANDLE` forever: create H1, destroy H1, create H2 gives H2 ≠ H1. The counter is module state; a host that unloads the library or loads another image of it gets a new counter, and no uniqueness is promised across images.
+- After `UINT64_MAX` has been issued, creation and registration (runtime, authority, host) return `SAS_PAIRING_HANDLES_EXHAUSTED` for the rest of the process. A drive or recheck returns it, without driving, once fewer than the 17 values a drive may need remain (§18.4). The counter never wraps or resets.
 - A value reserved for an operation that then fails (§15.2, §16.2) is burned: it is never issued.
 - A Windows socket handed to listener attach (`sas_pairing_socket_t`, §17) is an OS resource, not a handle: it never comes from this counter, and no handle is ever derived from a socket value, request ID, router session, or address.
 
@@ -95,7 +100,7 @@ The output slot is set to `0` on entry and receives a handle only once creation 
 
 | Condition | Result |
 |---|---|
-| Valid live handle | The handle is invalidated first (and with it every authority and host handle the runtime owns), then the runtime is destroyed best-effort: every host's listener and owner loop first, then its hosts and their routers, then its authorities (§15.5, §16.5, §17.7); `SAS_PAIRING_OK` |
+| Valid live handle | The handle is invalidated first (and with it every authority, host, connection, run, and result handle the runtime owns), then the runtime is destroyed best-effort: every host's listener and owner loop first, then its hosts and their routers, then its authorities, then its results (§15.5, §16.5, §17.7, §19.1); `SAS_PAIRING_OK` |
 | `0`, unknown, random, or already destroyed handle | `SAS_PAIRING_INVALID_HANDLE` |
 | Valid handle while the process is fatal | Allowed: `SAS_PAIRING_OK` (fatal state stays set) |
 | A panic is caught | `SAS_PAIRING_FATAL`; the process becomes fatal |
@@ -106,8 +111,9 @@ After a successful destroy the handle is invalid forever, and a later create (ou
 
 A caught Rust panic in any export makes the native ABI state of the process permanently fatal (P6-D-004, P7-D-001):
 
-- every later `sas_pairing_runtime_create`, `sas_pairing_authority_register`, `sas_pairing_authority_status`, `sas_pairing_host_create`, and `sas_pairing_host_attach_windows_listener` returns `SAS_PAIRING_FATAL` without entering the core (attach first runs only its structural, platform, and Bootstrap value checks, §17.8, and never adopts the socket), as will every normal operation added later;
-- an existing runtime stays destroyable, its authorities releasable, its hosts destroyable, and their listeners detachable (cleanup), and cleanup never clears the fatal state;
+- every later `sas_pairing_runtime_create`, `sas_pairing_authority_register`, `sas_pairing_authority_status`, `sas_pairing_host_create`, `sas_pairing_host_attach_windows_listener`, `sas_pairing_host_drive`, and `sas_pairing_host_recheck_after_resume` returns `SAS_PAIRING_FATAL` without entering the core (attach first runs only its structural, platform, and Bootstrap value checks, §17.8, and never adopts the socket; drive and recheck only their structural, platform, and capacity checks, §18.8), as will every normal operation added later;
+- an existing runtime stays destroyable, its authorities releasable, its hosts destroyable, their listeners detachable, and their connections closable (cleanup), and cleanup never clears the fatal state;
+- results that already exist stay readable, copyable, and destroyable: that is access to ABI-owned data, which never enters the core (§19.4);
 - nothing resets it: there is no clear, reset, or re-initialize API, and destroying and re-creating gives no fresh state or accounting (P6-D-002);
 - the only recovery is a new OS process. Unloading and reloading the library, or loading another copy of it, is not recovery: it leaves the supported contract (§14) and is not process replacement (P6-D-004).
 
@@ -123,13 +129,14 @@ Every export runs its Rust work inside one central containment boundary (`abi::d
 2. the panic payload's destructor is suppressed (`std::mem::forget`): it is never dropped, downcast, formatted, inspected, or returned (P6.4.1), because dropping it could panic again outside the boundary and abort the host;
 3. the stable fallback is returned: `SAS_PAIRING_FATAL` for status-returning exports, `0` for `sas_pairing_abi_version`.
 
-The leaked payload is bounded by the number of fatal events and reclaimed at process exit. The library installs no panic hook. This covers unwinding panics that reach the boundary; aborting failures, memory corruption, and arbitrary process corruption are outside what containment claims. The library has no Rust-owned threads (an attached owner loop is cooperative and is not driven yet); when a later increment adds one, its thread root needs the same containment (P6-D-004 item 11).
+The leaked payload is bounded by the number of fatal events and reclaimed at process exit. The library installs no panic hook. This covers unwinding panics that reach the boundary; aborting failures, memory corruption, and arbitrary process corruption are outside what containment claims. The library has no Rust-owned threads: an attached owner loop is cooperative and runs only inside the caller's drive and recheck calls. When a later increment adds a thread, its thread root needs the same containment (P6-D-004 item 11).
 
 ## 8. Pointer and trust boundary
 
 The library guarantees that:
 
 - required pointers that are null (or misaligned for their type) are rejected with `SAS_PAIRING_INVALID_ARGUMENT` and never written through;
+- caller arrays and output buffers (the drive's event array, a result copy's buffer) are checked the same way before any write: null only with a zero capacity, aligned, a size that fits `PTRDIFF_MAX`, a range that does not wrap, and no overlap with another output of the call; only the records or bytes the call produced are written;
 - byte inputs (pointer plus length, including the `sas_pairing_bytes_view_t` fields of §17.2) are checked before any slice is formed: a null pointer with a non-zero length, a length above `PTRDIFF_MAX` (`isize::MAX`), a range that wraps the address space, or a range overlapping an output slot of the same call gives `SAS_PAIRING_INVALID_ARGUMENT`; a zero length never dereferences the pointer, which may then be null; input bytes are copied or consumed during the call and never retained (listener attach copies every input before its only write, §17.4);
 - handles are checked, and zero, stale, unknown, and random handles fail with `SAS_PAIRING_INVALID_HANDLE`;
 - no Rust panic crosses the boundary;
@@ -156,7 +163,7 @@ Protocol and application data (identities, scopes, contexts, bootstrap values) a
 
 ## 11. Threading
 
-Every export is safe to call concurrently from any threads: concurrent creates admit exactly one runtime, concurrent valid, stale, or random destroys never race into undefined behavior, and authority, host, and listener operations serialize with authority release and runtime destruction as §15.7, §16.7, and §17.9 define. The library starts no thread, worker, timer, or callback. Host requirement: the library stays loaded for the rest of the process once stateful use begins (§14), so no thread may unload it, including after `SAS_PAIRING_FATAL`. Ceremony and network operations, when added, define their own interaction with destroy while keeping §15.7.
+Every export is safe to call concurrently from any threads: concurrent creates admit exactly one runtime, concurrent valid, stale, or random destroys never race into undefined behavior, and authority, host, listener, drive, and connection operations serialize with authority release and runtime destruction as §15.7, §16.7, §17.9, and §18.8 define. A drive or recheck holds the runtime slot for its one bounded owner-loop call, including the readiness wait of at most 250 ms (`OWNER_LOOP_MAX_WAIT`), so other operations on the same runtime wait at most that long plus bounded work. The library starts no thread, worker, timer, or callback. Host requirement: the library stays loaded for the rest of the process once stateful use begins (§14), so no thread may unload it, including after `SAS_PAIRING_FATAL`. Ceremony operations, when added, define their own interaction with destroy while keeping §15.7.
 
 ## 12. Supported build
 
@@ -378,11 +385,11 @@ No interleaving gives a use-after-free, a router dropped twice, a host surviving
 
 ### 16.8 Residency and scope
 
-Hosts and their routers are module state of the loaded image, so the loader invariant (§14) applies unchanged: one image, resident until process exit, no reload or reset. Since P7.4 a host may own one caller-bound Windows listener and its owner loop (§17), but nothing drives it: there is no connection, network event, or run, and the ABI exposes no host drive or status operation yet. P7.5 adds bounded driving and the connection, run, event, result, and error representation on top of this hierarchy.
+Hosts and their routers are module state of the loaded image, so the loader invariant (§14) applies unchanged: one image, resident until process exit, no reload or reset. Since P7.4 a host may own one caller-bound Windows listener and its owner loop (§17), and since P7.5 the caller drives it with bounded calls that report connections, runs, events, and results (§18, §19).
 
 ## 17. Windows listener ownership
 
-Normative ([P7-D-006](decisions.md#p7-d-006--windows-listener-ownership-and-responder-configuration), [P7-D-007](decisions.md#p7-d-007--owner-loop--router-lifetime-bridge)). A host may own one Windows network context: the reviewed `WindowsOwnerLoop` over one listening socket that the caller bound, built over the host's router with the host's Responder Bootstrap configuration. **No drive API exists yet:** nothing accepts, reads, writes, polls, or reports an event until a later increment (P7.5) adds bounded driving with its connection, run, event, and result representation. An attached listener is inert; it cannot produce, and so cannot lose, a `PairingResult`.
+Normative ([P7-D-006](decisions.md#p7-d-006--windows-listener-ownership-and-responder-configuration), [P7-D-007](decisions.md#p7-d-007--owner-loop--router-lifetime-bridge)). A host may own one Windows network context: the reviewed `WindowsOwnerLoop` over one listening socket that the caller bound, built over the host's router with the host's Responder Bootstrap configuration. Attaching drives nothing: nothing accepts, reads, writes, polls, or reports an event until the caller drives the host (§18).
 
 The ABI never binds a socket and never chooses an address, interface, loopback or LAN exposure, or port, or configures discovery or a firewall: the caller does all of that. TCP is the experimental P4 carrier only. The socket handle, its address, and its port are not protocol identity, authenticated identity, or security identity, and enter no transcript, MAC, authorization, routing, limiter, or accounting decision.
 
@@ -446,7 +453,7 @@ One host holds at most one listener. There is no replace-in-place operation; rep
 | Condition | Result |
 |---|---|
 | `runtime` invalid, or `host` `0`, unknown, destroyed, another kind, or owned by no live runtime | `SAS_PAIRING_INVALID_HANDLE` |
-| Valid host with a listener | The network context leaves the host first; then the owner loop closes its listener and every connection it owns while the router is alive; then it is dropped. `SAS_PAIRING_OK`, or `SAS_PAIRING_OWNERSHIP_UNCERTAIN` when a connection's cleanup could not be established (the core keeps that capacity held, as for any uncertain teardown); the listener is gone either way |
+| Valid host with a listener | Every connection and run handle of the host is invalidated (§18.5), then the network context leaves the host; then the owner loop closes its listener and every connection it owns while the router is alive; then it is dropped. Result handles are not touched (§19.1). `SAS_PAIRING_OK`, or `SAS_PAIRING_OWNERSHIP_UNCERTAIN` when a connection's cleanup could not be established (the core keeps that capacity held, as for any uncertain teardown); the listener is gone either way |
 | Valid host without a listener | `SAS_PAIRING_OK` (idempotent) |
 | Process fatal | Allowed, as cleanup; same results; fatal stays set |
 | A panic is caught | `SAS_PAIRING_FATAL`; the process becomes fatal |
@@ -471,7 +478,7 @@ The owner loop, and every connection it will own, borrows the host's router. The
 
 | Path | Order |
 |---|---|
-| Listener detach | network context out of the host → loop closes listener and connections → dropped; router stays |
+| Listener detach | every connection and run handle invalidated → network context out of the host → loop closes listener and connections → dropped; router stays |
 | Host destroy | host removed (handle invalid) → network context ended → router dropped |
 | Authority release | every child host removed → each network context ended → routers dropped → core release |
 | Runtime destroy | runtime removed (every handle invalid) → every network context ended → every router dropped → every authority dropped |
@@ -503,4 +510,245 @@ Exactly one owner closes each socket. No interleaving gives a double close, a us
 
 Both exports exist on every platform. Off Windows, attach returns `SAS_PAIRING_UNSUPPORTED_PLATFORM` after the structural checks and leaves the slot unchanged: no listener, owner loop, or networking exists or is faked. Detach then names no host (no authority can register there, so no host exists) and returns `SAS_PAIRING_INVALID_HANDLE`.
 
-Listeners and owner loops are module state of the one resident image (§14): no self-pinning, duplicate-image handling, or reload recovery. This increment exposes no drive, poll, or recheck operation, no connection or run handle, no event array, no result access, and no outbound-byte buffer or send operation: the TCP adapter keeps and writes its own outbound frame. Those belong to P7.5.
+Listeners and owner loops are module state of the one resident image (§14): no self-pinning, duplicate-image handling, or reload recovery. There is no outbound-byte buffer or send operation: the TCP adapter keeps and writes its own outbound frame, also when driven (§18).
+
+## 18. Network drive, connections, runs, and events
+
+Normative ([P7-D-008](decisions.md#p7-d-008--bounded-drive-and-foreign-event-model), [P7-D-009](decisions.md#p7-d-009--connection--run-reference-semantics)). The ABI drives the reviewed owner loop that a host stores (§17) and translates what one bounded call produced into fixed event records. It implements no transport: the TCP adapter keeps the one outbound frame of each connection and writes it itself on a later drive. No outbound byte, socket, `ConnectionRef`, `RunRef`, `PairingResult`, or other Rust object crosses the ABI, and no thread, timer, or callback is created.
+
+### 18.1 Types and constants
+
+| Item | Value |
+|---|---|
+| Connection handle | `typedef uint64_t sas_pairing_connection_t;` `SAS_PAIRING_CONNECTION_INVALID = 0`. From the §4 counter. One live accepted connection of a host's current owner loop: local, volatile, opaque; not a socket, peer identity, authentication, or trust |
+| Run handle | `typedef uint64_t sas_pairing_run_t;` `SAS_PAIRING_RUN_INVALID = 0`. From the §4 counter. One exact in-memory ceremony run; not its request ID, `ceremony_identity`, connection, peer identity, authorization, or trust |
+| Result handle | `typedef uint64_t sas_pairing_result_t;` `SAS_PAIRING_RESULT_INVALID = 0` (§19) |
+| `SAS_PAIRING_MAX_DRIVE_EVENTS` | `((size_t)17)`: the most events one drive or recheck reports (the listener plus one per live connection). Equal to the core's `MAX_STEP_EVENTS`, pinned by a compile-time assertion and the header test |
+| `SAS_PAIRING_MAX_REQUEST_ID_LEN` | `((size_t)64)`: the frozen protocol request-ID bound |
+| `SAS_PAIRING_MAX_RUNS_PER_CONNECTION` | `((size_t)32)` (§18.6) |
+
+### 18.2 The event record
+
+```c
+typedef struct sas_pairing_event {
+    sas_pairing_event_kind_t kind;              /* offset  0 */
+    sas_pairing_step_kind_t step_kind;          /* offset  4 */
+    sas_pairing_protocol_event_t protocol_event;/* offset  8 */
+    sas_pairing_event_reason_t reason;          /* offset 12 */
+    sas_pairing_deadline_kind_t deadline_kind;  /* offset 16 */
+    sas_pairing_cancel_state_t cancel_state;    /* offset 20 */
+    sas_pairing_cancel_reason_t cancel_reason;  /* offset 24 */
+    sas_pairing_event_flags_t flags;            /* offset 28 */
+    sas_pairing_connection_t connection;        /* offset 32 */
+    sas_pairing_run_t run;                      /* offset 40 */
+    sas_pairing_result_t result;                /* offset 48 */
+    uint32_t request_id_len;                    /* offset 56 */
+    uint32_t reserved;                          /* offset 60, always 0 */
+    uint8_t request_id[SAS_PAIRING_MAX_REQUEST_ID_LEN]; /* offset 64 */
+} sas_pairing_event_t;                          /* 128 bytes, aligned to 8, no padding */
+```
+
+Every typed field is a `uint32_t`. Every record the library writes starts from all zero bytes, and a field that does not apply to the event is `0`, as are the reserved word and the bytes of `request_id` past `request_id_len`. The record has no padding, so no uninitialized byte is ever observable. Only the produced records are written; records past `*out_count` are untouched.
+
+| Kind (`sas_pairing_event_kind_t`) | Value | Fields set |
+|---|---:|---|
+| `SAS_PAIRING_EVENT_INVALID` | 0 | Never produced |
+| `SAS_PAIRING_EVENT_CONNECTION_ACCEPTED` | 1 | `connection`: a new handle. The library does no I/O on it in the same drive |
+| `SAS_PAIRING_EVENT_ACCEPT_REFUSED` | 2 | `reason`. An accepted socket was dropped without becoming a connection; no handle is issued |
+| `SAS_PAIRING_EVENT_LISTENER_DISABLED` | 3 | `reason` (`LISTENER_IO` or `LISTENER_READINESS`). The listener was dropped; existing connections continue; nothing rebinds. Detach and attach a replacement (§17.6) |
+| `SAS_PAIRING_EVENT_CONNECTION_STEP` | 4 | `connection`, `step_kind`, and the step's fields below |
+| `SAS_PAIRING_EVENT_CONNECTION_CLOSED` | 5 | `connection`: the handle of the connection that just ended, invalid once the call returns; `reason` |
+
+| Step kind (`sas_pairing_step_kind_t`) | Value | Meaning and fields |
+|---|---:|---|
+| `SAS_PAIRING_STEP_NONE` | 0 | Not produced |
+| `SAS_PAIRING_STEP_INBOUND` | 1 | One inbound frame was dispatched: `protocol_event`, `request_id`, `run` (the live run, `0` once terminal), `cancel_reason` for a peer CANCEL, and `result` when it completed the run |
+| `SAS_PAIRING_STEP_REFUSED` | 2 | The frame was refused by its START attempt or run (run-local): `reason` |
+| `SAS_PAIRING_STEP_DEADLINE` | 3 | A run ended by its own deadline processing: `deadline_kind`, `cancel_state`, and `request_id` when known |
+| `SAS_PAIRING_STEP_WRITTEN` | 4 | The connection's retained frame was written locally (not received by the peer) |
+| `SAS_PAIRING_STEP_CONFIRMED` | 5 | The Initiator's final ACK was written locally and confirmed: `result`, and the request ID from it |
+| `SAS_PAIRING_STEP_UNCONFIRMED` | 6 | The final ACK was written but its run refused confirmation: `reason`; no result |
+| `SAS_PAIRING_STEP_DISCARDED` | 7 | The retained frame's run had ended before any byte was written; the frame was dropped |
+
+| Protocol event (`sas_pairing_protocol_event_t`) | Value |
+|---|---:|
+| `NONE` | 0 |
+| `START_ACCEPTED` (a new START admitted; ACCEPT retained) | 1 |
+| `START_DUPLICATE` | 2 |
+| `ACCEPT` | 3 |
+| `INITIATOR_KEY` | 4 |
+| `RESPONDER_KEY` | 5 |
+| `BOOTSTRAP_MAC_AUTHENTICATED` | 6 |
+| `BOOTSTRAP_MAC_DUPLICATE` (an exact duplicate of the verified one) | 7 |
+| `INITIATOR_FINISH` (no result yet) | 8 |
+| `INITIATOR_FINISH_DUPLICATE` | 9 |
+| `RESPONDER_FINISH_ACK` (the Initiator's final ACK is now retained; no result yet) | 10 |
+| `INITIATOR_FINISH_ACK` (the Responder's local success; `result` set) | 11 |
+| `PEER_CANCEL` (a verified peer CANCEL ended the run; `cancel_reason` set) | 12 |
+
+| Reason (`sas_pairing_event_reason_t`) | Value | From |
+|---|---:|---|
+| `NONE` | 0 | |
+| `RESOURCE_LIMITED` | 1 | Transport or admission refusal (accept work, live cap, START limiter, pending caps) |
+| `PEER_CLOSED` | 2 | The read reached end of stream |
+| `SOCKET_IO` | 3 | A local socket failure (the OS kind is not ABI semantics) |
+| `ABANDONED_PARTIAL_FRAME` | 4 | The run owning a partially written frame ended |
+| `READINESS_FAILURE` | 5 | Error or invalid-handle readiness on the connection (for example a reset) |
+| `LISTENER_IO` | 6 | An accept error |
+| `LISTENER_READINESS` | 7 | Error, hang-up, or invalid-handle readiness on the listener |
+| `ROUTE_REFUSED` | 8 | A run-local routing or ceremony refusal |
+| `OWNERSHIP_UNCERTAIN` | 9 | Shared authority state or cleanup uncertain |
+| `OTHER_HOST_FAILURE` | 10 | The connection's router session is unknown |
+| `INVALID_FRAME` | 11 | Framing, an undefined type, an oversized or unroutable frame |
+| `TRANSPORT_DEADLINE` | 12 | A transport frame or connection deadline (P6-D-001) |
+| `CLOCK_UNAVAILABLE` | 13 | A transport or ceremony clock was unusable |
+| `SESSION_PROTOCOL_FAILURE` | 14 | A session-fatal routing failure (P3 §11.2/§11.4) |
+| `ALREADY_CLOSED` | 15 | The connection had already ended |
+
+Reasons are operational only: I/O is not an attack, a peer close is not a rejection, a refusal is not compromise. Ceremony detail is collapsed into these reasons by one wildcard-free mapping; precise statuses for trusted local ceremony actions belong to P7.6.
+
+| Deadline kind (`sas_pairing_deadline_kind_t`) | Value |
+|---|---:|
+| `NONE` | 0 |
+| `ABSOLUTE_TIMEOUT` | 1 |
+| `INACTIVITY_TIMEOUT` | 2 |
+| `PENDING_EXPIRED` (the 60 s pending pre-exposure resource lifetime; not a timeout) | 3 |
+| `CLOCK_UNAVAILABLE` (the run failed closed; not a timeout) | 4 |
+
+| Cancel state (`sas_pairing_cancel_state_t`) | Value |
+|---|---:|
+| `NONE` | 0 |
+| `NOT_BUILT` (no shared SAS, or not a timeout) | 1 |
+| `PENDING` (now the retained frame; best effort, never confirmed) | 2 |
+| `DROPPED` (another frame occupied the one slot) | 3 |
+
+`cancel_state` says what became of the run's best-effort authenticated CANCEL locally; it never says the peer received it. Peer cancel reasons (`sas_pairing_cancel_reason_t`): `NONE` 0, `USER_REJECTION` 1, `USER_CANCELLATION` 2, `TIMEOUT` 3, `LOCAL_POLICY_FAILURE` 4. Flags (`sas_pairing_event_flags_t`): `SAS_PAIRING_EVENT_FLAG_WRITE_PENDING = 0x1` (the adapter still holds one outbound frame), `SAS_PAIRING_EVENT_FLAG_RUN_UNTRACKED = 0x2` (§18.6). The request ID is routing and correlation data only.
+
+### 18.3 Drive and resume recheck
+
+**`sas_pairing_status_t sas_pairing_host_drive(sas_pairing_runtime_t runtime, sas_pairing_host_t host, sas_pairing_event_t *events, size_t event_capacity, size_t *out_count, sas_pairing_status_t *out_failure)`**
+
+**`sas_pairing_status_t sas_pairing_host_recheck_after_resume(...)`**, same parameters.
+
+Drive makes exactly one `drive_once`: deadline sweeps, at most one readiness wait of at most 250 ms, at most one socket operation per existing connection, at most one accept. The recheck, for trusted outer code after an OS resume notification, makes exactly one `recheck_after_resume`: one deadline sweep, with no readiness wait, socket read or write, or accept. Both hold the runtime slot for that one bounded call.
+
+| Order | Condition | Result | `*out_count`, `*out_failure` |
+|---:|---|---|---|
+| 1 | `out_count` or `out_failure` null or misaligned, or overlapping; `events` null with a non-zero capacity, misaligned, a range no slice can describe (size overflow, address wrap), or overlapping either output | `SAS_PAIRING_INVALID_ARGUMENT` | not written |
+| 2 | Otherwise both outputs are set | | `0`, `OK` |
+| 3 | Not Windows | `SAS_PAIRING_UNSUPPORTED_PLATFORM` | `0`, `OK` |
+| 4 | `event_capacity < SAS_PAIRING_MAX_DRIVE_EVENTS` (`events == NULL`, capacity `0` is the size query) | `SAS_PAIRING_BUFFER_TOO_SMALL`; nothing driven | `17`, `OK` |
+| 5 | Process fatal | `SAS_PAIRING_FATAL`; no owner-loop or core work | `0`, `OK` |
+| 6 | `runtime` or `host` invalid (`0`, unknown, destroyed, another kind, not of that runtime) | `SAS_PAIRING_INVALID_HANDLE` | `0`, `OK` |
+| 7 | The host has no listener | `SAS_PAIRING_LISTENER_NOT_ATTACHED` | `0`, `OK` |
+| 8 | Fewer than 17 handle values remain (§18.4) | `SAS_PAIRING_HANDLES_EXHAUSTED`; nothing driven | `0`, `OK` |
+| 9 | The owner loop had already failed closed | `SAS_PAIRING_OK`; nothing driven | `0`, `SAS_PAIRING_OWNER_LOOP_CLOSED` |
+| 10 | Driven | `SAS_PAIRING_OK` | `n` events written, and the loop's own failure for this call: `OK`; `SAS_PAIRING_NETWORK_POLL_FAILED` or `SAS_PAIRING_OWNERSHIP_UNCERTAIN` (it failed closed); or `SAS_PAIRING_FATAL` (a failure the loop never reports; the process is fatal) |
+| — | A broken owner-loop invariant (more than 17 events, an unknown or repeated connection, a request ID over 64 bytes) | `SAS_PAIRING_FATAL`; the process is fatal | `0`, `OK` |
+| — | A panic is caught | `SAS_PAIRING_FATAL`; the process is fatal; no success is reported | `0`, `OK` |
+
+Steps 1–8 make no network progress: no accept, socket read or write, readiness wait, or deadline work. The return value says whether the call ran; `*out_failure` says whether the owner loop failed during it. **On `SAS_PAIRING_OK` the caller must consume every written event, also when `*out_failure` is not `OK`**: events produced before the loop failed closed, including results, are delivered. After a failure the listener and every connection of that loop are gone (without `CONNECTION_CLOSED` events), every connection and run handle of the host is invalid, and later drives report `SAS_PAIRING_OWNER_LOOP_CLOSED`; detach the listener or destroy the host. No WinSock error code is ABI semantics. A panic in the middle of a drive loses the events of that call with the unwind; losslessness is promised for the normal path only.
+
+### 18.4 Handle preflight
+
+Each event issues at most one handle: `CONNECTION_ACCEPTED` its connection handle, and a `CONNECTION_STEP` either the handle of its result or, without a result, at most one new run handle; no other event issues any. A drive therefore needs at most 17 handles. Before the owner loop runs, the library checks without issuing anything that 17 values remain; otherwise `SAS_PAIRING_HANDLES_EXHAUSTED` and nothing is driven. The check stays valid until the conversion because every handle allocation happens while holding the runtime slot, which the drive holds from the check to the end of the conversion. No value is burned by the check, and exhaustion is never discovered after the network advanced.
+
+### 18.5 Connection handles
+
+| Event or call | Effect |
+|---|---|
+| `CONNECTION_ACCEPTED` | One new handle for the new connection |
+| Every later event of that connection | The same handle; never a new one, a socket value, or an index |
+| `CONNECTION_CLOSED` | Names that handle; the connection and every run handle of it are invalid once the call returns, forever |
+| `ACCEPT_REFUSED` | No handle |
+| `sas_pairing_connection_close` | The handle and its run handles are invalidated first, then the connection is closed (§18.7) |
+| Listener detach, host destroy, authority release, runtime destroy, an owner-loop failure | Every connection and run handle of that loop is invalidated before the loop closes |
+| A replacement listener | New connections get new handles; no handle of an old loop can reach a new one |
+
+A handle of any other kind (runtime, authority, host, run, result) presented as a connection names nothing: `SAS_PAIRING_INVALID_HANDLE`.
+
+### 18.6 Run handles
+
+An event that names a live run reports the handle of exactly that run: the existing handle if that exact run already has one, otherwise a new one. Before a new one is issued, the handles of earlier runs under the same request ID on that connection are invalidated (the core routes one run per request ID per connection, so a live new run proves the earlier one ended). Events that make a run's end visible (`STEP_DEADLINE` with a request ID; `STEP_INBOUND` with `run = 0`, other than `START_DUPLICATE`; any event with a `result`) invalidate the handles under that request ID at once and report `run = 0`. Other endings (`STEP_REFUSED`, a deadline without a request ID, `STEP_UNCONFIRMED`, `STEP_DISCARDED`) do not name their run, so a run handle may become stale without an event. A stale run handle names exactly its old run and can never reach a replacement run, whatever request ID the peer reuses; a later local action through it (P7.6) reports that the run ended.
+
+One connection keeps at most `SAS_PAIRING_MAX_RUNS_PER_CONNECTION` (32) run handles. A new exact run beyond that is reported with `run = 0` and `SAS_PAIRING_EVENT_FLAG_RUN_UNTRACKED`: nothing is evicted or retargeted, so no live run loses its handle; the caller may close the connection. This bounds the references a remote peer can make the library keep (runs that end invisibly while overlapping STARTs keep the connection alive) to 16 × 32 per host; honest traffic does not reach it.
+
+### 18.7 Connection close
+
+**`sas_pairing_status_t sas_pairing_connection_close(sas_pairing_runtime_t runtime, sas_pairing_host_t host, sas_pairing_connection_t connection)`**
+
+| Condition | Result |
+|---|---|
+| Not Windows | `SAS_PAIRING_UNSUPPORTED_PLATFORM` |
+| `runtime` or `host` invalid | `SAS_PAIRING_INVALID_HANDLE` |
+| The host has no listener | `SAS_PAIRING_LISTENER_NOT_ATTACHED` |
+| `connection` names no live connection of the host (`0`, closed, stale, another kind, another loop's) | `SAS_PAIRING_INVALID_HANDLE` |
+| Valid | The handle and its run handles are invalidated first, then the reviewed `close_connection` runs (no CANCEL, nothing retried): `SAS_PAIRING_OK`, or `SAS_PAIRING_OWNERSHIP_UNCERTAIN` when the cleanup could not be established (the loop failed closed: every handle of the host is invalid). The handle never becomes valid again |
+| Process fatal | Allowed, as cleanup; same results; fatal stays set |
+
+### 18.8 Fatal state, platforms, and concurrency
+
+Drive and recheck are normal operations: after fatal they return `SAS_PAIRING_FATAL` without owner-loop or core work (the capacity check, a stateless value check, comes first). Connection close is cleanup. Off Windows all three return `SAS_PAIRING_UNSUPPORTED_PLATFORM` after their structural checks; nothing is faked.
+
+| Race | Outcomes |
+|---|---|
+| drive vs drive (same host) | serialized; each returns its own events |
+| drive vs detach | drive first: its events, then detach removes every handle and closes the loop; detach first: drive `LISTENER_NOT_ATTACHED` |
+| drive vs host destroy, authority release, runtime destroy | drive first: its events, then the teardown; teardown first: drive `INVALID_HANDLE` |
+
+No event of a detached or destroyed loop is reported later, and no interleaving gives a use-after-free.
+
+## 19. Results
+
+Normative ([P7-D-010](decisions.md#p7-d-010--pairingresult-ownership-and-foreign-access)). A result handle owns one immutable `PairingResult`: the local verified completion of one ceremony ([P6-D-005](../p6-remediation/decisions.md#p6-d-005--local-completion-and-final-ack-deadline-boundary)). **It is not bilateral success**: it does not mean the peer received the final message, holds a result of its own, or stored trust. Either side may be the only holder of a result.
+
+### 19.1 Delivery and lifetime
+
+A drive moves every `PairingResult` it produced into runtime storage under a new result handle and reports it in its event (`result` non-zero, `run = 0`): `STEP_INBOUND` with `INITIATOR_FINISH_ACK` for the Responder, `STEP_CONFIRMED` for the Initiator. Each core result is delivered once, under one handle. A normal drive never drops one (§18.3, §18.4). The handle belongs to the caller until `sas_pairing_result_destroy`.
+
+| Event | Effect on an existing result |
+|---|---|
+| Connection close, listener detach, host destroy, authority release, a later owner-loop failure | None: the result stays readable and unchanged |
+| Process fatal | None: it stays readable and destroyable (§19.4) |
+| `sas_pairing_result_destroy` | The handle is invalidated, then the result dropped |
+| Runtime destroy | Every result handle of the runtime is invalidated and every result dropped |
+
+### 19.2 Info
+
+```c
+typedef struct sas_pairing_result_info {
+    uint8_t ceremony_identity[32];      /* offset  0 */
+    sas_pairing_role_t peer_role;       /* offset 32 */
+    uint32_t profile_version;           /* offset 36 */
+    uint32_t request_id_len;            /* offset 40 */
+    uint32_t peer_bootstrap_len;        /* offset 44 */
+    uint32_t shared_context_len;        /* offset 48 */
+    uint32_t profile_identifier_len;    /* offset 52 */
+} sas_pairing_result_info_t;            /* 56 bytes, aligned to 4, no padding */
+```
+
+**`sas_pairing_status_t sas_pairing_result_info(sas_pairing_runtime_t runtime, sas_pairing_result_t result, sas_pairing_result_info_t *out_info)`**: null or misaligned `out_info` → `SAS_PAIRING_INVALID_ARGUMENT`, nothing written; otherwise `*out_info` is zeroed, then an invalid runtime or result handle gives `SAS_PAIRING_INVALID_HANDLE`, and `SAS_PAIRING_OK` fills it. `ceremony_identity` is exactly the core's 32-byte transcript-derived ceremony identity: not the request ID, a connection or run handle, or peer identity. `peer_role` is the PEER's role (`SAS_PAIRING_ROLE_INVALID` 0, `SAS_PAIRING_ROLE_INITIATOR` 1, `SAS_PAIRING_ROLE_RESPONDER` 2). `profile_version` and every length are copied from the result itself; the library regenerates nothing.
+
+### 19.3 Field copy
+
+**`sas_pairing_status_t sas_pairing_result_copy(sas_pairing_runtime_t runtime, sas_pairing_result_t result, sas_pairing_result_field_t field, uint8_t *buffer, size_t capacity, size_t *out_required)`**
+
+| Field (`sas_pairing_result_field_t`) | Value | Bytes |
+|---|---:|---|
+| `SAS_PAIRING_RESULT_FIELD_REQUEST_ID` | 1 | The ceremony's request ID (routing data) |
+| `SAS_PAIRING_RESULT_FIELD_AUTHENTICATED_PEER_BOOTSTRAP` | 2 | The exact canonical Bootstrap frame the peer supplied in this ceremony under the approved SAS flow |
+| `SAS_PAIRING_RESULT_FIELD_AUTHENTICATED_SHARED_CONTEXT` | 3 | The authenticated shared context (may be empty) |
+| `SAS_PAIRING_RESULT_FIELD_PROFILE_IDENTIFIER` | 4 | The protocol profile identifier |
+
+| Order | Condition | Result | `*out_required` |
+|---:|---|---|---|
+| 1 | `out_required` null or misaligned; `buffer` null with `capacity > 0`; a buffer range no slice can describe or overlapping `*out_required`; an unknown `field` | `SAS_PAIRING_INVALID_ARGUMENT`; the buffer is not read or written | not written |
+| 2 | Otherwise | | `0` |
+| 3 | `runtime` or `result` invalid | `SAS_PAIRING_INVALID_HANDLE` | `0` |
+| 4 | Found | | the field's exact length |
+| 5 | `capacity` smaller than that length | `SAS_PAIRING_BUFFER_TOO_SMALL`; nothing copied | the length |
+| 6 | Otherwise | `SAS_PAIRING_OK`; exactly that many bytes copied, never truncated, never NUL-terminated | the length |
+
+### 19.4 Destroy and fatal state
+
+**`sas_pairing_status_t sas_pairing_result_destroy(sas_pairing_runtime_t runtime, sas_pairing_result_t result)`**: `SAS_PAIRING_OK` once, then `SAS_PAIRING_INVALID_HANDLE`. Info, copy, and destroy read or drop ABI-owned data that already exists through their own admission path: they are allowed after fatal, never enter the core, never create a result or resume a run, never change accounting, and never clear fatal. They exist on every platform; off Windows no result can be produced.
