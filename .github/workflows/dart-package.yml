@@ -1,8 +1,8 @@
 name: Dart package
 
-# P8 Dart package (dart/): the raw bindings of the frozen native ABI v1 and the
-# process-lifetime loader, checked against a real native artifact built from this commit
-# (P8-D-001). Windows is the supported pairing platform; on Linux the same ABI v1 library
+# P8 Dart package (dart/): the raw bindings of the frozen native ABI v1, the
+# process-lifetime loader (P8-D-001), and the runtime / authority / host lifecycle wrapper
+# (P8-D-002), checked against a real native artifact built from this commit. Windows is the supported pairing platform; on Linux the same ABI v1 library
 # loads and binds, but pairing operations fail closed (no Linux pairing support is claimed).
 
 on:
@@ -41,9 +41,11 @@ jobs:
           - os: windows-latest
             artifact: sas_pairing_core.dll
             python: python
+            lifecycle: Windows
           - os: ubuntu-latest
             artifact: libsas_pairing_core.so
             python: python3
+            lifecycle: Linux
     env:
       SAS_PAIRING_NATIVE_LIBRARY: ${{ github.workspace }}/core/target/release/${{ matrix.artifact }}
     defaults:
@@ -99,6 +101,19 @@ jobs:
           dart test test/native_artifact_test.dart --reporter expanded | tee native-smoke.log
           grep -F 'the real artifact exports all 25 frozen symbols by their exact names' native-smoke.log
           grep -F 'All tests passed!' native-smoke.log
+      # The P8.2 real lifecycle scenario for this platform, in a child OS process with its own
+      # single native owner isolate: Windows registers a binary-scope authority, creates and
+      # closes hosts, and checks both cascades; Linux creates the runtime and sees authority
+      # registration fail closed with SAS_PAIRING_UNSUPPORTED_PLATFORM (no Linux pairing claim).
+      - name: Real native lifecycle (${{ matrix.lifecycle }})
+        working-directory: dart
+        run: |
+          set -euo pipefail
+          dart test test/native_artifact_test.dart --reporter expanded \
+            --plain-name 'real lifecycle (${{ matrix.lifecycle }})' | tee native-lifecycle.log
+          grep -F 'real lifecycle (${{ matrix.lifecycle }})' native-lifecycle.log
+          if grep -F 'Skip:' native-lifecycle.log; then exit 1; fi
+          grep -F '+1: All tests passed!' native-lifecycle.log
       # P8 must not change the frozen core: the ABI v1 freeze consistency tests stay green.
       - name: Native ABI v1 freeze consistency
         run: |

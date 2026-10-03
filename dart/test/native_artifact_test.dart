@@ -2,21 +2,28 @@
 // `cargo build --manifest-path core/Cargo.toml --release --features native-abi`, loads through
 // the production process loader from the explicit SAS_PAIRING_NATIVE_LIBRARY path, exports all
 // 25 frozen symbols under their exact names, and reports ABI version 1. No stateful export is
-// called. This is the only test file that loads the real library in the test process.
+// called in the test process. This is the only test file that loads the real library in the test
+// process (one native owner isolate, P8-D-001 N); the P8.2 real lifecycle scenarios run in child
+// OS processes (test/support/lifecycle_child.dart), each with its own single owner isolate.
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:sas_pairing/sas_pairing.dart';
 import 'package:sas_pairing/src/native/abi_v1.dart';
 import 'package:sas_pairing/src/native/native_library_loader.dart';
 import 'package:test/test.dart';
 
 final String? artifact = Platform.environment['SAS_PAIRING_NATIVE_LIBRARY'];
 
-/// Runs one fresh-process loader scenario (test/support/loader_child.dart).
-Future<List<Map<String, Object?>>> runChild(String scenario) async {
+/// Runs one fresh-process scenario: a loader scenario (test/support/loader_child.dart) or a
+/// lifecycle scenario (test/support/lifecycle_child.dart).
+Future<List<Map<String, Object?>>> runChild(
+  String scenario, {
+  String script = 'test/support/loader_child.dart',
+}) async {
   final result = await Process.run(Platform.resolvedExecutable, [
     'run',
-    'test/support/loader_child.dart',
+    script,
     scenario,
     artifact!,
   ]);
@@ -101,6 +108,93 @@ void main() {
         isTrue,
       );
     },
+  );
+
+  test(
+    'real lifecycle (Windows): runtime, binary-scope authority, hosts, cascades',
+    () async {
+      final steps = {
+        for (final step in await runChild(
+          'windows-lifecycle',
+          script: 'test/support/lifecycle_child.dart',
+        ))
+          step['step']! as String: step,
+      };
+      expect(steps['runtime']!['closed'], isFalse);
+      expect(
+        steps['second live runtime']!['failure'],
+        SasPairingStatus.alreadyInitialized.code,
+      );
+      expect(steps['authority']!['state'], 'ready');
+      expect(steps['authority']!['remaining'], 10);
+      expect(
+        steps['same scope while registered']!['failure'],
+        SasPairingStatus.alreadyRegistered.code,
+      );
+      expect(
+        steps['empty scope']!['failure'],
+        SasPairingStatus.invalidScope.code,
+      );
+      expect(steps['hosts'], containsPair('a', false));
+      expect(steps['hosts'], containsPair('b', false));
+      final afterHostA = steps['host A closed']!;
+      expect(afterHostA['a'], isTrue);
+      expect(afterHostA['b'], isFalse);
+      expect(afterHostA['authorityClosed'], isFalse);
+      expect(afterHostA['state'], 'ready');
+      expect(afterHostA['remaining'], 10);
+      final afterAuthority = steps['authority closed']!;
+      expect(afterAuthority['authority'], isTrue);
+      expect(afterAuthority['b'], isTrue, reason: 'closed by the cascade');
+      expect(afterAuthority['runtime'], isFalse);
+      expect(
+        afterAuthority['queryAfterClose'],
+        'SasPairingAuthority.queryStatus',
+      );
+      expect(steps['re-registered']!['state'], 'ready');
+      expect(steps['re-registered']!['remaining'], 10);
+      final cascade = steps['runtime closed with live children']!;
+      expect(cascade['runtime'], isTrue);
+      expect(cascade['authorities'], [true, true]);
+      expect(cascade['hosts'], [true, true, true]);
+      final recreated = steps['recreated runtime']!;
+      expect(recreated['sameImage'], isTrue);
+      expect(recreated['state'], 'ready');
+      expect(recreated['remaining'], 10);
+      expect(steps['done']!['closed'], [true, true]);
+    },
+    skip: Platform.isWindows ? false : 'Windows pairing platform only',
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'real lifecycle (Linux): runtime works, authority registration fails closed',
+    () async {
+      final steps = {
+        for (final step in await runChild(
+          'linux-lifecycle',
+          script: 'test/support/lifecycle_child.dart',
+        ))
+          step['step']! as String: step,
+      };
+      expect(steps['runtime']!['closed'], isFalse);
+      expect(
+        steps['register']!['failure'],
+        SasPairingStatus.unsupportedPlatform.code,
+      );
+      expect(
+        steps['empty scope']!['failure'],
+        SasPairingStatus.invalidScope.code,
+      );
+      expect(steps['runtime closed']!['closed'], isTrue);
+      expect(
+        steps['recreated runtime']!['register'],
+        SasPairingStatus.unsupportedPlatform.code,
+      );
+      expect(steps['done']!['closed'], isTrue);
+    },
+    skip: Platform.isLinux ? false : 'Linux only',
+    timeout: const Timeout(Duration(minutes: 2)),
   );
 
   test('fresh process: a pre-load failure leaves the loader usable', () async {
