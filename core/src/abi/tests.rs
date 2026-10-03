@@ -1,8 +1,9 @@
 //! Native ABI tests (P7.1 foundation; the P7.2 authority lifecycle is in `authority`, the P7.3
 //! hosting contexts in `host`, the P7.4 listener ownership and owner-loop lifetime in
 //! `listener`, the P7.5 network drive, connection, run, event, and result ABI in `network`, the
-//! P7.6 trusted local ceremony actions and SAS presentation in `control`, and the P6-D-004
-//! consumed-opportunity panic evidence in `consumed_panic`).
+//! P7.6 trusted local ceremony actions and SAS presentation in `control`, the P6-D-004
+//! consumed-opportunity panic evidence in `consumed_panic`, and the P7.7 two-sided ceremonies
+//! between two independent public-ABI endpoint processes in `two_sided`).
 //!
 //! Logic tests use test-local `AbiState`/`FatalState` instances. Tests of the real exports and
 //! the process-global state run in isolated child processes (this test binary re-run with one
@@ -56,12 +57,16 @@ mod authority;
 mod consumed_panic;
 /// P7.6 trusted local ceremony actions, SAS presentation, local-action statuses, races.
 mod control;
+/// P7.7 ABI v1 freeze: the manifest against Rust and the header, export fatal classes, bounds.
+mod freeze;
 /// P7.3 hosting contexts: host lifecycle, cascades, accounting neutrality, races.
 mod host;
 /// P7.4 Windows listener ownership, socket adoption, owner-loop lifetime bridge, races.
 mod listener;
 /// P7.5 bounded drive, connection and run references, events, results, races.
 mod network;
+/// P7.7 two-sided ceremonies between two independent public-ABI endpoint processes.
+mod two_sided;
 
 const HEADER: &str = include_str!("../../include/sas_pairing.h");
 const MANIFEST: &str = include_str!("../../Cargo.toml");

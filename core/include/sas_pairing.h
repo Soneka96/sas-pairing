@@ -403,9 +403,10 @@ uint32_t sas_pairing_abi_version(void);
  * SAS_PAIRING_HANDLES_EXHAUSTED, or SAS_PAIRING_FATAL. */
 sas_pairing_status_t sas_pairing_runtime_create(sas_pairing_runtime_t *out_runtime);
 
-/* Destroys the runtime; its handle and every authority and host handle it owns are invalid
- * forever afterwards; its hosts' listeners are closed first, then its hosts destroyed, then its
- * authorities released. Allowed in the fatal state. Returns
+/* Destroys the runtime; its handle and every authority, host, connection, run, and result
+ * handle it owns are invalid forever afterwards; its hosts' listeners are closed first, then its
+ * hosts destroyed, then its authorities released, then its results dropped. Allowed in the fatal
+ * state. Returns
  * SAS_PAIRING_OK, SAS_PAIRING_INVALID_HANDLE (0, unknown, or destroyed), or SAS_PAIRING_FATAL. */
 sas_pairing_status_t sas_pairing_runtime_destroy(sas_pairing_runtime_t runtime);
 
@@ -436,8 +437,8 @@ sas_pairing_status_t sas_pairing_authority_release(sas_pairing_runtime_t runtime
 sas_pairing_status_t sas_pairing_authority_status(sas_pairing_runtime_t runtime, sas_pairing_authority_t authority, sas_pairing_authority_state_t *out_state, uint32_t *out_remaining);
 
 /* Creates a host (one core router) for the authority. out_host is set to 0 on entry and
- * receives a new handle only on SAS_PAIRING_OK. Does no networking (no listener, socket, or
- * connection; those arrive in a later P7 increment) and changes no accounting. Returns
+ * receives a new handle only on SAS_PAIRING_OK. Does no networking (a listener is attached
+ * separately with sas_pairing_host_attach_windows_listener) and changes no accounting. Returns
  * SAS_PAIRING_INVALID_ARGUMENT (null or misaligned out_host, not written), SAS_PAIRING_FATAL,
  * SAS_PAIRING_INVALID_HANDLE (runtime or authority), SAS_PAIRING_HANDLES_EXHAUSTED, or
  * SAS_PAIRING_OWNERSHIP_UNCERTAIN. */
