@@ -2,7 +2,7 @@
 
 > **Pre-alpha, experimental.** P9 builds the .NET binding of the frozen sas-pairing native ABI v1. It is not production-security approved, not audited, and not formally verified. The protocol is implemented only by the native Rust core; C# binds C.
 
-**Status: P9 IN PROGRESS — P9.1 COMPLETE.** Next: P9.2 (Runtime / Authority / Host lifecycle wrapper), not started. Roadmap: [P9 — .NET Package](../../roadmap/P9-dotnet-package.md). Decisions: [decisions.md](decisions.md). Package: [`dotnet/`](../../dotnet/README.md).
+**Status: P9 IN PROGRESS — P9.1 COMPLETE.** P9.2 (Runtime / Authority / Host lifecycle wrapper, [P9-D-002](decisions.md#p9-d-002--net-lifecycle-ownership-public-errors-and-fail-closed-state)) is in progress. Roadmap: [P9 — .NET Package](../../roadmap/P9-dotnet-package.md). Decisions: [decisions.md](decisions.md). Package: [`dotnet/`](../../dotnet/README.md).
 
 ## Baseline
 
@@ -18,7 +18,7 @@
 | Increment | Scope | Decisions | State |
 |---|---|---|---|
 | P9.1 | .NET package foundation + exact ABI v1 interop: solution, `SasPairing` library and `SasPairing.Tests` projects (`net10.0`), private exact ABI v1 constants, records, and 25-export function table, explicit-path process-lifetime loader (64-bit gate, symbol preflight, ABI version 1, permanent post-load failure), header and manifest consistency tests, architecture and scope guards, Windows and Linux CI | [P9-D-001](decisions.md#p9-d-001--net-abi-v1-binding-and-loader-architecture) | **Complete** ([evidence](#p91-evidence)) |
-| P9.2 | Runtime / Authority / Host lifecycle wrapper and the public initialization error surface | — | Next (not started) |
+| P9.2 | Runtime / Authority / Host lifecycle wrapper and the public initialization error surface | [P9-D-002](decisions.md#p9-d-002--net-lifecycle-ownership-public-errors-and-fail-closed-state) | In progress |
 | P9.3 | Windows listener ownership handoff and cooperative network driver | — | Planned |
 | P9.4 | Runs, trusted-local ceremony control, and SAS presentation | — | Planned |
 | P9.5 | PairingResult API and result ownership | — | Planned |
