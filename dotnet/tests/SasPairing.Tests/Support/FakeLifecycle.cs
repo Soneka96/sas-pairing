@@ -108,12 +108,15 @@ internal sealed class FakeLifecycleApi : INativeLifecycleApi
     }
 }
 
-/// <summary>A fresh test process context over a <see cref="FakeLifecycleApi"/>, never the production one.</summary>
+/// <summary>
+/// A fresh test process context over a <see cref="FakeLifecycleApi"/> and a <see cref="FakeNetworkApi"/>
+/// (reachable as <c>(FakeNetworkApi)context.Network</c>), never the production one.
+/// </summary>
 internal static class FakeContext
 {
     internal static (NativeProcessContext Context, FakeLifecycleApi Native) Create()
     {
         FakeLifecycleApi native = new();
-        return (new NativeProcessContext(native), native);
+        return (new NativeProcessContext(native, new FakeNetworkApi()), native);
     }
 }

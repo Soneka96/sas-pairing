@@ -1,13 +1,15 @@
 name: .NET package
 
 # P9 .NET package (dotnet/): the private exact native ABI v1 interop of the SasPairing library and
-# its explicit-path, process-lifetime loader (P9-D-001), and the public Runtime / Authority / Host
-# lifecycle wrapper (P9-D-002), checked against a real native artifact built from this commit.
-# Windows is the only pairing-networking platform: there the lifecycle runs through the public API;
-# on Linux the same ABI v1 library loads, a runtime is created, and authority registration fails
-# closed with UnsupportedPlatform (no Linux pairing support is claimed, and no listener, network,
-# or ceremony operation is made on any platform). Nothing is packed, uploaded, or published: no
-# NuGet package, artifact, tag, or release.
+# its explicit-path, process-lifetime loader (P9-D-001), the public Runtime / Authority / Host
+# lifecycle wrapper (P9-D-002), and the Windows listener handoff, cooperative drive, events, and
+# connections (P9-D-003), checked against a real native artifact built from this commit.
+# Windows is the only pairing-networking platform: there the lifecycle and the listener, accept,
+# close, replacement, and recheck run through the public API; on Linux the same ABI v1 library
+# loads, a runtime is created, authority registration fails closed with UnsupportedPlatform, the
+# listener token is refused with PlatformNotSupportedException, and every fake and FFI network test
+# runs (no Linux pairing support is claimed, and no ceremony operation is made on any platform).
+# Nothing is packed, uploaded, or published: no NuGet package, artifact, tag, or release.
 
 on:
   push:
@@ -120,6 +122,23 @@ jobs:
           grep -F 'passed SasPairing.Tests.NativeLifecycleArtifactTests.ASecondLiveRuntimeIsRefusedNativelyAndRecreationReusesTheImageAndTheProcessContext' native-lifecycle.log
           grep -E '^\s*succeeded: 4$' native-lifecycle.log
           grep -E '^\s*skipped: 0$' native-lifecycle.log
+      # The P9.3 native success criterion as its own step: the network wrapper through the PUBLIC API
+      # against the real artifact (Windows: socket transfer surviving the caller's Socket and every
+      # finalizer, accept and peer close with one connection object, manual connection disposal,
+      # listener replacement, one resume recheck; Linux: the token is refused and no host exists).
+      - name: Real native network (public API)
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet test --no-build --output Detailed --no-ansi --no-progress \
+            --filter-class SasPairing.Tests.NativeNetworkArtifactTests | tee native-network.log
+          grep -F 'passed SasPairing.Tests.NativeNetworkArtifactTests.TheSocketIsTransferredAndTheNativeListenerOutlivesTheCallersSocketAndEveryFinalizer' native-network.log
+          grep -F 'passed SasPairing.Tests.NativeNetworkArtifactTests.AnAcceptedConnectionIsOneObjectUntilThePeerClosesIt' native-network.log
+          grep -F 'passed SasPairing.Tests.NativeNetworkArtifactTests.AManuallyDisposedConnectionIsClosedDeterministically' native-network.log
+          grep -F 'passed SasPairing.Tests.NativeNetworkArtifactTests.AListenerIsReplacedByDetachThenAttach' native-network.log
+          grep -F 'passed SasPairing.Tests.NativeNetworkArtifactTests.OneRecheckAfterResumeIsOneNativeSweep' native-network.log
+          grep -E '^\s*succeeded: 5$' native-network.log
+          grep -E '^\s*skipped: 0$' native-network.log
       # P9 must not change the frozen core: the ABI v1 freeze consistency tests stay green.
       - name: Native ABI v1 freeze consistency
         run: |

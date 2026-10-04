@@ -5,9 +5,10 @@ using SasPairing.Interop;
 namespace SasPairing.Tests;
 
 /// <summary>
-/// The exact P9.2 public surface (P9-D-002) by reflection: the 48 public statuses equal the frozen constants,
-/// every public member is listed, and no public member exposes a native handle, pointer, function pointer,
-/// native record, the binding, the loader, or the lifecycle service, or is a trust verdict.
+/// The exact P9.3 public surface (P9-D-002, P9-D-003) by reflection: the 48 public statuses equal the frozen
+/// constants, every public member is listed, and no public member exposes a native handle, socket value,
+/// <c>SafeSocketHandle</c>, pointer, function pointer, native record, the binding, the loader, a native service,
+/// or a run or result reference, or is a trust verdict.
 /// </summary>
 public sealed partial class PublicSurfaceTests
 {
@@ -80,13 +81,37 @@ public sealed partial class PublicSurfaceTests
     }
 
     [Fact]
-    public void EveryPublicMemberIsExactlyTheIntendedP92Surface()
+    public void EveryPublicMemberIsExactlyTheIntendedP93Surface()
     {
+        static string[] Property(string type, string name) => [$"{type} {name}", $"{type} get_{name}()"];
         Dictionary<string, string[]> expected = new()
         {
             ["SasPairingRuntime"] = ["Boolean IsDisposed", "Boolean get_IsDisposed()", "static SasPairingRuntime Create(String)", "SasPairingAuthority RegisterAuthority(ReadOnlySpan`1)", "Void Dispose()"],
             ["SasPairingAuthority"] = ["Boolean IsDisposed", "Boolean get_IsDisposed()", "SasPairingAuthorityStatus GetStatus()", "SasPairingHost CreateHost()", "Void Dispose()"],
-            ["SasPairingHost"] = ["Boolean IsDisposed", "Boolean get_IsDisposed()", "Void Dispose()"],
+            ["SasPairingHost"] =
+            [
+                "Boolean IsDisposed", "Boolean get_IsDisposed()", "SasPairingHostNetworkState NetworkState", "SasPairingHostNetworkState get_NetworkState()",
+                "Void AttachWindowsListener(SasPairingWindowsListenerSocket, SasPairingBootstrap, SasPairingBootstrap)", "Void DetachListener()",
+                "SasPairingDriveBatch Drive()", "SasPairingDriveBatch RecheckAfterResume()", "Void Dispose()",
+            ],
+            ["SasPairingBootstrap"] =
+            [
+                ".ctor(ReadOnlySpan`1, ReadOnlySpan`1, ReadOnlySpan`1, ReadOnlySpan`1)",
+                .. Property("ReadOnlySpan`1", "ApplicationIdentity"), .. Property("ReadOnlySpan`1", "KeyAlgorithm"),
+                .. Property("ReadOnlySpan`1", "PublicKey"), .. Property("ReadOnlySpan`1", "SharedContext"),
+            ],
+            ["SasPairingWindowsListenerSocket"] = ["static SasPairingWindowsListenerSocket FromSocket(Socket)", .. Property("Boolean", "IsTransferred"), "Void Dispose()"],
+            ["SasPairingConnection"] = [.. Property("Boolean", "IsDisposed"), "Void Dispose()"],
+            ["SasPairingDriveBatch"] = [.. Property("IReadOnlyList`1", "Events"), .. Property("SasPairingDriveFailure", "Failure")],
+            ["SasPairingDriveFailure"] = [.. Property("Int32", "StatusCode"), .. Property("Nullable`1", "KnownStatus"), .. Property("Boolean", "ProcessRestartRequired")],
+            ["SasPairingEvent"] =
+            [
+                .. Property("SasPairingEventKind", "Kind"), .. Property("SasPairingConnection", "Connection"), .. Property("SasPairingStepKind", "StepKind"),
+                .. Property("SasPairingProtocolEvent", "ProtocolEvent"), .. Property("SasPairingEventReason", "Reason"), .. Property("SasPairingDeadlineKind", "DeadlineKind"),
+                .. Property("SasPairingCancelState", "CancelState"), .. Property("SasPairingCancelReason", "CancelReason"), .. Property("Boolean", "WritePending"),
+                .. Property("Boolean", "RunUntracked"), .. Property("ReadOnlySpan`1", "RequestId"), .. Property("Boolean", "HasTrackedRun"),
+                .. Property("Boolean", "HasResult"), .. Property("Boolean", "ShouldDisposeConnection"),
+            ],
             ["SasPairingInitializationException"] = ["SasPairingInitializationFailure Failure", "SasPairingInitializationFailure get_Failure()", "Boolean ProcessRestartRequired", "Boolean get_ProcessRestartRequired()"],
             ["SasPairingNativeException"] =
             [
@@ -112,8 +137,14 @@ public sealed partial class PublicSurfaceTests
 
         Assert.Equal(expected.Keys.Order(StringComparer.Ordinal), Library.GetExportedTypes().Where(t => !t.IsEnum).Select(t => t.Name).Order(StringComparer.Ordinal));
 
-        // No public constructor on the wrappers or the exceptions: only the library creates them.
-        foreach (Type type in new[] { typeof(SasPairingRuntime), typeof(SasPairingAuthority), typeof(SasPairingHost), typeof(SasPairingInitializationException), typeof(SasPairingNativeException), typeof(SasPairingContractException) })
+        // No public constructor on the wrappers, the exceptions, or the network outputs: only the library creates
+        // them (the Bootstrap is the one input with a public constructor; the token has a factory).
+        foreach (Type type in new[]
+        {
+            typeof(SasPairingRuntime), typeof(SasPairingAuthority), typeof(SasPairingHost), typeof(SasPairingInitializationException), typeof(SasPairingNativeException),
+            typeof(SasPairingContractException), typeof(SasPairingWindowsListenerSocket), typeof(SasPairingConnection), typeof(SasPairingDriveBatch),
+            typeof(SasPairingDriveFailure), typeof(SasPairingEvent),
+        })
         {
             Assert.Empty(type.GetConstructors());
         }
@@ -122,7 +153,13 @@ public sealed partial class PublicSurfaceTests
     [Fact]
     public void NoPublicMemberExposesARawInteropConceptOrATrustVerdict()
     {
-        Type[] forbiddenTypes = [typeof(ulong), typeof(long), typeof(nint), typeof(nuint), typeof(NativeAbiV1), typeof(AbiV1FunctionTable), typeof(NativeAbiV1Loader), typeof(INativeLifecycleApi), typeof(NativeProcessContext), typeof(NativeInitializationException), typeof(System.Runtime.InteropServices.SafeHandle)];
+        Type[] forbiddenTypes =
+        [
+            typeof(ulong), typeof(long), typeof(nint), typeof(nuint), typeof(NativeAbiV1), typeof(AbiV1FunctionTable), typeof(NativeAbiV1Loader), typeof(INativeLifecycleApi),
+            typeof(INativeNetworkApi), typeof(NativeProcessContext), typeof(NativeInitializationException), typeof(System.Runtime.InteropServices.SafeHandle),
+            typeof(System.Net.Sockets.SafeSocketHandle), typeof(NativeRunRef), typeof(NativeResultRef), typeof(NativeResultStore), typeof(NativeEventRecord),
+            typeof(NativeBootstrapBytes), typeof(HostNetwork), typeof(IListenerSocketResource), typeof(byte[]), typeof(Memory<byte>), typeof(ArraySegment<byte>),
+        ];
         foreach (Type type in Library.GetExportedTypes())
         {
             if (type.IsEnum)
@@ -151,6 +188,10 @@ public sealed partial class PublicSurfaceTests
                     Assert.DoesNotContain(used, forbiddenTypes);
                     Assert.NotEqual("SasPairing.Interop", used.Namespace);
                     Assert.False(used.Name.StartsWith("sas_pairing_", StringComparison.Ordinal), where);
+                    Assert.False(used.IsGenericType && used.GetGenericArguments().Any(a => forbiddenTypes.Contains(a)), where);
+
+                    // The caller's Socket is accepted by the token factory only; it is never returned or stored publicly.
+                    Assert.True(used != typeof(System.Net.Sockets.Socket) || (type == typeof(SasPairingWindowsListenerSocket) && member.Name == "FromSocket" && member is MethodInfo { ReturnType: var r } && r != used), where);
                 }
             }
         }
