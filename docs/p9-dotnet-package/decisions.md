@@ -8,7 +8,7 @@ Stable owner decisions taken during P9. IDs `P9-D-NNN` are never reused. A decis
 | [P9-D-002 — .NET lifecycle ownership, public errors, and fail-closed state](#p9-d-002--net-lifecycle-ownership-public-errors-and-fail-closed-state) | Decided P9.2; implemented in P9.2 |
 | [P9-D-003 — .NET Windows listener, cooperative drive, event, and connection ownership](#p9-d-003--net-windows-listener-cooperative-drive-event-and-connection-ownership) | Decided P9.3; implemented in P9.3 |
 | [P9-D-004 — .NET run identity, explicit ceremony control, and SAS binding](#p9-d-004--net-run-identity-explicit-ceremony-control-and-sas-binding) | Decided P9.4; implemented in P9.4 |
-| [P9-D-005 — .NET PairingResult ownership, reads, and immutable snapshots](#p9-d-005--net-pairingresult-ownership-reads-and-immutable-snapshots) | Decided P9.5 |
+| [P9-D-005 — .NET PairingResult ownership, reads, and immutable snapshots](#p9-d-005--net-pairingresult-ownership-reads-and-immutable-snapshots) | Decided P9.5; implemented in P9.5 |
 
 ## P9-D-001 — .NET ABI v1 Binding and Loader Architecture
 
@@ -215,4 +215,4 @@ Stable owner decisions taken during P9. IDs `P9-D-NNN` are never reused. A decis
 - **Concurrency.** Read and dispose run under the existing one lock of the runtime tree (P9-D-002 P): no new lock and no asynchronous API (`ReadAsync`, `DisposeAsync`, `IAsyncDisposable`, `Task`, `ValueTask`).
 - **Why:** owning a result at the runtime keeps a completion that already happened independent of every transport and frontend lifetime, as P7-D-010 does natively; reading a frozen immutable result at its reported lengths makes any drift between info and copy a fail-closed contract violation rather than a negotiation; admitting data access after fatal but not after a wrapper contract violation follows the native fatal classification while refusing to trust output the wrapper has already seen break the contract; detached snapshots let applications apply their own policy after every native object is gone, as P8-D-005 established for Dart.
 - **Unchanged:** P9-D-001 to P9-D-004 (including the accepted `DecimalDisplay` name and the P9-D-003 W/X socket handoff); every P7 file, export, signature, value, layout, and ownership rule (ABI v1 frozen by P7-D-013); every P8 file and decision; P6-D-005.
-- **Status:** decided by the owner for P9.5, 2026-10-04.
+- **Status:** decided by the owner for P9.5, 2026-10-04; implemented in `dotnet/` (P9.5).
