@@ -28,7 +28,7 @@ public sealed partial class NativeCeremonyArtifactTests
 
     private static byte[] UniqueScope(string tag) => [.. "sas-pairing-dotnet-p9.4-"u8, .. System.Text.Encoding.ASCII.GetBytes(tag), 0x00, 0x80, 0xFF, .. Guid.NewGuid().ToByteArray()];
 
-    private static (Socket Listener, int Port) ApplicationListener()
+    internal static (Socket Listener, int Port) ApplicationListener()
     {
         Socket listener = new(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
         listener.Bind(new IPEndPoint(IPAddress.Loopback, 0));
@@ -36,17 +36,17 @@ public sealed partial class NativeCeremonyArtifactTests
         return (listener, ((IPEndPoint)listener.LocalEndPoint!).Port);
     }
 
-    private static bool Inbound(SasPairingEvent e, SasPairingProtocolEvent protocol) =>
+    internal static bool Inbound(SasPairingEvent e, SasPairingProtocolEvent protocol) =>
         e.Kind == SasPairingEventKind.ConnectionStep && e.StepKind == SasPairingStepKind.Inbound && e.ProtocolEvent == protocol;
 
-    private static SasPairingAuthorityStatus Ready(uint remaining) => new(SasPairingAuthorityState.Ready, remaining);
+    internal static SasPairingAuthorityStatus Ready(uint remaining) => new(SasPairingAuthorityState.Ready, remaining);
 
     /// <summary>
     /// TEST-ONLY byte-transparent relay between two loopback TCP clients: every byte read from one socket is
     /// written to the other unchanged. It never parses, builds, inspects, or alters a protocol frame and computes
     /// nothing; it only counts bytes. It is pumped synchronously between drives (no thread, task, or timer).
     /// </summary>
-    private sealed class Relay : IDisposable
+    internal sealed class Relay : IDisposable
     {
         private readonly Socket _a;
         private readonly Socket _b;
@@ -96,7 +96,7 @@ public sealed partial class NativeCeremonyArtifactTests
     }
 
     /// <summary>Two hosts driven alternately (each drive one bounded native call), with the relay pumped between them; every event kept per host, in order.</summary>
-    private sealed class Pump(SasPairingHost a, SasPairingHost b, Relay relay)
+    internal sealed class Pump(SasPairingHost a, SasPairingHost b, Relay relay)
     {
         internal List<SasPairingEvent> EventsA { get; } = [];
 
@@ -136,9 +136,9 @@ public sealed partial class NativeCeremonyArtifactTests
     }
 
     /// <summary>One endpoint: its authority, host, and the handoff token of its listening socket.</summary>
-    private sealed record Endpoint(SasPairingAuthority Authority, SasPairingHost Host, SasPairingWindowsListenerSocket Token, int Port);
+    internal sealed record Endpoint(SasPairingAuthority Authority, SasPairingHost Host, SasPairingWindowsListenerSocket Token, int Port);
 
-    private static Endpoint Open(SasPairingRuntime runtime, string tag, SasPairingBootstrap local, SasPairingBootstrap expected)
+    internal static Endpoint Open(SasPairingRuntime runtime, string tag, SasPairingBootstrap local, SasPairingBootstrap expected)
     {
         SasPairingAuthority authority = runtime.RegisterAuthority(UniqueScope(tag));
         SasPairingHost host = authority.CreateHost();
@@ -150,10 +150,21 @@ public sealed partial class NativeCeremonyArtifactTests
     }
 
     /// <summary>The two endpoints, the relay, and both accepted connections.</summary>
-    private static (Endpoint A, Endpoint B, Relay Relay, Pump Pump, SasPairingConnection ConnectionA, SasPairingConnection ConnectionB) Connect(SasPairingRuntime runtime, string tag)
+    private static (Endpoint A, Endpoint B, Relay Relay, Pump Pump, SasPairingConnection ConnectionA, SasPairingConnection ConnectionB) Connect(SasPairingRuntime runtime, string tag) =>
+        Connect(runtime, tag, BootstrapA(), BootstrapB());
+
+    /// <summary>
+    /// The two endpoints (A configured with <paramref name="localA"/> and expecting <paramref name="localB"/>, B the
+    /// reverse; B's host Bootstrap is the Responder's), the relay, and both accepted connections.
+    /// </summary>
+    internal static (Endpoint A, Endpoint B, Relay Relay, Pump Pump, SasPairingConnection ConnectionA, SasPairingConnection ConnectionB) Connect(
+        SasPairingRuntime runtime,
+        string tag,
+        SasPairingBootstrap localA,
+        SasPairingBootstrap localB)
     {
-        Endpoint a = Open(runtime, tag + "-a", BootstrapA(), BootstrapB());
-        Endpoint b = Open(runtime, tag + "-b", BootstrapB(), BootstrapA());
+        Endpoint a = Open(runtime, tag + "-a", localA, localB);
+        Endpoint b = Open(runtime, tag + "-b", localB, localA);
         Assert.Equal(Ready(10), a.Authority.GetStatus());
         Assert.Equal(Ready(10), b.Authority.GetStatus());
 
@@ -165,7 +176,7 @@ public sealed partial class NativeCeremonyArtifactTests
     }
 
     /// <summary>Off Windows: the token is refused before the socket is touched, and no host can exist.</summary>
-    private static void AssertNoLinuxPairing(string path)
+    internal static void AssertNoLinuxPairing(string path)
     {
         (Socket listener, _) = ApplicationListener();
         using (listener)

@@ -5,11 +5,12 @@ using SasPairing.Interop;
 namespace SasPairing.Tests;
 
 /// <summary>
-/// The exact P9.4 public surface (P9-D-002, P9-D-003, P9-D-004) by reflection: the 48 public statuses and the 12
-/// local events equal the frozen constants, every public member is listed, and no public member exposes a native
-/// handle, socket value, <c>SafeSocketHandle</c>, pointer, function pointer, native record (event, action, or
-/// presentation), raw flags or SAS bytes, the binding, the loader, a native service, or a run or result
-/// reference, or is a trust verdict, a final-ACK confirmation, or an automatic SAS decision.
+/// The exact P9.5 public surface (P9-D-002 to P9-D-005) by reflection: the 48 public statuses and the 12 local
+/// events equal the frozen constants, every public member is listed, and no public member exposes a native
+/// handle, socket value, <c>SafeSocketHandle</c>, pointer, function pointer, native record (event, action,
+/// presentation, or result info), raw flags or SAS bytes, a writable byte array, the binding, the loader, a native
+/// service, a run or result reference, or the result store, or is a trust verdict, a final-ACK confirmation, an
+/// automatic SAS decision, a trust or enrollment step, or a result poll or lookup.
 /// </summary>
 public sealed partial class PublicSurfaceTests
 {
@@ -82,7 +83,7 @@ public sealed partial class PublicSurfaceTests
     }
 
     [Fact]
-    public void EveryPublicMemberIsExactlyTheIntendedP94Surface()
+    public void EveryPublicMemberIsExactlyTheIntendedP95Surface()
     {
         static string[] Property(string type, string name) => [$"{type} {name}", $"{type} get_{name}()"];
         Dictionary<string, string[]> expected = new()
@@ -121,6 +122,13 @@ public sealed partial class PublicSurfaceTests
                 "static Boolean op_Equality(SasPairingCeremonyIdentity, SasPairingCeremonyIdentity)", "static Boolean op_Inequality(SasPairingCeremonyIdentity, SasPairingCeremonyIdentity)",
             ],
             ["SasPairingRunEndedException"] = ["String Operation", "String get_Operation()"],
+            ["SasPairingResult"] = [.. Property("Boolean", "IsDisposed"), "SasPairingResultData Read()", "Void Dispose()"],
+            ["SasPairingResultData"] =
+            [
+                .. Property("SasPairingCeremonyIdentity", "CeremonyIdentity"), .. Property("SasPairingPeerRole", "PeerRole"), .. Property("UInt32", "ProfileVersion"),
+                .. Property("ReadOnlySpan`1", "RequestId"), .. Property("ReadOnlySpan`1", "AuthenticatedPeerBootstrap"),
+                .. Property("ReadOnlySpan`1", "AuthenticatedSharedContext"), .. Property("ReadOnlySpan`1", "ProfileIdentifier"),
+            ],
             ["SasPairingDriveBatch"] = [.. Property("IReadOnlyList`1", "Events"), .. Property("SasPairingDriveFailure", "Failure")],
             ["SasPairingDriveFailure"] = [.. Property("Int32", "StatusCode"), .. Property("Nullable`1", "KnownStatus"), .. Property("Boolean", "ProcessRestartRequired")],
             ["SasPairingEvent"] =
@@ -129,7 +137,7 @@ public sealed partial class PublicSurfaceTests
                 .. Property("SasPairingProtocolEvent", "ProtocolEvent"), .. Property("SasPairingEventReason", "Reason"), .. Property("SasPairingDeadlineKind", "DeadlineKind"),
                 .. Property("SasPairingCancelState", "CancelState"), .. Property("SasPairingCancelReason", "CancelReason"), .. Property("Boolean", "WritePending"),
                 .. Property("Boolean", "RunUntracked"), .. Property("ReadOnlySpan`1", "RequestId"), .. Property("SasPairingRun", "Run"), .. Property("Boolean", "HasTrackedRun"),
-                .. Property("Boolean", "HasResult"), .. Property("Boolean", "ShouldDisposeConnection"),
+                .. Property("SasPairingResult", "Result"), .. Property("Boolean", "HasResult"), .. Property("Boolean", "ShouldDisposeConnection"),
             ],
             ["SasPairingInitializationException"] = ["SasPairingInitializationFailure Failure", "SasPairingInitializationFailure get_Failure()", "Boolean ProcessRestartRequired", "Boolean get_ProcessRestartRequired()"],
             ["SasPairingNativeException"] =
@@ -158,13 +166,14 @@ public sealed partial class PublicSurfaceTests
 
         // No public constructor on the wrappers, the exceptions, or the network and ceremony outputs: only the
         // library creates them (the Bootstrap is the one input with a public constructor; the token has a factory).
-        // In particular no caller can construct a ceremony identity from arbitrary bytes (P9-D-004).
+        // In particular no caller can construct a ceremony identity from arbitrary bytes (P9-D-004), or a result or
+        // its data snapshot (P9-D-005).
         foreach (Type type in new[]
         {
             typeof(SasPairingRuntime), typeof(SasPairingAuthority), typeof(SasPairingHost), typeof(SasPairingInitializationException), typeof(SasPairingNativeException),
             typeof(SasPairingContractException), typeof(SasPairingWindowsListenerSocket), typeof(SasPairingConnection), typeof(SasPairingDriveBatch),
             typeof(SasPairingDriveFailure), typeof(SasPairingEvent), typeof(SasPairingRun), typeof(SasPairingLocalAction), typeof(SasPairingSasPresentation),
-            typeof(SasPairingCeremonyIdentity), typeof(SasPairingRunEndedException),
+            typeof(SasPairingCeremonyIdentity), typeof(SasPairingRunEndedException), typeof(SasPairingResult), typeof(SasPairingResultData),
         })
         {
             Assert.Empty(type.GetConstructors());
@@ -182,6 +191,9 @@ public sealed partial class PublicSurfaceTests
             typeof(NativeBootstrapBytes), typeof(HostNetwork), typeof(IListenerSocketResource), typeof(byte[]), typeof(Memory<byte>), typeof(ArraySegment<byte>),
             typeof(INativeCeremonyApi), typeof(NativeActionRecord), typeof(NativeActionOutcome), typeof(NativePresentationRecord), typeof(NativePresentationOutcome),
             typeof(CeremonyTarget), typeof(CeremonyOutcome), typeof(sas_pairing_action_t), typeof(sas_pairing_sas_presentation_t),
+            typeof(INativeResultApi), typeof(NativeResultInfoRecord), typeof(NativeResultInfoOutcome), typeof(NativeResultCopyOutcome), typeof(sas_pairing_result_info_t),
+            typeof(ReadOnlyMemory<byte>), typeof(List<byte>), typeof(IList<byte>), typeof(ICollection<byte>), typeof(IEnumerable<SasPairingResult>),
+            typeof(IReadOnlyCollection<SasPairingResult>), typeof(IReadOnlyList<SasPairingResult>),
         ];
         foreach (Type type in Library.GetExportedTypes())
         {
@@ -231,6 +243,8 @@ public sealed partial class PublicSurfaceTests
             "ResetForTesting", "ClearFatal", "Recover", "Reload", "Reinitialize", "LoadAnotherLibrary", "Close",
             "ConfirmFinalAck", "ConfirmSent", "AckSent", "FinishAck", "ConfirmFinish", "MarkFinalWritten", "MarkWritten", "CompleteFinish", "SendAck", "Ack",
             "IsMatch", "MatchesPeer", "Approved", "IsApproved", "Trusted", "AutoApprove", "Flags", "RawFlags", "Reserved", "SasBytes", "RawSas",
+            "IsTrusted", "TrustPeer", "ShouldEnroll", "Enroll", "BilateralSuccess", "PeerCompleted", "IsAuthenticatedForApplication", "Commit", "Persist",
+            "GetResults", "PollResults", "FindResult", "ResultFromRequestId", "Results", "NativeResultHandle",
         })
         {
             Assert.Matches(ForbiddenMemberName(), name);
@@ -242,12 +256,17 @@ public sealed partial class PublicSurfaceTests
         Assert.DoesNotMatch(ForbiddenMemberName(), "EmitInitiatorFinish");
         Assert.DoesNotMatch(ForbiddenMemberName(), "DecimalDisplay");
         Assert.DoesNotMatch(ForbiddenMemberName(), "CeremonyIdentity");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "Read");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "Result");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "HasResult");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "AuthenticatedPeerBootstrap");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "PeerRole");
     }
 
     [GeneratedRegex(@"(?<=[a-z0-9])([A-Z])")]
     private static partial Regex PascalBoundary();
 
-    [GeneratedRegex(@"Handle|Pointer|Attack|Malicious|Trust|Compromis|Confirm|Ack(?![a-z])|MarkWritten|MarkFinal|CompleteFinish|Match|Approved$|AutoApprove|Flags|Reserved|SasBytes|RawSas|^(?:Reset\w*|ClearFatal|Recover|Reload|Reinitialize|LoadAnotherLibrary|Close)$")]
+    [GeneratedRegex(@"Handle|Pointer|Attack|Malicious|Trust|Compromis|Confirm|Ack(?![a-z])|MarkWritten|MarkFinal|CompleteFinish|Match|Approved$|AutoApprove|Flags|Reserved|SasBytes|RawSas|Enroll|Bilateral|PeerCompleted|AuthenticatedFor|Commit|Persist|Poll|Results|FindResult|ResultFrom|^(?:Reset\w*|ClearFatal|Recover|Reload|Reinitialize|LoadAnotherLibrary|Close)$")]
     private static partial Regex ForbiddenMemberName();
 
     [GeneratedRegex(@"Attack|Malicious|Trust|Compromis|Verdict")]

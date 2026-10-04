@@ -141,6 +141,7 @@ internal sealed class FakeTree
         (Context, Lifecycle) = FakeContext.Create();
         Network = (FakeNetworkApi)Context.Network;
         Ceremony = (FakeCeremonyApi)Context.Ceremony;
+        Results = (FakeResultApi)Context.Results;
         Runtime = SasPairingRuntime.CreateIn(Context);
         Authority = Runtime.RegisterAuthority([1, 2, 3]);
         Host = Authority.CreateHost();
@@ -153,6 +154,8 @@ internal sealed class FakeTree
     internal FakeNetworkApi Network { get; }
 
     internal FakeCeremonyApi Ceremony { get; }
+
+    internal FakeResultApi Results { get; }
 
     internal SasPairingRuntime Runtime { get; }
 

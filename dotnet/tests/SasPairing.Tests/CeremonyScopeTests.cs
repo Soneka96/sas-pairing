@@ -7,8 +7,9 @@ namespace SasPairing.Tests;
 /// <summary>
 /// P9-D-004 source and reflection guards over the production code (comments removed): every public ceremony
 /// method makes exactly its own one native ceremony call and calls no other ceremony step, no drive, and no
-/// recheck; nothing confirms a final ACK; no result is read, copied, or destroyed; the run keeps no write-pending
-/// state, cached identity, or budget, and is not disposable.
+/// recheck; nothing confirms a final ACK; no ceremony code reads, copies, or destroys a result (only the P9-D-005
+/// result service calls the result exports); the run keeps no write-pending state, cached identity, or budget, and
+/// is not disposable.
 /// </summary>
 public sealed partial class CeremonyScopeTests
 {
@@ -118,16 +119,21 @@ public sealed partial class CeremonyScopeTests
     }
 
     [Fact]
-    public void NoResultIsReadCopiedOrDestroyed()
+    public void NoCeremonyCodeReadsCopiesOrDestroysAResult()
     {
+        // P9.5 (P9-D-005): the result exports are called only by the private result service, and the service only
+        // by the public result; no ceremony step, run, connection, or settlement touches a result.
         foreach ((string file, string code) in ProductionSource.AllCode())
         {
-            bool table = file == "Interop/AbiV1Exports.cs";
-            Assert.True(table || !ResultExport().IsMatch(code), $"{file}: a result export");
+            bool allowed = file is "Interop/AbiV1Exports.cs" or "Interop/FfiNativeResultApi.cs";
+            Assert.True(allowed || !ResultExport().IsMatch(code), $"{file}: a result export");
         }
 
-        Assert.DoesNotContain(typeof(SasPairingRuntime).Assembly.GetTypes(), t => t.Name is "INativeResultApi" or "FfiNativeResultApi" or "SasPairingResult");
-        Assert.Null(typeof(SasPairingEvent).GetProperty("Result", BindingFlags.Public | BindingFlags.Instance));
+        foreach (string file in new[] { RunFile, "CeremonyControl.cs", "SasPairingConnection.cs", "SasPairingLocalAction.cs", "SasPairingSasPresentation.cs" })
+        {
+            Assert.DoesNotContain("Results", ProductionSource.Code(file), StringComparison.Ordinal);
+            Assert.DoesNotContain("SasPairingResult", ProductionSource.Code(file), StringComparison.Ordinal);
+        }
     }
 
     [Fact]

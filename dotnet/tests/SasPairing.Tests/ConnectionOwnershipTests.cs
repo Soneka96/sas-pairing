@@ -6,7 +6,7 @@ namespace SasPairing.Tests;
 /// <summary>
 /// P9-D-003 connection, run, and result ownership over the fake network service (every platform): one object
 /// per native connection, deterministic consuming cleanup, owner-loop failure, <c>RUN_UNTRACKED</c> guidance,
-/// exact-handle run references, runtime-owned result references, and the one-call parent cascade.
+/// exact-handle run references, runtime-owned results (public since P9-D-005), and the one-call parent cascade.
 /// </summary>
 public sealed class ConnectionOwnershipTests
 {
@@ -250,25 +250,24 @@ public sealed class ConnectionOwnershipTests
         Assert.True(events[1].HasResult);
         Assert.False(events[1].HasTrackedRun);
         Assert.False(run.IsValid); // a result makes the run's end visible
-        NativeResultRef responder = events[1].Result!;
-        NativeResultRef initiator = events[2].Result!;
-        Assert.Equal(0x700ul, responder.Handle);
-        Assert.Same(responder, tree.Runtime.Results.Find(0x700));
-        Assert.Same(initiator, tree.Runtime.Results.Find(0x701));
+        SasPairingResult responder = events[1].Result!;
+        SasPairingResult initiator = events[2].Result!;
+        Assert.Equal(0x700ul, responder.Ref.Handle);
+        Assert.Same(responder, tree.Runtime.ResultStore.Find(0x700));
+        Assert.Same(initiator, tree.Runtime.ResultStore.Find(0x701));
 
         connections[0].Dispose();
         tree.Host.DetachListener();
         tree.Host.Dispose();
         tree.Authority.Dispose();
-        Assert.True(responder.IsValid && initiator.IsValid);
-        Assert.Equal(2, tree.Runtime.Results.Count);
+        Assert.False(responder.IsDisposed || initiator.IsDisposed);
+        Assert.Equal(2, tree.Runtime.ResultStore.Live.Count);
 
         tree.Runtime.Dispose();
-        Assert.False(responder.IsValid || initiator.IsValid);
+        Assert.True(responder.IsDisposed && initiator.IsDisposed);
 
-        // No result is ever destroyed or read in P9.3: no such export is called.
-        Assert.DoesNotContain(tree.Network.Calls, c => c.Export.Contains("result", StringComparison.Ordinal));
-        Assert.DoesNotContain(tree.Lifecycle.Calls, c => c.Export.Contains("result", StringComparison.Ordinal));
+        // No network or lifecycle teardown destroys or reads a result: no result export is called at all.
+        Assert.Equal(0, tree.Results.Total);
     }
 
     [Fact]
@@ -278,14 +277,15 @@ public sealed class ConnectionOwnershipTests
         failing.AttachWithConnections(100);
         failing.Network.Next(Ok, AbiV1Constants.SAS_PAIRING_NETWORK_POLL_FAILED, Records.Step(100, AbiV1Constants.SAS_PAIRING_STEP_CONFIRMED, result: 0x700, requestId: RequestA));
         SasPairingDriveBatch batch = failing.Host.Drive();
-        Assert.True(Assert.Single(batch.Events).Result!.IsValid);
+        Assert.False(Assert.Single(batch.Events).Result!.IsDisposed);
         Assert.Equal(SasPairingHostNetworkState.FailedClosed, failing.Host.NetworkState);
 
         FakeTree broken = new();
         broken.AttachWithConnections(100);
         broken.Network.Next(Ok, Ok, Records.Step(100, AbiV1Constants.SAS_PAIRING_STEP_CONFIRMED, result: 0x700, requestId: RequestA), Records.Step(777));
         Assert.Throws<SasPairingContractException>(broken.Host.Drive);
-        Assert.True(broken.Runtime.Results.Find(0x700)!.IsValid);
+        Assert.False(broken.Runtime.ResultStore.Find(0x700)!.IsDisposed);
+        Assert.Equal(0, broken.Results.Total);
     }
 
     [Fact]
@@ -300,7 +300,7 @@ public sealed class ConnectionOwnershipTests
         Assert.Throws<SasPairingContractException>(tree.Host.Drive);
 
         Assert.True(tree.Context.IsContractViolated);
-        Assert.Equal(1, tree.Runtime.Results.Count);
+        Assert.Equal(1, tree.Runtime.ResultStore.DeliveredCount);
     }
 
     [Fact]

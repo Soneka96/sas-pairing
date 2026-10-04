@@ -9,18 +9,18 @@ using SasPairing.Tests.Support;
 namespace SasPairing.Tests;
 
 /// <summary>
-/// P9.1 to P9.4 architecture and scope guards over the production sources (comments removed) and the built
+/// P9.1 to P9.5 architecture and scope guards over the production sources (comments removed) and the built
 /// assembly: raw interop private and localized under <c>Interop/</c>, one explicit-path load and no release of
-/// the image, no library search, exactly the P9.4 public surface (P9-D-002, P9-D-003, P9-D-004) with
-/// deterministic disposal and no finalizer (a run is not disposable), the caller's socket touched only by the
-/// listener handoff token, and nothing of later increments (the PairingResult surface), the protocol,
-/// cryptography, socket binding, background driving, final-ACK confirmation, or ceremony-step chaining.
+/// the image, no library search, exactly the P9.5 public surface (P9-D-002 to P9-D-005) with deterministic
+/// disposal and no finalizer (a run is not disposable; a result is), the caller's socket touched only by the
+/// listener handoff token, and nothing of the protocol, cryptography, socket binding, background driving,
+/// final-ACK confirmation, ceremony-step chaining, or any result type beyond the one public result.
 /// </summary>
 public sealed partial class ArchitectureTests
 {
     private static readonly Assembly Library = typeof(AbiV1Constants).Assembly;
 
-    /// <summary>The exact P9.4 public surface (P9-D-002, P9-D-003, P9-D-004): nothing else is public.</summary>
+    /// <summary>The exact P9.5 public surface (P9-D-002 to P9-D-005): nothing else is public.</summary>
     internal static readonly string[] PublicTypes =
     [
         "SasPairing.SasPairingAuthority",
@@ -45,7 +45,10 @@ public sealed partial class ArchitectureTests
         "SasPairing.SasPairingLocalAction",
         "SasPairing.SasPairingLocalEvent",
         "SasPairing.SasPairingNativeException",
+        "SasPairing.SasPairingPeerRole",
         "SasPairing.SasPairingProtocolEvent",
+        "SasPairing.SasPairingResult",
+        "SasPairing.SasPairingResultData",
         "SasPairing.SasPairingRun",
         "SasPairing.SasPairingRunEndedException",
         "SasPairing.SasPairingRuntime",
@@ -57,9 +60,9 @@ public sealed partial class ArchitectureTests
 
     /// <summary>
     /// The only production files that may implement disposal: the three lifecycle wrappers (P9-D-002), the
-    /// connection, and the listener handoff token (P9-D-003).
+    /// connection and the listener handoff token (P9-D-003), and the result (P9-D-005).
     /// </summary>
-    private static readonly string[] DisposableFiles = ["SasPairingAuthority.cs", "SasPairingConnection.cs", "SasPairingHost.cs", "SasPairingRuntime.cs", "SasPairingWindowsListenerSocket.cs"];
+    private static readonly string[] DisposableFiles = ["SasPairingAuthority.cs", "SasPairingConnection.cs", "SasPairingHost.cs", "SasPairingResult.cs", "SasPairingRuntime.cs", "SasPairingWindowsListenerSocket.cs"];
 
     /// <summary>The one production file that may name the caller's .NET socket (P9-D-003 W).</summary>
     private const string ListenerTokenFile = "SasPairingWindowsListenerSocket.cs";
@@ -80,12 +83,13 @@ public sealed partial class ArchitectureTests
     }
 
     [Fact]
-    public void TheAssemblyExportsExactlyTheP94PublicSurface()
+    public void TheAssemblyExportsExactlyTheP95PublicSurface()
     {
         // P9.1 exported nothing; P9.2 added exactly the lifecycle, status, and error types (P9-D-002); P9.3 added
         // exactly the Bootstrap, listener token, network state, connection, drive batch and failure, event, and
-        // the seven event-namespace enums (P9-D-003); P9.4 adds exactly the run, the local action and its event
-        // enum, the SAS presentation, the ceremony identity, and the run-ended exception (P9-D-004).
+        // the seven event-namespace enums (P9-D-003); P9.4 added exactly the run, the local action and its event
+        // enum, the SAS presentation, the ceremony identity, and the run-ended exception (P9-D-004); P9.5 adds
+        // exactly the result, its data snapshot, and the peer role (P9-D-005).
         Assert.Equal(PublicTypes, Library.GetExportedTypes().Select(t => t.FullName!).Order(StringComparer.Ordinal));
         Assert.Equal(PublicTypes, Library.GetTypes().Where(t => t.IsPublic).Select(t => t.FullName!).Order(StringComparer.Ordinal));
         Assert.DoesNotContain(Library.GetExportedTypes(), t => t.Namespace != "SasPairing");
@@ -140,7 +144,8 @@ public sealed partial class ArchitectureTests
         string[] interop =
         [
             "Interop/AbiV1Constants.cs", "Interop/AbiV1Exports.cs", "Interop/AbiV1Structs.cs", "Interop/FfiNativeCeremonyApi.cs", "Interop/FfiNativeLifecycleApi.cs",
-            "Interop/FfiNativeNetworkApi.cs", "Interop/INativeCeremonyApi.cs", "Interop/INativeLifecycleApi.cs", "Interop/INativeNetworkApi.cs", "Interop/NativeAbiV1.cs",
+            "Interop/FfiNativeNetworkApi.cs", "Interop/FfiNativeResultApi.cs", "Interop/INativeCeremonyApi.cs", "Interop/INativeLifecycleApi.cs", "Interop/INativeNetworkApi.cs",
+            "Interop/INativeResultApi.cs", "Interop/NativeAbiV1.cs",
             "Interop/NativeBootstrapMarshalling.cs", "Interop/NativeInitializationFailure.cs", "Interop/NativeLibraryLoader.cs",
         ];
         string[] root = [.. PublicTypes.Select(t => t["SasPairing.".Length..] + ".cs").Concat(InternalRootFiles)];
@@ -217,13 +222,14 @@ public sealed partial class ArchitectureTests
     }
 
     [Fact]
-    public void OnlyTheLifecycleWrappersTheConnectionAndTheTokenAreDisposableAndNothingHasAFinalizer()
+    public void OnlyTheLifecycleWrappersTheConnectionTheTokenAndTheResultAreDisposableAndNothingHasAFinalizer()
     {
         // P9-D-002: deterministic IDisposable on Runtime, Authority, and Host; P9-D-003: on the connection and the
-        // listener token. The loader, the image, the binding, the process context, the native services, the
-        // Bootstrap, the events, the run references, the result references, and (P9-D-004 S) the public run, its
-        // local actions, presentations, and ceremony identities are never disposed, and a native connection or run
-        // handle is never a SafeHandle.
+        // listener token; P9-D-005: on the result (no finalizer, no SafeHandle: the runtime's native cascade stays
+        // explicit). The loader, the image, the binding, the process context, the native services, the Bootstrap,
+        // the events, the run and result references, the result data snapshot, and (P9-D-004 S) the public run, its
+        // local actions, presentations, and ceremony identities are never disposed, and a native connection, run,
+        // or result handle is never a SafeHandle.
         foreach ((string file, string code) in ProductionSource.AllCode())
         {
             bool disposable = DisposableFiles.Contains(file);
@@ -236,7 +242,7 @@ public sealed partial class ArchitectureTests
         }
 
         string[] disposableTypes = [.. Library.GetTypes().Where(t => typeof(IDisposable).IsAssignableFrom(t)).Select(t => t.Name).Order(StringComparer.Ordinal)];
-        Assert.Equal(["SasPairingAuthority", "SasPairingConnection", "SasPairingHost", "SasPairingRuntime", "SasPairingWindowsListenerSocket"], disposableTypes);
+        Assert.Equal(["SasPairingAuthority", "SasPairingConnection", "SasPairingHost", "SasPairingResult", "SasPairingRuntime", "SasPairingWindowsListenerSocket"], disposableTypes);
         foreach (Type type in Library.GetTypes())
         {
             Assert.Null(type.GetMethod("Finalize", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly));
@@ -275,12 +281,12 @@ public sealed partial class ArchitectureTests
     }
 
     [Fact]
-    public void ProductionDeclaresNoWrapperOfALaterIncrement()
+    public void ProductionDeclaresNoResultTypeOtherThanTheOnePublicResult()
     {
-        // P9.4 allows public runs, ceremony control, local actions, SAS presentation, and ceremony identities over
-        // the package-internal exact run references; the PairingResult surface belongs to P9.5, and results stay
-        // package-internal runtime-owned references (outcome records are named *Outcome, never *Result).
-        AssertAbsent(LaterIncrementWrapper(), "a result wrapper");
+        // P9.5 allows exactly one result wrapper, the public SasPairingResult over the package-internal runtime-owned
+        // result reference (P9-D-005); every other raw outcome record is named *Outcome or *Record, never *Result,
+        // and P9.6 (distribution) adds no wrapper type.
+        AssertAbsent(LaterIncrementWrapper(), "a result wrapper other than SasPairingResult");
         string[] types = [.. Library.GetTypes().Where(t => !t.Name.StartsWith('<')).Select(t => t.Name)];
         foreach (string name in types)
         {
@@ -321,10 +327,16 @@ public sealed partial class ArchitectureTests
         Assert.Matches(ProtocolCode(), "internal static class BootstrapMacBuilder");
         Assert.DoesNotMatch(ProtocolCode(), "public sealed class SasPairingRuntime : IDisposable");
         Assert.DoesNotMatch(ProtocolCode(), "public sealed class SasPairingSasPresentation"); // the mandated display type, no SAS logic
-        Assert.Matches(LaterIncrementWrapper(), "public sealed class SasPairingResult");
+        Assert.DoesNotMatch(LaterIncrementWrapper(), "public sealed class SasPairingResult : IDisposable"); // the one P9.5 result
+        Assert.DoesNotMatch(LaterIncrementWrapper(), "public sealed class SasPairingResultData");
+        Assert.DoesNotMatch(LaterIncrementWrapper(), "internal sealed record NativeResultInfoRecord(");
+        Assert.DoesNotMatch(LaterIncrementWrapper(), "internal readonly record struct NativeResultCopyOutcome(");
         Assert.Matches(LaterIncrementWrapper(), "public sealed class SasPairingPairingResult");
         Assert.Matches(LaterIncrementWrapper(), "internal readonly record struct NativeActionResult(");
-        Assert.Matches(LaterIncrementWrapper(), "public enum SasPairingResult");
+        Assert.Matches(LaterIncrementWrapper(), "internal sealed class NativeResult");
+        Assert.Matches(LaterIncrementWrapper(), "public sealed class SasPairingTrustedResult");
+        Assert.DoesNotMatch(LaterIncrementTypeName(), "SasPairingResult");
+        Assert.Matches(LaterIncrementTypeName(), "NativeReadResult");
         Assert.DoesNotMatch(LaterIncrementWrapper(), "public sealed class SasPairingRun");
         Assert.DoesNotMatch(LaterIncrementWrapper(), "public sealed class SasPairingSasPresentation");
         Assert.DoesNotMatch(LaterIncrementWrapper(), "public sealed class SasPairingLocalAction");
@@ -414,6 +426,7 @@ public sealed partial class ArchitectureTests
             "sas_pairing_core.dll", "libsas_pairing_core.so", "tooling/check_abi_exports.py",
             "--filter-class SasPairing.Tests.NativeArtifactTests", "--filter-class SasPairing.Tests.NativeLifecycleArtifactTests",
             "--filter-class SasPairing.Tests.NativeNetworkArtifactTests", "--filter-class SasPairing.Tests.NativeCeremonyArtifactTests",
+            "--filter-class SasPairing.Tests.NativeResultArtifactTests", "vectors/p3-remote-vodozemac-draft-01.json",
         })
         {
             Assert.Contains(required, workflow, StringComparison.Ordinal);
@@ -469,10 +482,10 @@ public sealed partial class ArchitectureTests
     [GeneratedRegex(@"\bnew\s+Thread\b|\bThread\s*\.|\bThreadPool\b|\bTask\s*\.\s*(?:Run|Factory|Delay)|\bParallel\s*\.|\bTimer\b|\bPeriodicTimer\b|\bBackgroundService\b|\basync\s|\bawait\s|\bChannel<|\b(?:Value)?Task\b")]
     private static partial Regex Threading();
 
-    [GeneratedRegex(@"\b(?:class|struct|record|interface|enum)\s+(?!sas_pairing_)\w*Result\b")]
+    [GeneratedRegex(@"\b(?:class|struct|record|interface|enum)\s+(?!sas_pairing_|SasPairingResult\b)\w*Result\b")]
     private static partial Regex LaterIncrementWrapper();
 
-    [GeneratedRegex(@"^\w*Result$")]
+    [GeneratedRegex(@"^(?!SasPairingResult$)\w*Result$")]
     private static partial Regex LaterIncrementTypeName();
 
     [GeneratedRegex(@"(?<!AbiV1FunctionTable)\.\s*(?:Bind|Listen|Connect|ConnectAsync|Accept|AcceptAsync|BeginAccept|SetSocketOption|SetIPProtectionLevel)\s*\(|\bTcpListener\b|\bTcpClient\b|\bDnsEndPoint\b")]

@@ -155,13 +155,13 @@ public sealed partial class FfiNativeLifecycleApiTests
             used);
         Assert.Equal(7, typeof(INativeLifecycleApi).GetMethods().Length);
 
-        // No wrapper outside the services calls an export; the three uses of the function table outside Interop/
-        // build the production lifecycle, network, and ceremony services over the one process binding.
+        // No wrapper outside the services calls an export; the four uses of the function table outside Interop/
+        // build the production lifecycle, network, ceremony, and result services over the one process binding.
         foreach ((string file, string other) in ProductionSource.AllCode().Where(f => !f.File.StartsWith("Interop/", StringComparison.Ordinal)))
         {
             Assert.DoesNotMatch(TableField(), other);
             int uses = other.Split("Functions").Length - 1;
-            Assert.Equal(file == "NativeProcessContext.cs" ? 3 : 0, uses);
+            Assert.Equal(file == "NativeProcessContext.cs" ? 4 : 0, uses);
         }
 
         Assert.Contains("new FfiNativeLifecycleApi(abi.Functions)", ProductionSource.Code("NativeProcessContext.cs"), StringComparison.Ordinal);

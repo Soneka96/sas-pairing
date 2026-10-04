@@ -27,7 +27,7 @@ public sealed class PublicInitializationTests
             FakeLifecycleApi service = new();
             services.Add(service);
             return service;
-        }, _ => new FakeNetworkApi(), _ => new FakeCeremonyApi());
+        }, _ => new FakeNetworkApi(), _ => new FakeCeremonyApi(), _ => new FakeResultApi());
         return (source, platform, services);
     }
 

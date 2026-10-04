@@ -957,7 +957,7 @@ public sealed class RunCeremonyTests
     }
 
     [Fact]
-    public void AResultEventEndsTheRunUnderItsRequestIdAndStaysPrivate()
+    public void AResultEventEndsTheRunUnderItsRequestIdAndReadsNothing()
     {
         (FakeTree tree, SasPairingConnection connection) = Connected();
         SasPairingRun initiator = connection.StartInitiator(FakeTree.Bootstrap()).Run!;
@@ -977,5 +977,6 @@ public sealed class RunCeremonyTests
         Assert.True(initiator.IsEnded && responder.IsEnded);
         Assert.Empty(connection.Runs);
         Assert.DoesNotContain(tree.Ceremony.Calls, c => c.Export.Contains("result", StringComparison.Ordinal));
+        Assert.Equal(0, tree.Results.Total);
     }
 }
