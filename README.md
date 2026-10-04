@@ -32,7 +32,7 @@ The security-sensitive implementation lives once in a Rust core; the experimenta
 Both bindings sit on the frozen [native ABI v1](docs/p7-native-abi/abi-v1-manifest.md) (P7).
 
 - **Dart / Flutter:** implemented experimentally in P8 as the pure-Dart package [`sas_pairing`](dart/README.md) (0.1.0-dev.1, not published), used from the repository at one exact commit together with that commit's Windows x64 native CI artifact. Pairing works on Windows x64 only.
-- **.NET / C#:** in progress in P9 as [`SasPairing`](dotnet/README.md) (0.1.0-dev.1, `net10.0`, not packed or published); it wraps the native lifecycle and the Windows listener and cooperative network driver (P9.3), with no ceremony or result API yet.
+- **.NET / C#:** in progress in P9 as [`SasPairing`](dotnet/README.md) (0.1.0-dev.1, `net10.0`, not packed or published); it wraps the native lifecycle, the Windows listener and cooperative network driver (P9.3), and runs with explicit trusted-local ceremony control and SAS presentation (P9.4), with no result API yet.
 
 ## Origin
 
