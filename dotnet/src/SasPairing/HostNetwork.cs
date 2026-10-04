@@ -122,6 +122,19 @@ internal sealed class HostNetwork
         return status;
     }
 
+    /// <summary>
+    /// Native reported that <paramref name="connection"/> ended during a ceremony call (<c>CONNECTION_ENDED</c>):
+    /// it is disposed and forgotten, and every run of it ends, with no native close call.
+    /// </summary>
+    internal void EndConnection(SasPairingConnection connection)
+    {
+        _connections.Remove(connection.Handle);
+        connection.InvalidateLocally();
+    }
+
+    /// <summary>Whether <paramref name="run"/> is a live run handle of any connection of this host.</summary>
+    internal bool HoldsRun(ulong run) => _connections.Values.Any(c => c.HasRun(run));
+
     /// <summary>Every connection is disposed locally (no native call), and the host takes <paramref name="state"/>.</summary>
     internal void Teardown(SasPairingHostNetworkState state)
     {
@@ -249,7 +262,7 @@ internal sealed class HostNetwork
 
         byte[] requestId = record.RequestId[..length];
         SasPairingConnection? connection = null;
-        NativeRunRef? run = null;
+        SasPairingRun? run = null;
         NativeResultRef? result = null;
         switch (kind)
         {
@@ -301,7 +314,7 @@ internal sealed class HostNetwork
     }
 
     /// <summary>The frozen run-reference rules (ABI contract §18.6) and runtime result retention of one step.</summary>
-    private (NativeRunRef? Run, NativeResultRef? Result) Track(
+    private (SasPairingRun? Run, NativeResultRef? Result) Track(
         string operation,
         SasPairingConnection connection,
         NativeEventRecord record,
@@ -345,7 +358,7 @@ internal sealed class HostNetwork
     }
 
     /// <summary>The public value of a frozen native namespace value, or null when the frozen namespace does not define it.</summary>
-    private static T? Known<T>(uint value)
+    internal static T? Known<T>(uint value)
         where T : struct, Enum =>
         value <= int.MaxValue && Enum.IsDefined(typeof(T), (int)value) ? (T)Enum.ToObject(typeof(T), (int)value) : null;
 }

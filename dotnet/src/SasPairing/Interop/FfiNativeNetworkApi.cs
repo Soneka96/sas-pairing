@@ -12,8 +12,6 @@ internal sealed unsafe class FfiNativeNetworkApi : INativeNetworkApi
 {
     private const int EventCapacity = (int)AbiV1Constants.SAS_PAIRING_MAX_DRIVE_EVENTS;
 
-    private static readonly NativeBootstrapBytes NoBootstrap = new([], [], [], []);
-
     private readonly AbiV1FunctionTable _functions;
 
     internal FfiNativeNetworkApi(AbiV1FunctionTable functions)
@@ -23,21 +21,19 @@ internal sealed unsafe class FfiNativeNetworkApi : INativeNetworkApi
 
     public NativeAttachOutcome AttachWindowsListener(ulong runtime, ulong host, nuint listener, NativeBootstrapBytes local, NativeBootstrapBytes? expected)
     {
-        nuint slot = listener;
-        NativeBootstrapBytes peer = expected ?? NoBootstrap;
-        int status;
+        nuint slotAfterCall = listener;
 
-        // Every field is pinned only for this call (the library copies the bytes); an empty field pins
-        // nothing and is passed as NULL with length 0.
-        fixed (byte* la = local.ApplicationIdentity, lk = local.KeyAlgorithm, lp = local.PublicKey, ls = local.SharedContext)
-        fixed (byte* ea = peer.ApplicationIdentity, ek = peer.KeyAlgorithm, ep = peer.PublicKey, es = peer.SharedContext)
+        // The Bootstraps go through the one marshalling path (pinned only for this call; the library copies
+        // the bytes). The in/out slot is a stack local of the one call, read back before it returns.
+        int status = NativeBootstrapMarshalling.Call(local, expected, (localView, expectedView) =>
         {
-            sas_pairing_bootstrap_view_t localView = NativeBootstrapMarshalling.View(local, la, lk, lp, ls);
-            sas_pairing_bootstrap_view_t expectedView = NativeBootstrapMarshalling.View(peer, ea, ek, ep, es);
-            status = _functions.sas_pairing_host_attach_windows_listener(runtime, host, &slot, &localView, expected is null ? null : &expectedView);
-        }
+            nuint slot = listener;
+            int called = _functions.sas_pairing_host_attach_windows_listener(runtime, host, &slot, localView, expectedView);
+            slotAfterCall = slot;
+            return called;
+        });
 
-        return new NativeAttachOutcome(status, slot);
+        return new NativeAttachOutcome(status, slotAfterCall);
     }
 
     public int DetachListener(ulong runtime, ulong host) => _functions.sas_pairing_host_detach_listener(runtime, host);

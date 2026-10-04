@@ -1,20 +1,30 @@
 namespace SasPairing;
 
 /// <summary>
-/// One exact native run handle of one connection (P9-D-003 Q), package-internal until P9.4 builds the public
-/// run over it. The identity is the native handle, never the request ID: a replacement run under a reused
-/// request ID gets its own reference, and no reference is ever retargeted. A reference may be stale (its run
-/// ended without a visible event); it is invalidated when an event makes its end visible, or when its
-/// connection, the owner loop, the host, or a parent ends.
+/// One exact native run handle of one connection (P9-D-003 Q, P9-D-004): the reference behind exactly one public
+/// <see cref="SasPairingRun"/>. The identity is the native handle, never the request ID: a replacement run under
+/// a reused request ID gets its own reference, and no reference is ever retargeted. The request ID is routing
+/// metadata only: known when a drive event reported the run, and explicitly unknown for a locally started
+/// Initiator until an event names that exact handle (it is never invented). A reference may be stale (its run
+/// ended without a visible event); it is invalidated when an event or a local action makes its end visible, or
+/// when its connection, the owner loop, the host, or a parent ends.
 /// </summary>
 internal sealed class NativeRunRef
 {
     private byte[]? _requestId;
 
+    /// <summary>A run a drive event reported under <paramref name="requestId"/>.</summary>
     internal NativeRunRef(ulong handle, ReadOnlySpan<byte> requestId)
     {
         Handle = handle;
         _requestId = requestId.ToArray();
+    }
+
+    /// <summary>A locally started run: its request ID is unknown until a drive event names this exact handle.</summary>
+    internal NativeRunRef(ulong handle)
+    {
+        Handle = handle;
+        _requestId = null;
     }
 
     /// <summary>The exact native run handle.</summary>

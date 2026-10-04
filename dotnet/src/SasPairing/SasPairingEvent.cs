@@ -20,7 +20,7 @@ public sealed class SasPairingEvent
         bool writePending,
         bool runUntracked,
         byte[] requestId,
-        NativeRunRef? run,
+        SasPairingRun? run,
         NativeResultRef? result)
     {
         Kind = kind;
@@ -85,7 +85,14 @@ public sealed class SasPairingEvent
     /// </summary>
     public ReadOnlySpan<byte> RequestId => _requestId;
 
-    /// <summary>Whether the event names a live run that the package tracks by its exact native run handle.</summary>
+    /// <summary>
+    /// The live run the event names, tracked by its exact native run handle: the same object for every event and
+    /// local action of that native run (also the run returned by <see cref="SasPairingConnection.StartInitiator"/>).
+    /// Null when the event names no live run (for example after the run ended, or with <see cref="RunUntracked"/>).
+    /// </summary>
+    public SasPairingRun? Run { get; }
+
+    /// <summary>Whether the event names a live run that the package tracks by its exact native run handle: exactly <c>Run is not null</c>.</summary>
     public bool HasTrackedRun => Run is not null;
 
     /// <summary>
@@ -100,9 +107,6 @@ public sealed class SasPairingEvent
     /// action can target the untracked run. The drive never disposes the connection itself.
     /// </summary>
     public bool ShouldDisposeConnection => RunUntracked && Connection is not null;
-
-    /// <summary>The exact run reference the event names (package-internal until P9.4).</summary>
-    internal NativeRunRef? Run { get; }
 
     /// <summary>The runtime-owned result reference the event delivered (package-internal until P9.5).</summary>
     internal NativeResultRef? Result { get; }

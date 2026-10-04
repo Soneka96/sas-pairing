@@ -4,12 +4,13 @@
 
 `SasPairing` (package ID, namespace, and assembly; version `0.1.0-dev.1`, `net10.0`) is the planned idiomatic .NET wrapper over the shared native security core, built in P9 ([P9 package](../docs/p9-dotnet-package/README.md), [decisions](../docs/p9-dotnet-package/decisions.md)). It binds the frozen [native ABI v1](../docs/p7-native-abi/abi-v1-manifest.md) and implements no protocol or cryptography itself: the Rust core is the only protocol implementation.
 
-## Current state (P9.3)
+## Current state (P9.4)
 
 - The P9.1 foundation exists: the solution [`SasPairing.sln`](SasPairing.sln), the library [`src/SasPairing`](src/SasPairing/SasPairing.csproj), and its tests [`tests/SasPairing.Tests`](tests/SasPairing.Tests/SasPairing.Tests.csproj). The ABI v1 binding and its loader stay **internal**: the exact constants, records, and 25-export function table, and a loader that opens one native library from an explicit absolute path, requires 64-bit pointers, all 25 exports, and ABI version 1, and keeps the library loaded until the process exits ([P9-D-001](../docs/p9-dotnet-package/decisions.md#p9-d-001--net-abi-v1-binding-and-loader-architecture)).
 - **P9.2: the runtime, authority, and host lifecycle** and its status and error model ([P9-D-002](../docs/p9-dotnet-package/decisions.md#p9-d-002--net-lifecycle-ownership-public-errors-and-fail-closed-state)).
 - **P9.3: the Windows listener handoff and the cooperative network driver** ([P9-D-003](../docs/p9-dotnet-package/decisions.md#p9-d-003--net-windows-listener-cooperative-drive-event-and-connection-ownership)): the binary `SasPairingBootstrap`, the one-use listener token, attach and detach, one bounded `Drive()` and one `RecheckAfterResume()`, drive events, and `IDisposable` connections. Nothing native is public: no handle, socket value, pointer, native record, or loader.
-- **No ceremony or result API exists yet.** Runs, the trusted-local ceremony steps, and SAS presentation (P9.4) and results (P9.5) follow; until then an accepted connection can be driven and closed, but no pairing ceremony can be completed through .NET.
+- **P9.4: runs, the trusted-local ceremony, and SAS presentation** ([P9-D-004](../docs/p9-dotnet-package/decisions.md#p9-d-004--net-run-identity-explicit-ceremony-control-and-sas-binding)): one `SasPairingRun` per exact native run, `StartInitiator`, the explicit exposure, SAS, BOOTSTRAP_MAC, and INITIATOR_FINISH steps, read-only SAS presentation, and decisions bound to the exact ceremony identity. A full ceremony can be completed through .NET on Windows.
+- **No result API exists yet.** An event reports `HasResult`; reading and destroying results (P9.5) follows.
 - **No NuGet package exists.** The project is not packable and nothing is published; P9.6 decides distribution. No native binary is committed or bundled.
 
 ## API
@@ -24,8 +25,14 @@
 | `SasPairingHostNetworkState` | `Detached`, `Attached`, `ListenerDisabled`, `FailedClosed` |
 | `SasPairingDriveBatch` | `Events` (read-only, native order), `Failure` (null or the owner loop's failure) |
 | `SasPairingDriveFailure` | `StatusCode`, `KnownStatus`, `ProcessRestartRequired` |
-| `SasPairingEvent` | `Kind`, `Connection`, `StepKind`, `ProtocolEvent`, `Reason`, `DeadlineKind`, `CancelState`, `CancelReason`, `WritePending`, `RunUntracked`, `RequestId` (exact bytes), `HasTrackedRun`, `HasResult`, `ShouldDisposeConnection` |
-| `SasPairingConnection : IDisposable` | `IsDisposed`, `Dispose()` |
+| `SasPairingEvent` | `Kind`, `Connection`, `StepKind`, `ProtocolEvent`, `Reason`, `DeadlineKind`, `CancelState`, `CancelReason`, `WritePending`, `RunUntracked`, `RequestId` (exact bytes), `Run`, `HasTrackedRun` (exactly `Run is not null`), `HasResult`, `ShouldDisposeConnection` |
+| `SasPairingConnection : IDisposable` | `StartInitiator(local, expected = null)`, `IsDisposed`, `Dispose()` |
+| `SasPairingRun` (not disposable) | `IsEnded`, `AuthorizeExposure()`, `ExposeKey()`, `Presentation()`, `ApproveSas(identity)`, `EmitBootstrapMac()`, `RejectSas(identity)`, `CancelSas(identity)`, `EmitInitiatorFinish()` |
+| `SasPairingLocalAction` | `Event`, `Run` (null once the run ended), `DeadlineKind`, `WritePending` |
+| `SasPairingLocalEvent` | the twelve frozen successful local events (`InitiatorStarted = 1` … `Deadline = 12`) |
+| `SasPairingSasPresentation` | `CeremonyIdentity`, `DecimalDisplay` (`NNNN NNNN NNNN`) |
+| `SasPairingCeremonyIdentity` | `Bytes` (exactly 32, read-only); value equality (`Equals`, `==`, `!=`, `GetHashCode`); no public constructor |
+| `SasPairingRunEndedException` | `Operation`: a method of a run already known to have ended (no native call) |
 | Event enums | `SasPairingEventKind`, `SasPairingStepKind`, `SasPairingProtocolEvent`, `SasPairingEventReason`, `SasPairingDeadlineKind`, `SasPairingCancelState`, `SasPairingCancelReason`, each with the frozen native values |
 | `SasPairingAuthorityStatus` | immutable `readonly record struct` (`State`, `RemainingOpportunities`) |
 | `SasPairingAuthorityState` | `Ready`, `Busy`, `Exhausted` |
@@ -122,9 +129,63 @@ host.DetachListener(); // cleanup: one native detach; every connection becomes d
 
 A successful `Drive()` can return useful `Events` **and** a `Failure` at the same time: process every event, then act on the failure, which means the owner loop failed closed after or beside those events (`NetworkPollFailed`, `OwnershipUncertain`, `OwnerLoopClosed`, or `Fatal`, which also requires a process restart). A non-zero status of the call itself (for example `ListenerNotAttached` or `HandlesExhausted`) is thrown as `SasPairingNativeException` and returns no batch.
 
-Every event of one native connection carries the same `SasPairingConnection` object. A `ConnectionClosed` event carries it already disposed. Event kinds, step kinds, protocol events, reasons, deadline kinds, and cancel states and reasons are operational metadata copied from the native core, never trust verdicts. `RequestId` is the exact 0–64 routing bytes, never text or an identity. `WritePending` only says that the connection still holds one outbound frame, which the native library writes on a later drive. `HasResult` says that this endpoint completed one ceremony locally; the result itself is held by the runtime until P9.5 exposes it.
+Every event of one native connection carries the same `SasPairingConnection` object. A `ConnectionClosed` event carries it already disposed. Event kinds, step kinds, protocol events, reasons, deadline kinds, and cancel states and reasons are operational metadata copied from the native core, never trust verdicts. `RequestId` is the exact 0–64 routing bytes, never text or an identity. `WritePending` only says that the connection still holds one outbound frame, which the native library writes on a later drive. `Run` is the run the event names (the same `SasPairingRun` object for every event and local action of one native run). `HasResult` says that this endpoint completed one ceremony locally; the result itself is held by the runtime until P9.5 exposes it.
 
 **`RUN_UNTRACKED`.** When `evt.RunUntracked` is true, the native core has a live run for which no run handle exists, so no trusted local ceremony action can ever target it. `evt.ShouldDisposeConnection` is then true: after processing the whole batch you SHOULD call `evt.Connection?.Dispose()`. The package never disposes it automatically.
+
+## Runs and the trusted-local ceremony
+
+```csharp
+// Endpoint A starts an Initiator on an accepted connection. ONE native call: nothing is driven,
+// authorized, exposed, or spent. The request ID is generated natively and not returned.
+SasPairingLocalAction started = connection.StartInitiator(local, expected);
+SasPairingRun run = started.Run!;            // the same object every later event of this run carries
+
+host.Drive();                                // explicit: started.WritePending is true (START is retained)
+
+// ... later, once the run is ready for exposure (for example after its ACCEPT event):
+run.AuthorizeExposure();                     // records consent only: exposes, spends, sends nothing
+SasPairingLocalAction exposed = run.ExposeKey(); // THE security-spending step (native accounting)
+host.Drive();                                // explicit: exposed.WritePending is true
+
+SasPairingSasPresentation? presentation = run.Presentation(); // read-only; null while no SAS is live
+if (presentation is not null)
+{
+    // The application shows presentation.DecimalDisplay ("NNNN NNNN NNNN") to the user, who compares it
+    // with the other device. Only if the user (or trusted local policy) chooses MATCH:
+    run.ApproveSas(presentation.CeremonyIdentity);  // records MATCH only: emits nothing
+    // Otherwise: run.RejectSas(presentation.CeremonyIdentity) or run.CancelSas(presentation.CeremonyIdentity).
+}
+
+// Still explicit, and only after MATCH:
+run.EmitBootstrapMac();                      // does NOT emit INITIATOR_FINISH
+host.Drive();
+
+// Initiator only, after both approvals were authenticated (BOOTSTRAP_MAC_AUTHENTICATED events):
+run.EmitInitiatorFinish();
+host.Drive();                                // the native library writes the frames and confirms the final ACK itself
+```
+
+A Responder run appears on the other endpoint as `evt.Run` of a `StartAccepted` drive event; it makes the same explicit `AuthorizeExposure`, `ExposeKey`, `Presentation`, `ApproveSas`, and `EmitBootstrapMac` steps, but never `EmitInitiatorFinish` (`NotInitiator`).
+
+- **Every step is explicit and is exactly one native call.** `AuthorizeExposure` does not expose the key; `ApproveSas` does not emit BOOTSTRAP_MAC; `EmitBootstrapMac` does not emit INITIATOR_FINISH. No method chains another step, drives the host, or retries. There is no convenience "approve and continue" call.
+- **Two kinds of "write pending".** A `SasPairingNativeException` with `SasPairingStatus.WritePending` (205) means the requested action **did NOT run**: the connection still retains an earlier frame. Drive, then retry only if the application still wants to. `SasPairingLocalAction.WritePending == true` on a returned action means the action **did run** and its frame is retained until a later `Drive()`. The package keeps no write-pending state of its own and retries nothing.
+- **One run object per native run.** A run is identified by its exact native run, never by its request ID: `StartInitiator(...).Run`, every later action's `Run`, and every drive event's `Run` for that native run are the same object. A locally started run's request ID is unknown until a drive event names the run; a new native run under a reused request ID is a new object, and the old one ends. There is no run handle or request-ID property.
+- **`IsEnded` means "ending observed".** It becomes true after a reject, cancel, or deadline action, a drive event that makes the end visible (including a result), native `RunEnded`, or the end of the connection, listener, owner loop, host, or a parent. A run can also end without anything visible: `IsEnded` then stays false and the next call throws a `SasPairingNativeException` with `RunEnded` (204), after which it is true. False never proves the native run is still live. Any method of a run known to have ended throws `SasPairingRunEndedException` without a native call. A run is not disposable (ABI v1 has no run destroy).
+- **The SAS display is comparison data only.** `DecimalDisplay` is exactly 14 ASCII characters, `NNNN NNNN NNNN`. It authenticates, approves, and trusts nothing by itself; the application or user owns the comparison and decides MATCH, MISMATCH, or CANCEL. The package never compares displays and never approves. Presentation is read-only (no state change, no deadline refresh, nothing sent) and reaches the native library also while a frame is retained. The raw SAS bytes are never exposed.
+- **The ceremony identity binds the decision.** Pass `presentation.CeremonyIdentity` back **unchanged** to `ApproveSas`, `RejectSas`, or `CancelSas`. It is exactly 32 bytes (`Bytes`, read-only), compares by value, and cannot be constructed by callers. It is **not** a peer identity, request ID, run or connection identity, secret, or trust key. The package does not check whether an identity belongs to the run: the native core does, and a stale or foreign identity is refused with `CeremonyIdentityMismatch` (208) and changes nothing.
+- **Exposure spends.** `ExposeKey` makes the native core consume the run's fresh authorization and reserve the authority's guard and one opportunity (`GetStatus()` then reports `Busy` until the run ends); nothing ever refunds it. The package keeps no budget or accounting of its own.
+- **Reject and cancel end the run.** Their action has no `Run`, the run reports `IsEnded`, and `WritePending` may report a retained best-effort authenticated CANCEL (drive to write it). The connection stays open. A successful action may also report `SasPairingLocalEvent.Deadline` (with a `DeadlineKind`): the run's own deadline ended it first and the requested step did not happen.
+- **No final-ACK API.** The native library writes every frame and confirms the Initiator's final ACK itself after the complete local write; there is nothing to call after a socket write, and no such method exists.
+- **A result is local only.** An event with `HasResult` means only that THIS endpoint completed the ceremony locally: not that the peer completed, not a bilateral commit, and not stored trust. The result itself stays with the runtime until P9.5 exposes it.
+
+| Failure of a ceremony call | Effect, then the exact `SasPairingNativeException` |
+|---|---|
+| `RunEnded` (204) | that run ends (later calls: `SasPairingRunEndedException`) |
+| `ConnectionEnded` (405) | the connection is disposed locally (no native close) and every run of it ends |
+| `OwnershipUncertain` (104), `OwnerLoopClosed` (403) | the host becomes `FailedClosed`: every connection disposed, every run ended |
+| `Fatal` (900) | process fatal latch; no run or connection is ended by it; cleanup still works |
+| any other (`WritePending`, `MissingAuthorization`, `Busy`, `Exhausted`, `CeremonyIdentityMismatch`, `NotLocallyApproved`, `NotInitiator`, …) | nothing changes |
 
 ## Errors
 
@@ -132,12 +193,13 @@ Every event of one native connection carries the same `SasPairingConnection` obj
 |---|---|
 | `SasPairingInitializationException` | Loading or ABI verification of the native library failed (`Failure`: one of seven categories). No native status exists. When `ProcessRestartRequired` is false (`UnsupportedPointerWidth`, `InvalidLibraryPath`, `OpenFailed`) nothing was loaded and a later `Create` may succeed once the cause is fixed. When it is true (`MissingSymbol`, `BindingFailed`, `AbiVersionQueryFailed`, `AbiVersionMismatch`) an image is loaded and never replaced: correct the library and restart the OS process |
 | `SasPairingNativeException` | A native operation returned a non-zero status: `Operation`, the exact `StatusCode`, and `KnownStatus` (null for a status this version does not name; an unknown status is always a failure). A second live `Create` gives `AlreadyInitialized` |
-| `ObjectDisposedException` | Local use of a disposed runtime, authority, host, or listener token; no native call is made |
+| `ObjectDisposedException` | Local use of a disposed runtime, authority, host, connection, or listener token; no native call is made |
+| `SasPairingRunEndedException` | A method of a run already known to have ended (`Operation`); no native call is made. The first native `RunEnded` is a `SasPairingNativeException` (204) instead |
 | `InvalidOperationException` | A listener token that was already transferred, or that another attach is using, was offered again; no native call is made |
 | `PlatformNotSupportedException` | `FromSocket` off Windows; the socket was not touched |
 | `SasPairingContractException` | The native library reported an output that native ABI v1 makes impossible (for example a zero handle, an impossible authority status, an impossible socket slot, or an impossible drive event). Normal operations are refused for the rest of the process; cleanup still runs; restart the OS process |
 
-**Fatal.** When a native operation returns `SasPairingStatus.Fatal` (900), or a drive reports it as its `Failure`, the native state of the process is permanently fatal: the wrapper refuses every later normal operation (`Create`, `RegisterAuthority`, `GetStatus`, `CreateHost`, `AttachWindowsListener`, `Drive`, `RecheckAfterResume`) without entering the native library, with `ProcessRestartRequired` true. Cleanup (`Dispose`, `DetachListener`, `Connection.Dispose`) still performs its native call. The only recovery is restarting the OS process: there is no reset, reload, or re-initialize, and disposing and re-creating the runtime does not clear it.
+**Fatal.** When a native operation returns `SasPairingStatus.Fatal` (900), or a drive reports it as its `Failure`, the native state of the process is permanently fatal: the wrapper refuses every later normal operation (`Create`, `RegisterAuthority`, `GetStatus`, `CreateHost`, `AttachWindowsListener`, `Drive`, `RecheckAfterResume`, `StartInitiator`, and every run step including `Presentation`) without entering the native library, with `ProcessRestartRequired` true. Cleanup (`Dispose`, `DetachListener`, `Connection.Dispose`) still performs its native call. The only recovery is restarting the OS process: there is no reset, reload, or re-initialize, and disposing and re-creating the runtime does not clear it.
 
 **Statuses are not trust verdicts.** A status describes the outcome of one operation. It never classifies a peer as trusted, malicious, attacking, or compromised.
 
@@ -147,8 +209,8 @@ Disposing a runtime and creating another reuses the same loaded native library a
 
 ### Platform scope
 
-- **Windows (x64):** the lifecycle and the listener and network path work through the public API (the Windows TCP carrier the native core defines). Ceremony control and results follow in P9.4 and P9.5.
-- **Linux (x64):** the package builds, the ABI v1 library loads, and a runtime can be created, but authority registration fails closed with `UnsupportedPlatform` and `SasPairingWindowsListenerSocket.FromSocket` throws `PlatformNotSupportedException`. The network wrapper's fake and FFI tests run there; Linux pairing is not supported.
+- **Windows (x64):** the lifecycle, the listener and network path, and the trusted-local ceremony work through the public API (the Windows TCP carrier the native core defines). The result API follows in P9.5.
+- **Linux (x64):** the package builds, the ABI v1 library loads, and a runtime can be created, but authority registration fails closed with `UnsupportedPlatform` and `SasPairingWindowsListenerSocket.FromSocket` throws `PlatformNotSupportedException`. The network and ceremony wrappers' fake and FFI tests run there; Linux pairing is not supported.
 
 ## Build and test
 

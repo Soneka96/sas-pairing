@@ -3,14 +3,14 @@ using SasPairing.Interop;
 namespace SasPairing;
 
 /// <summary>
-/// The native state of this process as the wrapper sees it (P9-D-002, P9-D-003): the one verified ABI v1
-/// binding, the lifecycle-native and network-native services over it, and two process latches that never reset, the observed native
+/// The native state of this process as the wrapper sees it (P9-D-002, P9-D-003, P9-D-004): the one verified ABI v1
+/// binding, the lifecycle-native, network-native, and ceremony-native services over it, and two process latches that never reset, the observed native
 /// <c>SAS_PAIRING_FATAL</c> and the observed wrapper contract violation (an impossible success output).
 /// Shared below every runtime: disposing a runtime and creating another reuses it, latches included.
 /// </summary>
 /// <remarks>
 /// Normal operations (runtime create, authority register, authority status, host create, listener attach,
-/// drive, resume recheck) are admitted by
+/// drive, resume recheck, Initiator start, and the eight run ceremony operations) are admitted by
 /// <see cref="AdmitNormal"/>, which checks, in order, the contract latch and then the fatal latch, and makes no
 /// native call when either is set; the object-local disposed check comes before it in each wrapper. Cleanup
 /// operations (runtime destroy, authority release, host destroy, listener detach, connection close) are never
@@ -25,10 +25,11 @@ internal sealed class NativeProcessContext
     private int _fatal;
     private string? _contractViolation;
 
-    internal NativeProcessContext(INativeLifecycleApi lifecycle, INativeNetworkApi network, NativeAbiV1? binding = null)
+    internal NativeProcessContext(INativeLifecycleApi lifecycle, INativeNetworkApi network, INativeCeremonyApi ceremony, NativeAbiV1? binding = null)
     {
         Lifecycle = lifecycle;
         Network = network;
+        Ceremony = ceremony;
         Binding = binding;
     }
 
@@ -40,6 +41,9 @@ internal sealed class NativeProcessContext
 
     /// <summary>The network-native service, over the same binding as <see cref="Lifecycle"/>.</summary>
     internal INativeNetworkApi Network { get; }
+
+    /// <summary>The ceremony-native service, over the same binding as <see cref="Lifecycle"/>.</summary>
+    internal INativeCeremonyApi Ceremony { get; }
 
     /// <summary>Whether <c>SAS_PAIRING_FATAL</c> was observed in this process. Never cleared.</summary>
     internal bool IsFatal => Volatile.Read(ref _fatal) != 0;
@@ -76,21 +80,28 @@ internal sealed class NativeProcessContext
     /// </summary>
     internal void ThrowIfFailed(string operation, int status)
     {
-        if (status == AbiV1Constants.SAS_PAIRING_OK)
+        if (status != AbiV1Constants.SAS_PAIRING_OK)
         {
-            return;
+            throw Failed(operation, status);
         }
+    }
 
+    /// <summary>
+    /// The exception of the non-zero <paramref name="status"/>, after latching native fatal for status 900. Any
+    /// other value, known or unknown, latches nothing.
+    /// </summary>
+    internal SasPairingNativeException Failed(string operation, int status)
+    {
         if (status == AbiV1Constants.SAS_PAIRING_FATAL)
         {
             Volatile.Write(ref _fatal, 1);
-            throw new SasPairingNativeException(
+            return new SasPairingNativeException(
                 operation,
                 status,
                 $"{operation} failed with native status {SasPairingNativeException.Name(status)}. The native state of this process is permanently fatal: every later normal operation is refused, cleanup still runs, and only an OS process restart recovers.");
         }
 
-        throw new SasPairingNativeException(operation, status, $"{operation} failed with native status {SasPairingNativeException.Name(status)}.");
+        return new SasPairingNativeException(operation, status, $"{operation} failed with native status {SasPairingNativeException.Name(status)}.");
     }
 
     /// <summary>
@@ -142,22 +153,28 @@ internal sealed class NativeProcessContextSource
     private readonly NativeAbiV1Loader _loader;
     private readonly Func<NativeAbiV1, INativeLifecycleApi> _lifecycle;
     private readonly Func<NativeAbiV1, INativeNetworkApi> _network;
+    private readonly Func<NativeAbiV1, INativeCeremonyApi> _ceremony;
     private readonly Lock _gate = new();
     private NativeProcessContext? _context;
 
-    internal NativeProcessContextSource(NativeAbiV1Loader loader, Func<NativeAbiV1, INativeLifecycleApi> lifecycle, Func<NativeAbiV1, INativeNetworkApi> network)
+    internal NativeProcessContextSource(
+        NativeAbiV1Loader loader,
+        Func<NativeAbiV1, INativeLifecycleApi> lifecycle,
+        Func<NativeAbiV1, INativeNetworkApi> network,
+        Func<NativeAbiV1, INativeCeremonyApi> ceremony)
     {
         _loader = loader;
         _lifecycle = lifecycle;
         _network = network;
+        _ceremony = ceremony;
     }
 
     /// <summary>
-    /// The source of this process: the P9.1 process loader and the real lifecycle and network exports, both
-    /// over the one function table of the one image.
+    /// The source of this process: the P9.1 process loader and the real lifecycle, network, and ceremony
+    /// exports, all over the one function table of the one image.
     /// </summary>
     internal static NativeProcessContextSource Process { get; } =
-        new(NativeAbiV1Loader.Process, abi => new FfiNativeLifecycleApi(abi.Functions), abi => new FfiNativeNetworkApi(abi.Functions));
+        new(NativeAbiV1Loader.Process, abi => new FfiNativeLifecycleApi(abi.Functions), abi => new FfiNativeNetworkApi(abi.Functions), abi => new FfiNativeCeremonyApi(abi.Functions));
 
     /// <summary>
     /// Initializes the loader once (later calls return its one binding without loading anything) and returns
@@ -178,7 +195,7 @@ internal sealed class NativeProcessContextSource
 
         lock (_gate)
         {
-            return _context ??= new NativeProcessContext(_lifecycle(binding), _network(binding), binding);
+            return _context ??= new NativeProcessContext(_lifecycle(binding), _network(binding), _ceremony(binding), binding);
         }
     }
 
