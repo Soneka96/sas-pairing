@@ -1,0 +1,5 @@
+# .NET build and test output (never committed)
+bin/
+obj/
+TestResults/
+*.user

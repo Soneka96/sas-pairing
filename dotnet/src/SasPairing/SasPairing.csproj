@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>SasPairing</RootNamespace>
+    <AssemblyName>SasPairing</AssemblyName>
+    <PackageId>SasPairing</PackageId>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionSuffix>dev.1</VersionSuffix>
+    <!-- P9.1: no NuGet package is produced or published; P9.6 decides distribution. -->
+    <IsPackable>false</IsPackable>
+    <Description>Experimental, pre-alpha .NET wrapper over the sas-pairing native core (native ABI v1). Not production-ready.</Description>
+    <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/Soneka96/sas-pairing</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <!-- The raw ABI v1 interop under Interop/ needs pointers, fixed buffers, and function pointers. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SasPairing.Tests" />
+  </ItemGroup>
+
+</Project>

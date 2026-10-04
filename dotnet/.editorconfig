@@ -1,0 +1,18 @@
+# C# and MSBuild settings for dotnet/ (inherits the repository .editorconfig: UTF-8, LF, final newline).
+
+[*.{cs,csx}]
+indent_size = 4
+trim_trailing_whitespace = true
+
+# Language and style preferences enforced by `dotnet format --verify-no-changes`.
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_using_directive_placement = outside_namespace:warning
+dotnet_sort_system_directives_first = true
+csharp_prefer_braces = true:warning
+csharp_style_var_for_built_in_types = false:silent
+dotnet_style_qualification_for_field = false:warning
+dotnet_style_qualification_for_property = false:warning
+dotnet_style_qualification_for_method = false:warning
+
+[*.{csproj,props,targets,sln}]
+indent_size = 2
