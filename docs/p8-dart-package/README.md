@@ -2,7 +2,7 @@
 
 > **Pre-alpha, experimental.** P8 builds the Dart binding of the frozen sas-pairing native ABI v1. It is not production-security approved, not audited, and not formally verified. The protocol is implemented only by the native Rust core; Dart binds C.
 
-**Status: P8 IN PROGRESS — P8.4 COMPLETE; P8.5 in progress.** Roadmap: [P8 — Dart Package](../../roadmap/P8-dart-package.md). Decisions: [decisions.md](decisions.md). Package: [`dart/`](../../dart/README.md).
+**Status: P8 IN PROGRESS — P8.5 COMPLETE; P8.6 next.** Roadmap: [P8 — Dart Package](../../roadmap/P8-dart-package.md). Decisions: [decisions.md](decisions.md). Package: [`dart/`](../../dart/README.md).
 
 ## Baseline
 
@@ -20,8 +20,8 @@
 | P8.2 | Runtime / Authority / Host lifecycle wrapper: public lifecycle objects, status and exception model, explicit consuming `close()`, native-cascade mirroring, FATAL and contract-violation latches; P8.2.1: public initialization errors and the `READY` 1–10 bound | [P8-D-002](decisions.md#p8-d-002--dart-lifecycle-ownership-and-fail-closed-state) | **Complete** ([evidence](#p82-evidence), [P8.2.1](#p821-evidence)) |
 | P8.3 | Windows listener ownership and cooperative network driver: Bootstrap value model, listening-socket ownership handoff, attach and detach, bounded host drive and resume recheck, event mapping, connection wrappers, `RUN_UNTRACKED` close guidance | [P8-D-003](decisions.md#p8-d-003--dart-windows-listener-cooperative-drive-and-connection-lifetime) | **Complete** ([evidence](#p83-evidence)) |
 | P8.4 | Run + ceremony control + SAS presentation: public runs from drive events and local starts, the nine trusted-local ceremony actions, SAS presentation and ceremony-identity binding | [P8-D-004](decisions.md#p8-d-004--dart-run-identity-explicit-ceremony-control-and-sas-binding) | **Complete** ([evidence](#p84-evidence)) |
-| P8.5 | PairingResult API + result ownership: public runtime-owned results from drive events, explicit synchronous snapshot reads, explicit and runtime-cascade destruction, result data access after native FATAL | [P8-D-005](decisions.md#p8-d-005--dart-pairingresult-ownership-data-access-and-local-completion) | In progress |
-| Later | Native artifact distribution, final P8 closure | — | Planned |
+| P8.5 | PairingResult API + result ownership: public runtime-owned results from drive events, explicit synchronous snapshot reads, explicit and runtime-cascade destruction, result data access after native FATAL | [P8-D-005](decisions.md#p8-d-005--dart-pairingresult-ownership-data-access-and-local-completion) | **Complete** ([evidence](#p85-evidence)) |
+| P8.6 | Native artifact distribution + final P8 closure | — | Next |
 
 ## P7 wrapper handoff
 
@@ -32,16 +32,16 @@ The mandatory obligations of [ABI contract §21](../p7-native-abi/abi-contract.m
 | 1 | Bind exactly ABI v1; check `sas_pairing_abi_version() == 1` before any other call | P8.1: the loader preflights all 25 exports and requires version `1` before publishing the library; `0` and any other value fail permanently |
 | 2 | One native image, retained for the process lifetime; no close, unload, reload, reset, or alternate copy | P8.1: one `DynamicLibrary.open` from an explicit path, retained strongly; no such API exists; a second initialization opens nothing |
 | 3 | Tell consumers that `SAS_PAIRING_FATAL` needs an OS process restart | P8.2: `SasPairingNativeException.processRestartRequired` (true exactly for 900); the process FATAL latch refuses every later normal operation without a native call, cleanup stays allowed, no reset API; documented ([package README](../../dart/README.md)) |
-| 4 | Caller-memory contract | P8.2 (lifecycle): the private lifecycle service allocates aligned, typed, distinct output slots and an exact scope copy for each call and frees them before returning; P8.3 (network): the private network service does the same for the socket slot, the Bootstrap views and their byte copies, the 17 event records, `out_count`, and `out_failure`, copying every produced record before the memory is freed; no pointer outlives a call |
+| 4 | Caller-memory contract | P8.2 (lifecycle): the private lifecycle service allocates aligned, typed, distinct output slots and an exact scope copy for each call and frees them before returning; P8.3 (network): the private network service does the same for the socket slot, the Bootstrap views and their byte copies, the 17 event records, `out_count`, and `out_failure`, copying every produced record before the memory is freed; P8.5 (results): the private result service allocates one zeroed info record per info call and, per copy, one `size_t` slot and a buffer of exactly the reported length (a null buffer for 0), copying out only on `OK` and never past the capacity; no pointer outlives a call |
 | 5 | Listener handoff through the in/out slot | P8.3: `SasPairingWindowsListenerSocket` is offered through one typed `sas_pairing_socket_t` slot; the slot is read before any status is processed; `isTransferred` becomes true exactly when it reads `SAS_PAIRING_SOCKET_INVALID`, and a transferred token never reaches native code again |
 | 6 | Cooperative bounded drive; consume every event, also when `out_failure` is not OK | P8.3: `drive()` / `recheckAfterResume()` make exactly one native call with capacity 17; with `SAS_PAIRING_OK` every event is delivered in a `SasPairingDriveBatch` and the owner-loop failure is `batch.failure` (never thrown); no loop, timer, stream, isolate, or callback exists |
 | 7 | SHOULD close a connection after `RUN_UNTRACKED` | P8.3: exposed as `event.runUntracked` with `event.shouldCloseConnection`; the consumer closes the connection after the batch (documented); the drive never closes it itself |
 | 8 | Explicit ceremony steps, `WRITE_PENDING` handling, decisions bound to the exact `ceremony_identity` | P8.4: one public method per native action (`startInitiator`, `authorizeExposure`, `exposeKey`, `approveSas`, `emitBootstrapMac`, `rejectSas`, `cancelSas`, `emitInitiatorFinish`), each exactly one native call that chains nothing and drives nothing; status `writePending` (205) is thrown and means the action did not run, the action flag is `SasPairingLocalAction.writePending` and means it ran; `approveSas`, `rejectSas`, and `cancelSas` take only a `SasPairingCeremonyIdentity`, which only a presentation produces |
 | 9 | Never construct, parse, or send frames; never confirm a final ACK | P8.1: no protocol code exists in Dart (guarded by a scope test); permanent. P8.4: no final-ACK confirmation API exists (scope-guarded); the Initiator's result appears on a later drive after the native adapter confirmed its final ACK |
-| 10 | A result is local verified completion only | P8.3: a delivered result handle is retained package-privately at runtime lifetime and surfaced only as `event.hasResult`, documented as local verified completion only. P8.4: unchanged; a local action never returns a result; the public result API is P8.5 |
+| 10 | A result is local verified completion only | P8.3: a delivered result handle is retained package-privately at runtime lifetime. P8.4: a local action never returns a result. P8.5: `SasPairingResult` is one runtime-owned local verified completion, documented (class, entrypoint, and package README) as never peer completion, a bilateral commit, or persisted trust; it has no trust, bilateral, or persistence member (scope- and member-guarded), and the package never persists, enrolls, or trusts from it |
 | 11 | Own the comparison UX and trust policy; no status is a trust verdict | P8.2: `SasPairingStatus` mirrors the 48 frozen values; exceptions carry the exact code (unknown codes preserved); no trust, malice, or authorization property exists. P8.4: `SasPairingSasPresentation.decimal` is display data; the package never compares displays or decides MATCH, and the application calls the decision; no action, run, or presentation carries a trust property |
 
-## Package layout (P8.4)
+## Package layout (P8.5)
 
 ```text
 dart/
@@ -50,8 +50,8 @@ dart/
   ffigen.yaml                  explicit ABI v1 generation filter
   lib/
     sas_pairing.dart           public entrypoint: exports the P8.2 lifecycle, status, and
-                               exception types, the P8.3 network types, and the P8.4 run and
-                               ceremony types by explicit show lists
+                               exception types, the P8.3 network types, the P8.4 run and
+                               ceremony types, and the P8.5 result types by explicit show lists
     src/
       lifecycle.dart           SasPairingRuntime / Authority / Host (with the host's network
                                methods), AuthorityState / Status
@@ -63,8 +63,10 @@ dart/
                                SasPairingLocalEvent, SasPairingSasPresentation,
                                SasPairingCeremonyIdentity; action and presentation validation
                                and the one ceremony status handler (P8.4)
-      network_refs.dart        private: exact native run and result references (P8.3; run
-                               request IDs may start unknown since P8.4)
+      result.dart              part of network.dart: SasPairingResult, SasPairingResultData,
+                               SasPairingPeerRole; the runtime-owned NativeResultStore (P8.5)
+      network_refs.dart        private: exact native run references (P8.3; run request IDs
+                               may start unknown since P8.4; results moved to result.dart, P8.5)
       status.dart              SasPairingStatus (48 frozen values)
       exceptions.dart          Initialization / Native / Closed / Contract / RunEnded exceptions
       native/                  private: never exported
@@ -73,13 +75,14 @@ dart/
         native_lifecycle_api.dart    NativeLifecycleApi: the seven lifecycle exports, all FFI memory
         native_network_api.dart      NativeNetworkApi: the five network exports, all FFI memory (P8.3)
         native_ceremony_api.dart     NativeCeremonyApi: the nine ceremony exports, all FFI memory (P8.4)
+        native_result_api.dart       NativeResultApi: the three result exports, all FFI memory (P8.5)
         native_bootstrap.dart        the one shared Bootstrap view marshaller (attach and start)
-        native_process_context.dart  per-image process context: the three services, FATAL and
-                                     contract latches
+        native_process_context.dart  per-image process context: the four services, FATAL and
+                                     contract latches, normal and data admission
         generated/
           sas_pairing_bindings.g.dart  generated raw FFI (SasPairingNativeBindings)
   test/                        manifest, binding, layout, loader, initialization, lifecycle
-                               (fake), network (fake), ceremony (fake), Bootstrap, FFI
+                               (fake), network (fake), ceremony (fake), result (fake), Bootstrap, FFI
                                marshalling, status, public API, real-artifact, scope tests;
                                support/winsock.dart is the test-only loopback listener harness
                                and support/ceremony_child.dart holds the test-only relay
@@ -110,7 +113,7 @@ SasPairingRuntime                 runtime_create / runtime_destroy (close)
 ## Network contract (P8-D-003)
 
 ```text
-SasPairingRuntime                 + runtime-lifetime private result references
+SasPairingRuntime                 + runtime-owned results (public since P8.5)
   └── SasPairingAuthority
         └── SasPairingHost        networkState; attachWindowsListener / detachListener /
               │                   drive / recheckAfterResume
@@ -123,7 +126,7 @@ SasPairingRuntime                 + runtime-lifetime private result references
 - **Drive / recheck** (normal): one native call, capacity 17. A nonzero return value is a `SasPairingNativeException` with no batch; with `OK`, every event is delivered in native order and a nonzero `out_failure` is `batch.failure`, after which (and only after mapping every event) FATAL is latched for 900 and every connection is closed with the state `failedClosed`.
 - **Events**: every frozen namespace value maps to one named enum value; an impossible record (unknown value or flag, `reserved != 0`, `request_id_len > 64`, missing or unknown connection, duplicate accept, more than 17 events, and the other record-local invariants of P8-D-003 K) is a contract violation.
 - **Connections**: one wrapper per native handle, reused by every later event; closed by `close()` (one `sas_pairing_connection_close`, consuming; `OWNERSHIP_UNCERTAIN` fails the loop closed), by its closed event, by detach, by an owner-loop failure, and by host or parent close (no native call). `LISTENER_DISABLED` closes none.
-- **Private references**: exact run handles per connection and result handles per runtime, never public; invalidated only by the native visibility rules and teardowns of P8-D-003 N.
+- **Private references**: exact run handles per connection, never public; invalidated only by the native visibility rules and teardowns of P8-D-003 N. Result handles are kept by the runtime and wrapped as public results since P8.5 (see the result contract below).
 
 | Operation | Native calls | Local effect |
 |---|---|---|
@@ -131,7 +134,7 @@ SasPairingRuntime                 + runtime-lifetime private result references
 | `detachListener()` | 1 × `sas_pairing_host_detach_listener`, 0 × connection close | `detached`, every connection closed |
 | `SasPairingHost.close()` | 1 × `sas_pairing_host_destroy`, 0 × detach, 0 × connection close | host closed, `detached`, every connection closed |
 | `SasPairingAuthority.close()` | 1 × `sas_pairing_authority_release`, 0 × host destroy, detach, or connection close | authority, hosts, and connections closed |
-| `SasPairingRuntime.close()` | 1 × `sas_pairing_runtime_destroy`, no child cleanup export | every descendant closed; result references invalid |
+| `SasPairingRuntime.close()` | 1 × `sas_pairing_runtime_destroy`, no child cleanup export | every descendant closed, every open result closed |
 
 ## Ceremony contract (P8-D-004)
 
@@ -170,11 +173,42 @@ SasPairingConnection              startInitiator(local, expected)  → a new Sas
 | `fatal` (900) | process FATAL latch; no ending inferred; cleanup still allowed |
 | `writePending` and every ceremony or core refusal | none |
 
-- **Results.** A local action never returns a result. Results still arrive only on drive events and stay private at runtime lifetime (`event.hasResult`: local verified completion only); P8.5 wraps them.
+- **Results.** A local action never returns a result. Results arrive only on drive events (`event.result`; see the result contract below).
+
+## Result contract (P8-D-005)
+
+```text
+SasPairingRuntime                 owns every SasPairingResult (NativeResultStore: live results +
+  │                               every delivered handle, never public)
+  └── SasPairingResult            one native result handle = ONE local verified completion;
+                                  isClosed / read() / close()
+        read() ──► SasPairingResultData   immutable snapshot: ceremonyIdentity, peerRole (the
+                                          PEER's role), profileVersion, requestId,
+                                          authenticatedPeerBootstrap, authenticatedSharedContext,
+                                          profileIdentifier
+```
+
+- **Local completion only.** A result is this endpoint's locally verified completion. It never says that the peer completed, holds a result, received the final message, or committed, and it is not persisted or established trust; either side may be the only holder. The package persists, enrolls, and trusts nothing.
+- **Delivery.** A drive event with a result carries `event.result` (`hasResult == (result != null)`): the handle is checked, kept in the runtime's store, and wrapped. Nothing is read while the event is mapped, so a batch with several events and an `out_failure` is still delivered whole.
+- **One object per handle, never reused.** The store keeps every delivered handle until runtime close. A second delivery of a handle, whether its result is open or already closed, is a contract violation; no second wrapper is ever made.
+- **Ownership and survival.** Run endings, connection close, a `connectionClosed` event, detach, an owner-loop failure (also in the same batch as the result), host close, authority close, and native FATAL leave a result open and make no `sas_pairing_result_destroy` call. Only `SasPairingResult.close()` and `SasPairingRuntime.close()` end it.
+- **Read.** `read()` checks that the result is open, then the data admission, then makes one `sas_pairing_result_info` and exactly one `sas_pairing_result_copy` per field (request ID, authenticated peer Bootstrap, authenticated shared context, profile identifier) at exactly the length the info reported (a null buffer with capacity 0 for an empty field). Every read reads native again (no cache); a failure returns nothing partial and leaves the result open.
+- **Data admission.** Native FATAL does not block `read()` (ABI v1 keeps existing results readable because reading never enters the core); a Dart-observed contract violation does (no native call). `close()` is allowed after both.
+- **Contract checks on a successful read.** Exactly 32 identity bytes (all-zero is valid); peer role `INITIATOR` or `RESPONDER` (`INVALID` or unknown is a violation); `request_id_len` ≤ 64, `peer_bootstrap_len` ≤ 16,384, `shared_context_len` ≤ 8,192 (the frozen bounds); a copy whose `OK` reports another length, or `BUFFER_TOO_SMALL` at the exact reported capacity, is a violation, never a resize and retry. Any other nonzero status is thrown exactly (`FATAL` latched). `profile_version` and `profile_identifier_len` are preserved, not validated.
+- **Exact bytes.** The four byte fields are defensive copies behind unmodifiable views. The peer Bootstrap is the exact canonical frame native returned and is never parsed; the request ID, shared context, and profile identifier are never decoded. The ceremony identity reuses `SasPairingCeremonyIdentity`, equal to the presentation identity of the same ceremony.
+- **Close.** The first `close()` marks the result closed and makes one `sas_pairing_result_destroy`; a failure (`INVALID_HANDLE`, `FATAL`, unknown) is thrown once and never retried. Runtime close makes its one `sas_pairing_runtime_destroy` and closes every remaining result, with no result destroy. A data snapshot already read stays usable after both.
+
+| Operation | Native calls | Local effect on results |
+|---|---|---|
+| Drive event with a result | the drive only | one new open `SasPairingResult`; nothing read |
+| `SasPairingResult.read()` | 1 × `sas_pairing_result_info`, 4 × `sas_pairing_result_copy` | none; a new immutable `SasPairingResultData` |
+| `SasPairingResult.close()` (first) | 1 × `sas_pairing_result_destroy` | that result closed (also on failure); later calls nothing |
+| Connection close, detach, host close, authority close, owner-loop failure, FATAL | their own calls only | none |
+| `SasPairingRuntime.close()` | 1 × `sas_pairing_runtime_destroy`, 0 × result destroy | every open result closed |
 
 ## Real-native test topology
 
-`dart test` runs each test file in its own isolate of one VM process. To keep the one-owner-isolate rule (P8-D-001 N), only `test/native_artifact_test.dart` loads the real library into the test process, and it calls only the version query there. The P8.2 real lifecycle scenarios the P8.3 real network scenarios, and the P8.4 real two-endpoint ceremony run in child OS processes (`dart run test/support/lifecycle_child.dart <scenario> <artifact>`, `dart run test/support/network_child.dart <scenario> <artifact>`, `dart run test/support/ceremony_child.dart windows-happy-path <artifact>`), each with a single isolate that is its native owner; the test process never registers an authority. The ceremony child joins its two accepted loopback connections with a test-only byte-transparent relay (two Dart client sockets that copy every byte unchanged and only count them). The network scenarios bind loopback listening sockets with the test-only WinSock harness `test/support/winsock.dart`, which closes a socket only while its token is untransferred. Every Windows scenario uses unique, non-text scopes (a literal, the child's process ID, and the bytes `00 80 FF`). All other lifecycle tests use a deterministic fake of the private lifecycle service and load nothing; the production loader has no test reset.
+`dart test` runs each test file in its own isolate of one VM process. To keep the one-owner-isolate rule (P8-D-001 N), only `test/native_artifact_test.dart` loads the real library into the test process, and it calls only the version query there. The P8.2 real lifecycle scenarios the P8.3 real network scenarios, and the P8.4 real two-endpoint ceremony (extended in P8.5 with both results' reads, lifetimes, and destruction) run in child OS processes (`dart run test/support/lifecycle_child.dart <scenario> <artifact>`, `dart run test/support/network_child.dart <scenario> <artifact>`, `dart run test/support/ceremony_child.dart windows-happy-path <artifact>`), each with a single isolate that is its native owner; the test process never registers an authority. The ceremony child joins its two accepted loopback connections with a test-only byte-transparent relay (two Dart client sockets that copy every byte unchanged and only count them). The network scenarios bind loopback listening sockets with the test-only WinSock harness `test/support/winsock.dart`, which closes a socket only while its token is untransferred. Every Windows scenario uses unique, non-text scopes (a literal, the child's process ID, and the bytes `00 80 FF`). All other lifecycle tests use a deterministic fake of the private lifecycle service and load nothing; the production loader has no test reset.
 
 Regenerating the raw bindings (requires libclang; on Windows the default LLVM install, on Linux `libclang-dev`):
 
@@ -199,8 +233,8 @@ Dart statics are isolate-local, so the loader is a singleton per isolate, not pe
 
 | Platform | Native ABI v1 in Dart | Pairing |
 |---|---|---|
-| Windows (x64) | The real `sas_pairing_core.dll` loads, binds, and reports ABI version 1; the P8.2 lifecycle, the P8.3 listener attach, drive, events, and connections, and the P8.4 runs, ceremony control, and SAS presentation work against it | Supported by P7 (Windows TCP carrier); a complete two-endpoint ceremony through the public Dart API is proven; result contents come in P8.5 |
-| Linux (x64) | The real `libsas_pairing_core.so` loads, binds, and reports ABI version 1; a runtime can be created and closed | Not supported: authority registration fails closed with `SasPairingStatus.unsupportedPlatform` (`SAS_PAIRING_UNSUPPORTED_PLATFORM`) as P7 defines, so no host or listener exists; the P8.3 network and P8.4 ceremony wrappers are verified there against the deterministic fake only |
+| Windows (x64) | The real `sas_pairing_core.dll` loads, binds, and reports ABI version 1; the P8.2 lifecycle, the P8.3 listener attach, drive, events, and connections, and the P8.4 runs, ceremony control, and SAS presentation work against it | Supported by P7 (Windows TCP carrier); a complete two-endpoint ceremony through the public Dart API is proven, and both endpoints' results are read after every networking object is gone and destroyed explicitly or by the runtime |
+| Linux (x64) | The real `libsas_pairing_core.so` loads, binds, and reports ABI version 1; a runtime can be created and closed | Not supported: authority registration fails closed with `SasPairingStatus.unsupportedPlatform` (`SAS_PAIRING_UNSUPPORTED_PLATFORM`) as P7 defines, so no host or listener exists; the P8.3 network, P8.4 ceremony, and P8.5 result wrappers are verified there against the deterministic fake only (no result can be produced there) |
 | 32-bit processes | Refused before any library is opened | Not supported |
 
 ## Evidence
@@ -318,6 +352,34 @@ Commits on `feature/p8-dart-package`, from `da2d02d`: `cf4490d` (`docs: define p
 | Dart tests | 460 (Windows with the real DLL: 459 passed, 1 Linux-only skipped): manifest 7, generated bindings 6, record layout 4, loader 19, initialization 11, lifecycle 41, FFI lifecycle 7, FFI network 10, FFI ceremony 20, network 95, ceremony 193, Bootstrap 4, status 5, public API 15, scope 12, real artifact 11 (1 new real ceremony); `dart format` clean; `dart analyze --fatal-infos` clean |
 | Native regression | `abi::tests::freeze` 3 passed (1 ignored) locally and in the Dart workflow; `Rust security core` (`windows-core`, `unsupported-platform-fails-closed`) and `Repository consistency` green on the same head |
 
+### P8.5 evidence
+
+Commits on `feature/p8-dart-package`, from `4877db4`: `b259c16` (`docs: define p8 dart result ownership contract`), `d178f94` (`feat: add dart pairing result api`), `4c07053` (`test: verify dart result ownership and data access`; all five CI jobs green on that exact head), then the closure commit `docs: close p8.5 dart pairing results`. No native file changed.
+
+| Item | Result |
+|---|---|
+| Public surface | The entrypoint adds, by explicit `show` lists, `SasPairingResult` (`isClosed`, `read()`, `close()`), `SasPairingResultData` (exactly `ceremonyIdentity`, `peerRole`, `profileVersion`, `requestId`, `authenticatedPeerBootstrap`, `authenticatedSharedContext`, `profileIdentifier`), and `SasPairingPeerRole` (`initiator`, `responder`); `SasPairingEvent` gains `result` (`hasResult == (result != null)`). No result handle, field number, info record, copy primitive, required length, `Pointer`, or generated record is public; no public constructor exists for a result or its data; the ceremony identity is the one P8.4 type (source-checked) |
+| Native boundary | Exactly the three result exports, called only from `NativeResultApi` (source-scanned, with the 7 lifecycle, 5 network, and 9 ceremony exports in their services); `git diff 4877db4 -- core` and `git diff 80ecbb1 -- core` empty |
+| Source-proven bounds | `request_id_len` ≤ 64 (`SAS_PAIRING_MAX_REQUEST_ID_LEN`, ABI contract §18.1); `peer_bootstrap_len` ≤ 16,384 (the canonical Bootstrap frame bound of the frozen profile §3.1/§4, `MAX_BOOTSTRAP_FRAME`); `shared_context_len` ≤ 8,192 (profile §4); no narrower bound for `profile_identifier_len`; `profile_version` not validated |
+| Result FFI marshalling | 15 tests (`native_result_api_test.dart`) over the generated bindings with Dart callbacks as the C exports: one zeroed, 4-aligned 56-byte info record; every field copied on `OK` (64-bit handles and `0xFFFFFFFF` values preserved), the identity a copy that outlives the record; no record on `INVALID_HANDLE`, `FATAL`, or 777 even when the export wrote one; each of the four field constants unchanged; a zero length as a null buffer with capacity 0 and empty bytes; a nonzero length as an exact-capacity zeroed buffer, bytes exact with no terminator (a 16,384-byte non-text field included); `BUFFER_TOO_SMALL` reports `required` and no bytes; never a read past the capacity; destroy statuses raw |
+| Result wrapper (fake) | 70 tests (`result_test.dart`): delivery 8, read 15, source-proven bounds 8, copy length consistency 6, native failures 5, data admission 5, explicit close 6, survival 10, result with `out_failure` 2, runtime close 4, no handle in text 1 |
+| Delivery and handles | A result event carries an open result and only the drive crosses the boundary (no info, copy, or destroy); `hasResult` mirrors `result` on every event kind; Responder (`INITIATOR_FINISH_ACK`) and Initiator (`CONFIRMED`) paths; one object per handle in the runtime store; a live duplicate (later batch or same batch) and a handle reused after its result was closed are contract violations with no new object and nothing read |
+| Read | One info then four copies, in field order, at exactly the reported lengths and the exact handles; data equal to the source bytes; repeated reads go to native each time and agree; the identity equals a P8.4 presentation identity of the same bytes (same type, equality, hash); `INITIATOR` → `initiator`, `RESPONDER` → `responder`; `INVALID`, 3, `0xFFFFFFFF`, a 31-byte identity, or `OK` without a record → contract violation (later reads refused locally, close still destroys); all-zero identity accepted; profile versions 0, 1, 2, `0xFFFF`, `0xFFFFFFFF` preserved; non-text bytes (`00 FF 80 00`, `FF 00 C3 28 00`, ...) exact; empty shared context and profile identifier empty; request ID 64, Bootstrap 16,384, shared context 8,192 accepted and one more → violation before any copy; a 70,000-byte profile identifier preserved; a negative length → violation |
+| Length consistency | `OK` with required 15 or 17 for a 16-byte request ID, or with the right required length but other bytes → violation, nothing copied after it, result open; `BUFFER_TOO_SMALL` at the exact capacity (required 7, 8, 1,000) → violation (never a `SasPairingNativeException`), the Bootstrap asked for once only |
+| Native failures | Copy `INVALID_HANDLE` on the shared context → exact exception after three copies, no data, result open, the next read succeeds; copy or info `FATAL` → FATAL latched, result still closeable; unknown 777 preserved; info `INVALID_HANDLE` → no copy |
+| Data admission | After native FATAL from an unrelated drive, a pre-existing result is read (info + four copies) and destroyed natively while normal operations stay refused; after an unrelated contract violation a read is refused locally (no info, no copy) and close still makes one destroy; a closed result is refused before any latch |
+| Close | One destroy with the exact handles, second close 0 calls; `INVALID_HANDLE`, `FATAL` (latched), and 31337 from the first destroy → closed, thrown once, later close silent, read local; a FATAL destroy blocks no read of another result; data read before close stays usable |
+| Survival | The run's ending, connection close (no destroy), a `connectionClosed` event, detach, a later `NETWORK_POLL_FAILED` or `OWNERSHIP_UNCERTAIN` loop failure, a ceremony call's `OWNERSHIP_UNCERTAIN`, host close (exactly `[hostDestroy]`), authority close (exactly `[authorityRelease]`), and all of them plus native FATAL together leave the result open and readable |
+| Result + `out_failure` | One drive with a result and `NETWORK_POLL_FAILED`: the result delivered, open, readable, while the host is `failedClosed` and the connection closed. With `out_failure = FATAL`: the batch returned, FATAL latched, `failedClosed`, connection closed, then `read()` makes info + four copies and succeeds, and `close()` reaches native |
+| Runtime cascade | Three results: runtime close makes exactly `[runtimeDestroy]`, every result closed, later read local and close silent with no call; an explicitly closed result is not destroyed again; a failing runtime destroy still closes every result; snapshots stay usable |
+| Fatal classes | `status_test.dart`: the three result exports are `data` in manifest §2, and after a FATAL latch a pre-existing result's info, copy, and destroy still reach native |
+| Scope and public API | `package_scope_test.dart` 14 (updated, not removed: the later-increment result ban replaced by bans on a generic field API (`copyField`, `readRawField`, `nativeResultInfo`, `requiredLength`, `SasPairingResultField`, `nativeHandle`, ...) and on trust automation or bilateral names (`persist…`, `enroll…`, `bilateral…`, `peerSucceeded`, `committed`, `isTrusted`, `trustPeer`, ...); the result file has exactly one `close()`; runtime close names no result destroy or close; the result service is the only caller of the three exports and holds FFI memory; new: `read()` uses `admitData` exactly once and never `admitNormal`, `close()` no admission, one info and one copy call site, each field once, no loop, and no other file reads or destroys a result; new: `authenticatedPeerBootstrap` appears only in its declaration and constructor, and the result file uses no Bootstrap model or byte-parsing primitive); `public_api_test.dart` 17 (+2: a consumer type-checks the whole P8.5 API from the entrypoint alone; the result types carry exactly their reviewed members, no public constructor, no second identity type, and a two-member peer role) |
+| Real Windows ceremony | The P8.4 child, unchanged up to its local results, now continues through the public API only: exactly one result object per endpoint, from its own event, both open; detach (connections closed), then both hosts and both authorities closed while the runtime stays open; then both results read: identity A equals presentation A, identity B equals presentation B, and both are equal; peer role A (the Initiator) `responder`, B `initiator`; both request IDs equal, 16 bytes, and equal to the `startAccepted` request ID; profile version 1 and identifier `sas-pairing-vodozemac-profile-draft-01` on both (the frozen `PROFILE_ID` / `VERSION`); shared context exactly the fixture's bytes on both; peer Bootstraps 136 bytes each, distinct, A's containing B's configured identity and key and not A's own identity, and back (test-only byte search, no parsing); a repeat read equal; result A closed explicitly (twice), its read refused; runtime close then closes result B (read refused); both snapshots unchanged. About 6 s locally |
+| Linux | Ubuntu CI: package analysis, the 70 fake result, 15 result FFI, scope, public-API, status, and network tests (nothing skipped in the `P8.5 results (fake native services)` step), and the existing real native smoke and lifecycle; no Linux pairing is claimed (no result can be produced there) |
+| Mutations (temporary, reverted) | Each made its tests fail: (A) connection close invalidates results → 1 survival test; (B) authority close invalidates results → 2 tests; (C) `read()` uses `admitNormal` → 4 FATAL-read tests; (D) `BUFFER_TOO_SMALL` resized and retried → 3 tests; (E) copy length mismatch accepted → 3 tests; (F) a second `close()` calls native → 5 tests; (G) runtime close closes each result first → 2 cascade tests and 2 scope tests; (H) peer roles reversed → 3 fake tests and the real Windows ceremony; (I) public `int get nativeHandle` → 3 public-API tests and the scope test; (J) a Dart decoder of `authenticatedPeerBootstrap` into `SasPairingBootstrap` → the Bootstrap-bytes scope test and the members test; (K) `bool get peerSucceeded => true` → the scope trust rule and the members test; (L) only live handles checked, so a destroyed handle is accepted again → the never-reused-handle test |
+| Dart tests | 549 (Windows with the real DLL: 548 passed, 1 Linux-only skipped): manifest 7, generated bindings 6, record layout 4, loader 19, initialization 11, lifecycle 41, FFI lifecycle 7, FFI network 10, FFI ceremony 20, FFI result 15, network 95, ceremony 193, result 70, Bootstrap 4, status 5, public API 17, scope 14, real artifact 11 (the real ceremony extended); `dart format` clean; `dart analyze --fatal-infos` clean |
+| Native regression | `abi::tests::freeze` 3 passed (1 ignored) locally and in the Dart workflow; `Rust security core` (`windows-core`, `unsupported-platform-fails-closed`) and `Repository consistency` green on the same head |
+
 ## Nonclaims
 
-P8 does not claim production readiness, security approval, an audit, formal verification, Linux or other non-Windows pairing support, cross-isolate enforcement of the one-image rule, protection against hostile in-process code, or recovery from `SAS_PAIRING_FATAL` without a process restart.
+P8 does not claim production readiness, bilateral completion or persisted trust from a result, security approval, an audit, formal verification, Linux or other non-Windows pairing support, cross-isolate enforcement of the one-image rule, protection against hostile in-process code, or recovery from `SAS_PAIRING_FATAL` without a process restart.

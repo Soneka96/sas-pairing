@@ -19,7 +19,7 @@ P6 ✅ Review Remediation + Protocol Freeze (complete: P5-F-002, P5-F-001, P5-F-
  ↓
 P7 ✅ Native ABI (complete: P7.1–P7.7; native ABI v1 frozen by P7-D-013 with 25 exports; two-sided public-ABI ceremony proven; P6-D-004 ABI panic containment evidence complete; not production-security approved)
  ↓
-P8 🔵 Dart Package (in progress: P8.1 package foundation + frozen ABI v1 bindings complete; P8.2 runtime / authority / host lifecycle wrapper complete; P8.3 Windows listener ownership + cooperative network driver complete; P8.4 run + ceremony control + SAS presentation complete; P8.5 PairingResult API + result ownership next; one branch feature/p8-dart-package)
+P8 🔵 Dart Package (in progress: P8.1 package foundation + frozen ABI v1 bindings complete; P8.2 runtime / authority / host lifecycle wrapper complete; P8.3 Windows listener ownership + cooperative network driver complete; P8.4 run + ceremony control + SAS presentation complete; P8.5 PairingResult API + result ownership complete; P8.6 native artifact distribution + P8 closure next; one branch feature/p8-dart-package)
  ↓
 P9 🟡 .NET Package
  ↓
