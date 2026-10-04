@@ -2,7 +2,7 @@
 
 > **Pre-alpha, experimental.** P8 builds the Dart binding of the frozen sas-pairing native ABI v1. It is not production-security approved, not audited, and not formally verified. The protocol is implemented only by the native Rust core; Dart binds C.
 
-**Status: P8 IN PROGRESS — P8.2 COMPLETE (with the P8.2.1 correction); P8.3 in progress.** Roadmap: [P8 — Dart Package](../../roadmap/P8-dart-package.md). Decisions: [decisions.md](decisions.md). Package: [`dart/`](../../dart/README.md).
+**Status: P8 IN PROGRESS — P8.3 COMPLETE; P8.4 next.** Roadmap: [P8 — Dart Package](../../roadmap/P8-dart-package.md). Decisions: [decisions.md](decisions.md). Package: [`dart/`](../../dart/README.md).
 
 ## Baseline
 
@@ -18,8 +18,9 @@
 |---|---|---|---|
 | P8.1 | Dart package foundation: pure-Dart package `sas_pairing`, generated private raw FFI of ABI v1 (25 functions, constants, records), the process-lifetime native-library loader (explicit path, 64-bit gate, symbol preflight, ABI version 1), layout and manifest consistency tests, Windows and Linux CI | [P8-D-001](decisions.md#p8-d-001--dart-native-binding-and-loader-architecture) | **Complete** ([evidence](#p81-evidence)) |
 | P8.2 | Runtime / Authority / Host lifecycle wrapper: public lifecycle objects, status and exception model, explicit consuming `close()`, native-cascade mirroring, FATAL and contract-violation latches; P8.2.1: public initialization errors and the `READY` 1–10 bound | [P8-D-002](decisions.md#p8-d-002--dart-lifecycle-ownership-and-fail-closed-state) | **Complete** ([evidence](#p82-evidence), [P8.2.1](#p821-evidence)) |
-| P8.3 | Windows listener ownership and cooperative network driver: Bootstrap value model, listening-socket ownership handoff, attach and detach, bounded host drive and resume recheck, event mapping, connection wrappers, `RUN_UNTRACKED` close guidance | [P8-D-003](decisions.md#p8-d-003--dart-windows-listener-cooperative-drive-and-connection-lifetime) | In progress |
-| Later | Ceremony control and SAS presentation, runs and results, native artifact distribution, final P8 closure | — | Planned |
+| P8.3 | Windows listener ownership and cooperative network driver: Bootstrap value model, listening-socket ownership handoff, attach and detach, bounded host drive and resume recheck, event mapping, connection wrappers, `RUN_UNTRACKED` close guidance | [P8-D-003](decisions.md#p8-d-003--dart-windows-listener-cooperative-drive-and-connection-lifetime) | **Complete** ([evidence](#p83-evidence)) |
+| P8.4 | Run + ceremony control + SAS presentation | — | Next |
+| Later | Results, native artifact distribution, final P8 closure | — | Planned |
 
 ## P7 wrapper handoff
 
@@ -30,16 +31,16 @@ The mandatory obligations of [ABI contract §21](../p7-native-abi/abi-contract.m
 | 1 | Bind exactly ABI v1; check `sas_pairing_abi_version() == 1` before any other call | P8.1: the loader preflights all 25 exports and requires version `1` before publishing the library; `0` and any other value fail permanently |
 | 2 | One native image, retained for the process lifetime; no close, unload, reload, reset, or alternate copy | P8.1: one `DynamicLibrary.open` from an explicit path, retained strongly; no such API exists; a second initialization opens nothing |
 | 3 | Tell consumers that `SAS_PAIRING_FATAL` needs an OS process restart | P8.2: `SasPairingNativeException.processRestartRequired` (true exactly for 900); the process FATAL latch refuses every later normal operation without a native call, cleanup stays allowed, no reset API; documented ([package README](../../dart/README.md)) |
-| 4 | Caller-memory contract | P8.2 (lifecycle): the private lifecycle service allocates aligned, typed, distinct output slots and an exact scope copy for each call and frees them before returning; no pointer outlives a call; later increments extend it to the drive and record calls |
-| 5 | Listener handoff through the in/out slot | Later increment (bound and symbol-checked only) |
-| 6 | Cooperative bounded drive; consume every event, also when `out_failure` is not OK | Later increment (bound only; no drive loop, timer, or isolate exists) |
-| 7 | SHOULD close a connection after `RUN_UNTRACKED` | Later increment |
+| 4 | Caller-memory contract | P8.2 (lifecycle): the private lifecycle service allocates aligned, typed, distinct output slots and an exact scope copy for each call and frees them before returning; P8.3 (network): the private network service does the same for the socket slot, the Bootstrap views and their byte copies, the 17 event records, `out_count`, and `out_failure`, copying every produced record before the memory is freed; no pointer outlives a call |
+| 5 | Listener handoff through the in/out slot | P8.3: `SasPairingWindowsListenerSocket` is offered through one typed `sas_pairing_socket_t` slot; the slot is read before any status is processed; `isTransferred` becomes true exactly when it reads `SAS_PAIRING_SOCKET_INVALID`, and a transferred token never reaches native code again |
+| 6 | Cooperative bounded drive; consume every event, also when `out_failure` is not OK | P8.3: `drive()` / `recheckAfterResume()` make exactly one native call with capacity 17; with `SAS_PAIRING_OK` every event is delivered in a `SasPairingDriveBatch` and the owner-loop failure is `batch.failure` (never thrown); no loop, timer, stream, isolate, or callback exists |
+| 7 | SHOULD close a connection after `RUN_UNTRACKED` | P8.3: exposed as `event.runUntracked` with `event.shouldCloseConnection`; the consumer closes the connection after the batch (documented); the drive never closes it itself |
 | 8 | Explicit ceremony steps, `WRITE_PENDING` handling, decisions bound to the exact `ceremony_identity` | Later increment |
 | 9 | Never construct, parse, or send frames; never confirm a final ACK | P8.1: no protocol code exists in Dart (guarded by a scope test); permanent |
-| 10 | A result is local verified completion only | Later increment |
+| 10 | A result is local verified completion only | P8.3: a delivered result handle is retained package-privately at runtime lifetime and surfaced only as `event.hasResult`, documented as local verified completion only; the public result API comes later |
 | 11 | Own the comparison UX and trust policy; no status is a trust verdict | P8.2: `SasPairingStatus` mirrors the 48 frozen values; exceptions carry the exact code (unknown codes preserved); no trust, malice, or authorization property exists |
 
-## Package layout (P8.2)
+## Package layout (P8.3)
 
 ```text
 dart/
@@ -48,21 +49,30 @@ dart/
   ffigen.yaml                  explicit ABI v1 generation filter
   lib/
     sas_pairing.dart           public entrypoint: exports the P8.2 lifecycle, status, and
-                               exception types by explicit show lists
+                               exception types and the P8.3 network types by explicit show lists
     src/
-      lifecycle.dart           SasPairingRuntime / Authority / Host, AuthorityState / Status
+      lifecycle.dart           SasPairingRuntime / Authority / Host (with the host's network
+                               methods), AuthorityState / Status
+      bootstrap.dart           SasPairingBootstrap (P8.3)
+      network.dart             listener token, network state, connection, drive batch and
+                               failure, event and event enums; the package-private HostNetwork
+                               and event mapper (P8.3)
+      network_refs.dart        private: exact native run and result references (P8.3)
       status.dart              SasPairingStatus (48 frozen values)
       exceptions.dart          Initialization / Native / Closed / Contract exceptions
       native/                  private: never exported
         abi_v1.dart            frozen ABI v1 tables (exports, values, record sizes)
         native_library_loader.dart   process-lifetime loader (P8.1, unchanged)
         native_lifecycle_api.dart    NativeLifecycleApi: the seven lifecycle exports, all FFI memory
-        native_process_context.dart  per-image process context: FATAL and contract latches
+        native_network_api.dart      NativeNetworkApi: the five network exports, all FFI memory (P8.3)
+        native_process_context.dart  per-image process context: the two services, FATAL and
+                                     contract latches
         generated/
           sas_pairing_bindings.g.dart  generated raw FFI (SasPairingNativeBindings)
   test/                        manifest, binding, layout, loader, initialization, lifecycle
-                               (fake), FFI marshalling, status, public API, real-artifact,
-                               scope tests
+                               (fake), network (fake), Bootstrap, FFI marshalling, status,
+                               public API, real-artifact, scope tests; support/winsock.dart is
+                               the test-only loopback listener harness
 ```
 
 ## Lifecycle contract (P8-D-002)
@@ -87,9 +97,35 @@ SasPairingRuntime                 runtime_create / runtime_destroy (close)
 - **Initialization failures** (P8.2.1). A loader failure inside `SasPairingRuntime.create` is translated at one package-private boundary into the public `SasPairingInitializationException` (category `SasPairingInitializationFailure`, message preserved, no native status). Pre-load failures (pointer width, invalid path, OS load failure) have `processRestartRequired == false` and may be retried after correcting the cause; post-load failures (missing export, version query 0, version mismatch, verification failure) have `processRestartRequired == true` and fail every later `create` in the process. The private loader types are never exported.
 - **Runtime recreation** reuses the same loaded image (the loader opens nothing once ready) and resets nothing: not the latches, the authority opportunity budget, the START limiter, or any process-session state.
 
+## Network contract (P8-D-003)
+
+```text
+SasPairingRuntime                 + runtime-lifetime private result references
+  └── SasPairingAuthority
+        └── SasPairingHost        networkState; attachWindowsListener / detachListener /
+              │                   drive / recheckAfterResume
+              ├── optional native network context (one listener + owner loop)
+              └── SasPairingConnection wrappers (+ private exact run references)
+```
+
+- **Attach** (normal): one `sas_pairing_host_attach_windows_listener` over a typed in/out socket slot. The slot is read first: `SAS_PAIRING_SOCKET_INVALID` marks the token transferred (also for `LISTENER_SETUP_FAILED` and a late `FATAL`), the offered value leaves it with the caller, anything else is a contract violation, and `OK` without `INVALID` is a contract violation. `OK` sets `attached`; nothing is driven.
+- **Detach** (cleanup, idempotent): one `sas_pairing_host_detach_listener`; then `detached`, every connection closed locally, no `sas_pairing_connection_close`.
+- **Drive / recheck** (normal): one native call, capacity 17. A nonzero return value is a `SasPairingNativeException` with no batch; with `OK`, every event is delivered in native order and a nonzero `out_failure` is `batch.failure`, after which (and only after mapping every event) FATAL is latched for 900 and every connection is closed with the state `failedClosed`.
+- **Events**: every frozen namespace value maps to one named enum value; an impossible record (unknown value or flag, `reserved != 0`, `request_id_len > 64`, missing or unknown connection, duplicate accept, more than 17 events, and the other record-local invariants of P8-D-003 K) is a contract violation.
+- **Connections**: one wrapper per native handle, reused by every later event; closed by `close()` (one `sas_pairing_connection_close`, consuming; `OWNERSHIP_UNCERTAIN` fails the loop closed), by its closed event, by detach, by an owner-loop failure, and by host or parent close (no native call). `LISTENER_DISABLED` closes none.
+- **Private references**: exact run handles per connection and result handles per runtime, never public; invalidated only by the native visibility rules and teardowns of P8-D-003 N.
+
+| Operation | Native calls | Local effect |
+|---|---|---|
+| `SasPairingConnection.close()` (first) | 1 × `sas_pairing_connection_close` | that connection closed, its run references invalid; on `OWNERSHIP_UNCERTAIN` every connection closed and `failedClosed` |
+| `detachListener()` | 1 × `sas_pairing_host_detach_listener`, 0 × connection close | `detached`, every connection closed |
+| `SasPairingHost.close()` | 1 × `sas_pairing_host_destroy`, 0 × detach, 0 × connection close | host closed, `detached`, every connection closed |
+| `SasPairingAuthority.close()` | 1 × `sas_pairing_authority_release`, 0 × host destroy, detach, or connection close | authority, hosts, and connections closed |
+| `SasPairingRuntime.close()` | 1 × `sas_pairing_runtime_destroy`, no child cleanup export | every descendant closed; result references invalid |
+
 ## Real-native test topology
 
-`dart test` runs each test file in its own isolate of one VM process. To keep the one-owner-isolate rule (P8-D-001 N), only `test/native_artifact_test.dart` loads the real library into the test process, and it calls only the version query there. The P8.2 real lifecycle scenarios run in child OS processes (`dart run test/support/lifecycle_child.dart <scenario> <artifact>`), each with a single isolate that is its native owner; the test process never registers an authority. Every Windows scenario uses unique, non-text scopes (a literal, the child's process ID, and the bytes `00 80 FF`). All other lifecycle tests use a deterministic fake of the private lifecycle service and load nothing; the production loader has no test reset.
+`dart test` runs each test file in its own isolate of one VM process. To keep the one-owner-isolate rule (P8-D-001 N), only `test/native_artifact_test.dart` loads the real library into the test process, and it calls only the version query there. The P8.2 real lifecycle scenarios and the P8.3 real network scenarios run in child OS processes (`dart run test/support/lifecycle_child.dart <scenario> <artifact>`, `dart run test/support/network_child.dart <scenario> <artifact>`), each with a single isolate that is its native owner; the test process never registers an authority. The network scenarios bind loopback listening sockets with the test-only WinSock harness `test/support/winsock.dart`, which closes a socket only while its token is untransferred. Every Windows scenario uses unique, non-text scopes (a literal, the child's process ID, and the bytes `00 80 FF`). All other lifecycle tests use a deterministic fake of the private lifecycle service and load nothing; the production loader has no test reset.
 
 Regenerating the raw bindings (requires libclang; on Windows the default LLVM install, on Linux `libclang-dev`):
 
@@ -114,8 +150,8 @@ Dart statics are isolate-local, so the loader is a singleton per isolate, not pe
 
 | Platform | Native ABI v1 in Dart | Pairing |
 |---|---|---|
-| Windows (x64) | The real `sas_pairing_core.dll` loads, binds, and reports ABI version 1; the P8.2 runtime, authority, and host lifecycle works against it | Supported by P7 (Windows TCP carrier); the Dart network API starts in P8.3 |
-| Linux (x64) | The real `libsas_pairing_core.so` loads, binds, and reports ABI version 1; a runtime can be created and closed | Not supported: authority registration fails closed with `SasPairingStatus.unsupportedPlatform` (`SAS_PAIRING_UNSUPPORTED_PLATFORM`) as P7 defines |
+| Windows (x64) | The real `sas_pairing_core.dll` loads, binds, and reports ABI version 1; the P8.2 lifecycle and the P8.3 listener attach, drive, events, and connections work against it | Supported by P7 (Windows TCP carrier); the Dart ceremony API comes in later increments |
+| Linux (x64) | The real `libsas_pairing_core.so` loads, binds, and reports ABI version 1; a runtime can be created and closed | Not supported: authority registration fails closed with `SasPairingStatus.unsupportedPlatform` (`SAS_PAIRING_UNSUPPORTED_PLATFORM`) as P7 defines, so no host or listener exists; the P8.3 network wrapper is verified there against the deterministic fake only |
 | 32-bit processes | Refused before any library is opened | Not supported |
 
 ## Evidence
@@ -177,6 +213,35 @@ Corrective increment after independent review of P8.2, on the same branch from `
 | Mutations (temporary, reverted) | Each made its tests fail: (A) `create` without the translation boundary → the four public `create` tests and the architecture test; (B) `abiVersionMismatch` with restart false → initialization and public restart tests; (C) `READY` accepted for `remaining > 0` → the impossible-state test at `READY` 11; (D) upper bound `< 10` → the bounds test and every test whose default fake answers `READY` 10; (E) `NativeLibraryInitializationException` exported from the entrypoint → public API and scope export tests |
 | Native boundary | `git diff ea3ce92 -- core` and `git diff 80ecbb1 -- core` empty |
 | Dart tests | 128 (Windows with the real DLL: 127 passed, 1 Linux-only skipped): manifest 7, generated bindings 6, record layout 4, loader 19, initialization 12, real artifact 7, scope 10, lifecycle 41, FFI marshalling 7, status 5, public API 11; `dart format` clean; `dart analyze --fatal-infos` clean |
+
+### P8.3 evidence
+
+Commits on `feature/p8-dart-package`, from `c74d607`: `914e07d` (`docs: define p8 dart network driver contract`), `f24e147` (`feat: add dart listener drive and connection wrappers`), `6f65051` (`test: verify dart network ownership and events`; all five CI jobs green on that exact head), then the closure commit `docs: close p8.3 dart network driver`. No native file changed.
+
+| Item | Result |
+|---|---|
+| Public surface | The entrypoint adds, by explicit `show` lists, `SasPairingBootstrap`, `SasPairingWindowsListenerSocket`, `SasPairingHostNetworkState`, `SasPairingConnection`, `SasPairingDriveBatch`, `SasPairingDriveFailure`, `SasPairingEvent`, `SasPairingEventKind`, `SasPairingStepKind`, `SasPairingProtocolEvent`, `SasPairingEventReason`, `SasPairingDeadlineKind`, `SasPairingCancelState`, `SasPairingCancelReason`; `SasPairingHost` gains `attachWindowsListener`, `detachListener`, `drive`, `recheckAfterResume`, `networkState`; `SasPairingConnection` has only `isClosed` and `close()`. No raw socket, connection, run, or result handle, generated record, `Pointer`, native event array, or raw enum or flag integer is public (source-checked) |
+| Native boundary | Exactly the five network exports, called only from `NativeNetworkApi` (source-scanned); no ceremony action, presentation, or result export is called anywhere; `git diff c74d607 -- core` and `git diff 80ecbb1 -- core` empty |
+| Attach ownership matrix (fake) | A `OK` + slot `INVALID` → transferred, `attached`, no drive; B `INVALID_BOOTSTRAP` + original → not transferred, `detached`; C `LISTENER_ALREADY_ATTACHED` + original → not transferred, existing network and connection untouched; D `LISTENER_SETUP_FAILED` + `INVALID` → transferred, `detached`, not fatal; E `FATAL` + original → not transferred, FATAL latched; F `FATAL` + `INVALID` → transferred, FATAL latched; G `OK` + original → contract violation; H another slot value (with `OK`, `FATAL`, `INVALID_HANDLE`) → contract violation (FATAL also latched for 900); `UNSUPPORTED_PLATFORM`, `INVALID_HANDLE`, `INVALID_ARGUMENT` → not transferred; a transferred token → `StateError`, no native call; attach on a closed host or after FATAL → refused, no native call |
+| Bootstrap | 4 tests: bytes `00 80 FF` kept exactly; caller changes after construction do not reach it; writes through a getter, its buffer, a view of its buffer, or its byte data throw; Dart refuses no semantic value (uppercase algorithm, empty fields, 20,000-byte field); attach hands the exact bytes and lengths to the service and a null `expected` stays null |
+| FFI marshalling | 10 tests (`native_network_api_test.dart`) over the generated bindings with Dart callbacks as the C exports: the offered socket in one aligned typed slot, read back raw (`-1` for `INVALID`, unchanged, or another value); Bootstrap bytes exact with exact lengths (including `00 80 FF` and a 16,385-byte non-text field); empty fields as null pointer + length 0; no `expected` as a null pointer; capacity always 17; zeroed record memory; every produced record copied field by field with 64-bit bit patterns preserved; nothing past `out_count` read; at most 17 copied; no events on a nonzero return |
+| Network wrapper (fake) | 95 tests (`network_test.dart`): token 2, attach matrix 14, detach 5, drive 17, out_failure FATAL 1, event mapping 3, record invariants 28, connections 6, `LISTENER_DISABLED` 1, `RUN_UNTRACKED`/`WRITE_PENDING` 2, private runs 8, private results 3, parent cascade 4, recheck 1 |
+| Drive | One public call = one native call (`drive` or `recheckAfterResume`, never the other); `OK` + 0 events → empty unmodifiable batch, `failure == null`; top-level `LISTENER_NOT_ATTACHED`, `HANDLES_EXHAUSTED`, `INVALID_HANDLE`, `UNSUPPORTED_PLATFORM`, `BUFFER_TOO_SMALL` → exception, no state change, connections open; top-level `FATAL` → exception, latched; `OK` + events + `NETWORK_POLL_FAILED` / `OWNERSHIP_UNCERTAIN` / `FATAL` → both events delivered in order, then the connections closed and `failedClosed`; `OK` + 0 events + `OWNER_LOOP_CLOSED` → `failedClosed`; unknown `out_failure` 777 preserved, not FATAL; after `failedClosed` the next drive still calls native; more than 17 events → contract violation; native order kept across interleaved connections |
+| out_failure FATAL | Batch with its event and `failure.statusCode == 900`, `processRestartRequired`; FATAL latched; then drive, recheck, attach, `createHost`, `registerAuthority` refused with no native call; `detachListener`, host close, runtime close each still make their one native call |
+| Event mapping | Every frozen value of the step (8), protocol event (13), reason (16), deadline (5), cancel state (4), and cancel reason (5) namespaces maps to the enum value named after it, with no extra member; the five produced event kinds map exactly and `INVALID` is no public kind |
+| Contract checks | Event kind 0 and 6; step 8; protocol 13; reason 16; deadline 5; cancel state 4; cancel reason 5; flags `0x4` and `0x80000001`; `request_id_len` 65; `reserved` 1; a nonzero request-ID byte past its length; a missing connection on accepted, step, or closed; a connection on accept-refused or listener-disabled; a run, result, or flags on a non-step event; a run with a result; `RUN_UNTRACKED` with a run; a duplicate accept; a step or closed event for connection 777; a result handle delivered twice: each a `SasPairingContractException`, later normal work refused with no native call, host close still one native call. Request-ID lengths 0 and 64 are valid and copied exactly (unmodifiable); a bad record later in a batch changes no state before it |
+| Connections | Accepted / step / closed for handle 100 → the identical object, closed after its closed event, no `100` in its text; a closed event makes no native call and forgets the handle; manual close → 1 `connection_close` with the exact handles, second close 0 calls; a native error → closed, thrown once, no retry, sibling open; `OWNERSHIP_UNCERTAIN` → both of two connections closed, `failedClosed`, 1 call; close after FATAL and a FATAL close → still one call each, latched, closed |
+| `LISTENER_DISABLED` / `RUN_UNTRACKED` | Listener disabled → `listenerDisabled`, the connection stays open and later steps still map to it; detach closes it. `RUN_UNTRACKED` → `runUntracked`, `shouldCloseConnection`, `hasTrackedRun == false`, connection open, 0 close calls, no other run reference evicted; the consumer's close after the batch makes 1 call. `WRITE_PENDING` → `writePending` only |
+| Private runs and results | Exact handle 5000 kept privately; the same handle → the identical reference; a new handle under a reused request ID → a new reference, the old one invalid and never retargeted; endings invalidate only under their request ID (`START_DUPLICATE` does not; peer cancel, a deadline with a request ID, and a result do; refused, unconfirmed, discarded, and written do not); connection close, closed event, detach, owner-loop failure, host, authority, and runtime close invalidate. Results 9000 / 9001 (Responder and Initiator paths) retained in the runtime store through connection close, detach, owner-loop failure, host close, and authority close; no result export called; runtime close invalidates them; a result with an owner-loop failure is retained |
+| Parent cascade | Host close with two live connections: exactly `[hostDestroy]`; authority close with connections on two hosts: exactly `[authorityRelease]`; runtime close with two authorities, hosts, and connections: exactly `[runtimeDestroy]`; every descendant connection closed and every host `detached`; a failing host destroy still closes its connections |
+| Fatal classes | The observed normal/cleanup split of the five network exports equals manifest §2 (`attach`, `drive`, `recheck` normal; `detach`, `connection_close` cleanup), in the extended `status_test.dart` |
+| Real Windows attach / detach | Child process over the real `sas_pairing_core.dll` (local and CI) with the core's own ABI test Bootstrap fixture (`core/src/abi/tests/listener.rs` `local_view`: `p7-listener-application`, `x25519`, 32 × `07`, empty shared context): drive before attach → `listenerNotAttached` (402); attach with the fixture's uppercase-algorithm variant → `invalidBootstrap` (203), not transferred, the harness closed the socket; attach → transferred, `attached`; a second attach while attached → `listenerAlreadyAttached` (400), not transferred, harness closed it; one drive with no client → 0 events, no failure, about 259 ms locally (bounded); recheck → 0 events; detach → `detached`, host and authority open, authority `ready` with 10; drive after detach → 402; host close → `detached` |
+| Real Windows connection | Loopback client → exactly one `connectionAccepted`, connection open; client closed → `connectionClosed` (reason `peerClosed`) with the identical object, already closed; a second `close()` makes no call; detach |
+| Real listener replacement | Attach L1, accept C1; detach → `detached`, C1 closed; attach L2 (new token) → `attached`; a new client → C2, a different object, C1 still closed; manual `C2.close()` → closed, `attached`; authority `ready` with 10 before and after (no accounting change); both tokens transferred once; the harness closed neither |
+| Linux | Ubuntu CI: package analysis, the 109 fake network, FFI marshalling, and Bootstrap tests (nothing skipped), the frozen-binding checks, and the real native smoke and lifecycle; no Linux networking is claimed (no host can exist there) |
+| Mutations (temporary, reverted) | Each made its tests fail: (A) drive throws on `out_failure` → 6 drive tests; (B) transfer not recorded for `LISTENER_SETUP_FAILED` + `INVALID` → matrix D; (C) a new wrapper per event → identity, listener-disabled, untracked, and events-plus-failure tests; (D) `LISTENER_DISABLED` closes connections → listener-disabled test; (E) drive auto-closes `RUN_UNTRACKED` → untracked test; (F) runs looked up by request ID → exact-run test; (G) result handle dropped → 3 result tests; (H1) host close detaches first and (H2) host close closes connections first → cascade tests; (I) unknown flag bits accepted → both flag tests; (J) an automatic `while` drive loop → scope test |
+| Dart tests | 243 (Windows with the real DLL: 242 passed, 1 Linux-only skipped): manifest 7, generated bindings 6, record layout 4, loader 19, initialization 11, lifecycle 41, FFI lifecycle 7, FFI network 10, network 95, Bootstrap 4, status 5, public API 13, scope 11, real artifact 10 (3 new real network); `dart format` clean; `dart analyze --fatal-infos` clean |
+| Native regression | `abi::tests::freeze` 3 passed (1 ignored) locally and in the Dart workflow; `Rust security core` (`windows-core`, `unsupported-platform-fails-closed`) and `Repository consistency` green on the same head |
 
 ## Nonclaims
 

@@ -6,7 +6,7 @@ Stable owner decisions taken during P8. IDs `P8-D-NNN` are never reused. A decis
 |---|---|
 | [P8-D-001 — Dart native binding and loader architecture](#p8-d-001--dart-native-binding-and-loader-architecture) | Decided P8.1; implemented in P8.1 |
 | [P8-D-002 — Dart lifecycle ownership and fail-closed state](#p8-d-002--dart-lifecycle-ownership-and-fail-closed-state) | Decided P8.2; implemented in P8.2; corrected/clarified by P8.2.1 (items A, H, K, M) |
-| [P8-D-003 — Dart Windows listener, cooperative drive, and connection lifetime](#p8-d-003--dart-windows-listener-cooperative-drive-and-connection-lifetime) | Decided P8.3; implemented in P8.3 |
+| [P8-D-003 — Dart Windows listener, cooperative drive, and connection lifetime](#p8-d-003--dart-windows-listener-cooperative-drive-and-connection-lifetime) | Decided P8.3; implemented in P8.3 ([evidence](README.md#p83-evidence)) |
 
 ## P8-D-001 — Dart Native Binding and Loader Architecture
 
@@ -83,4 +83,4 @@ Stable owner decisions taken during P8. IDs `P8-D-NNN` are never reused. A decis
   - **Q. Private native network service.** One package-private service, `NativeNetworkApi`, owns all FFI memory for the five exports: the socket slot, the Bootstrap views and their byte copies, the 17 event records, `out_count`, and `out_failure`, all allocated for one synchronous call and freed before it returns. It copies every produced event record into a plain Dart value before returning and returns raw integers uninterpreted; no generated record or pointer reaches the high-level classes. Tests replace it with a deterministic fake.
 - **Why:** the in/out slot is the only evidence of who owns the socket, so it is read before anything can throw. The return value and `out_failure` answer different questions (did the call run, did the loop fail during it), and the frozen contract requires the events of a failed loop to be delivered, so the loop failure is data in the batch rather than an exception. Mirroring the native invalidation locally, without issuing the cleanup calls the native parent or loop already performs, keeps the Dart object graph exactly as valid as the native one. Keeping exact run and result handles private now lets later increments wrap them without reconstructing identity from request IDs, connections, or event order.
 - **Unchanged:** every P7 file, export, value, layout, and ownership rule; P8-D-001; P8-D-002 apart from the cascade extension in M.
-- **Status:** decided by the owner for P8.3, 2026-10-04.
+- **Status:** decided by the owner for P8.3, 2026-10-04; implemented in `dart/lib/src/bootstrap.dart`, `network.dart`, `network_refs.dart`, `lifecycle.dart` (host network methods and the cascade extension), and `native/native_network_api.dart` / `native/native_process_context.dart` (P8.3, [evidence](README.md#p83-evidence)).
