@@ -2,7 +2,7 @@
 
 ## Status
 
-🟡 Planned. Its native prerequisite is met: P7 is complete and native ABI v1 is frozen ([P7 final closure](../docs/p7-native-abi/final-closure.md), [P7-D-013](../docs/p7-native-abi/decisions.md#p7-d-013--abi-v1-final-freeze-and-wrapper-handoff)). Not started; P8 comes first in the planned order.
+🔵 Next. Its native prerequisite is met: P7 is complete and native ABI v1 is frozen ([P7 final closure](../docs/p7-native-abi/final-closure.md), [P7-D-013](../docs/p7-native-abi/decisions.md#p7-d-013--abi-v1-final-freeze-and-wrapper-handoff)). P8, the Dart package, is complete ([P8 final closure](../docs/p8-dart-package/final-closure.md)). P9 has not started.
 
 ## Goal
 

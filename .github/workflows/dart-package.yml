@@ -281,4 +281,8 @@ jobs:
       - name: Report the uploaded artifact
         if: runner.os == 'Windows' && github.event_name == 'push'
         run: |
-          echo "::notice title=P8 distribution artifact::sas-pairing-dart-windows-x64-abi1-$GITHUB_SHA id=${{ steps.upload.outputs.artifact-id }} digest=${{ steps.upload.outputs.artifact-digest }}"
+          set -euo pipefail
+          build="$(sha256sum "$BUILD_LIBRARY" | cut -d' ' -f1)"
+          staged="$(sha256sum dist/sas-pairing-dart-windows-x64-abi1/sas_pairing_core.dll | cut -d' ' -f1)"
+          test "$build" = "$staged"
+          echo "::notice title=P8 distribution artifact::sas-pairing-dart-windows-x64-abi1-$GITHUB_SHA id=${{ steps.upload.outputs.artifact-id }} digest=${{ steps.upload.outputs.artifact-digest }} build_dll_sha256=$build staged_dll_sha256=$staged"

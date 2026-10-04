@@ -10,7 +10,7 @@ The core does not own application trust databases, authorization policy, user in
 
 ## Dart wrapper
 
-The future Dart package provides an idiomatic Dart API over the native core. It does not implement an independent production cryptographic protocol.
+The experimental Dart package ([`dart/`](../dart/README.md), complete in P8) provides an idiomatic Dart API over the native core through the frozen native ABI v1. It does not implement an independent production cryptographic protocol. Its Windows x64 native library is distributed separately as an experimental CI artifact and loaded from an explicit absolute path ([P8 final closure](p8-dart-package/final-closure.md)).
 
 ## .NET wrapper
 

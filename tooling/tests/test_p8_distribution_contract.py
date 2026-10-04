@@ -206,5 +206,116 @@ class PackageMetadata(unittest.TestCase):
                 self.assertFalse(name.lower().endswith((".dll", ".so", ".dylib", ".pdb", ".lib")), name)
 
 
+CURRENT_DOCUMENTS = (
+    "README.md",
+    "CHANGELOG.md",
+    "dart/README.md",
+    "dart/CHANGELOG.md",
+    "dart/pubspec.yaml",
+    "docs/architecture.md",
+    "docs/protocol-status.md",
+    "docs/p8-dart-package/README.md",
+    "docs/p8-dart-package/final-closure.md",
+    "roadmap/README.md",
+    "roadmap/P8-dart-package.md",
+    "roadmap/P9-dotnet-package.md",
+    "ai/context/project.md",
+    "tooling/README.md",
+)
+
+# Statements that were true during P8 and are false at its closure. Historical evidence keeps its
+# period-correct wording (P7 documents, the decision records, per-increment evidence sections).
+STALE_PHRASES = (
+    "no Dart ceremony",
+    "Neither package exists yet",
+    "no native API or ABI has been defined",
+    "No pairing API yet",
+    "distribution is not decided",
+    "native binary distribution is not decided",
+    "Native artifact not bundled yet",
+    "The native artifact is not bundled yet",
+    "P8 IN PROGRESS",
+    "P8 is in progress",
+    "P8 (Dart package) is in progress",
+    "Dart Package IN PROGRESS",
+    "P8.5 is next",
+    "P8.5 next",
+    "P8.6 next",
+    "P8.6 is next",
+    "exposes no result contents yet",
+    "until the first release process is defined",
+    "P9 🟡",
+)
+
+
+class CurrentDocuments(unittest.TestCase):
+    def test_no_stale_p8_status_in_current_documents(self):
+        for relative in CURRENT_DOCUMENTS:
+            text = read(os.path.join(ROOT, relative))
+            if relative == "docs/p8-dart-package/README.md":
+                # Per-increment evidence below "## Evidence" is historical.
+                text = text.split("\n## Evidence\n", 1)[0]
+            for phrase in STALE_PHRASES:
+                self.assertNotIn(phrase, text, f"{relative}: stale {phrase!r}")
+
+    def test_the_status_documents_record_p8_complete_and_p9_next(self):
+        readme = read(os.path.join(ROOT, "README.md"))
+        self.assertIn("P8 (Dart package) is complete", readme)
+        self.assertIn("P9 (.NET package) is next", readme)
+        self.assertIn("**.NET / C#:** planned for P9; it does not exist yet.", readme)
+        for required in (
+            "no qualified professional audit or formal verification is claimed",
+            "This selection does not establish production security or approve production use.",
+            "Do not use this project to protect production systems.",
+            "neither is a security approval",
+        ):
+            self.assertIn(required, readme)
+        roadmap = read(os.path.join(ROOT, "roadmap", "README.md"))
+        self.assertIn("P8 ✅ Dart Package", roadmap)
+        self.assertIn("P9 🔵 .NET Package", roadmap)
+        self.assertIn("✅ **P8 COMPLETE", read(os.path.join(ROOT, "roadmap", "P8-dart-package.md")))
+        self.assertIn("🔵 Next.", read(os.path.join(ROOT, "roadmap", "P9-dotnet-package.md")))
+        self.assertIn("**P8 COMPLETE — DART PACKAGE + WINDOWS X64 NATIVE DISTRIBUTION**", read(os.path.join(ROOT, "docs", "protocol-status.md")))
+        changelog = read(os.path.join(ROOT, "CHANGELOG.md"))
+        self.assertIn("No production release has been made", changelog)
+
+    def test_the_final_closure_records_every_handoff_obligation_complete(self):
+        closure = read(os.path.join(ROOT, "docs", "p8-dart-package", "final-closure.md"))
+        self.assertIn("**P8 COMPLETE — DART PACKAGE + WINDOWS X64 NATIVE DISTRIBUTION.**", closure)
+        rows = re.findall(r"(?m)^\| (\d+) \| [^\n]* \| \*\*Complete\*\* \([^)]*\) \|$", closure)
+        self.assertEqual(rows, [str(number) for number in range(1, 12)])
+        for increment in ("P8.1", "P8.2", "P8.2.1", "P8.3", "P8.4", "P8.5", "P8.6"):
+            self.assertRegex(closure, rf"(?m)^\| {re.escape(increment)} \|")
+        for decision in range(1, 7):
+            self.assertIn(f"[P8-D-00{decision}](decisions.md#p8-d-00{decision}--", closure)
+        package = read(os.path.join(ROOT, "docs", "p8-dart-package", "README.md"))
+        handoff = package.split("## P7 wrapper handoff", 1)[1].split("\n## ", 1)[0]
+        states = re.findall(r"(?m)^\| (\d+) \| [^|]+ \| (.*) \|$", handoff)
+        self.assertEqual([number for number, _ in states], [str(number) for number in range(1, 12)])
+        for number, state in states:
+            self.assertTrue(state.startswith("**Complete.**"), number)
+            for unresolved in ("planned", "later increment", "later P8", "not yet", "TODO", "deferred", "will be"):
+                self.assertNotIn(unresolved, state, f"handoff row {number}")
+
+    def test_no_document_claims_code_signing_production_approval_or_publication(self):
+        claims = re.compile(
+            r"code_signed[`\"']?\s*[:=]\s*[`\"']?true|\b(is|are)\s+(now\s+)?(code-)?signed\b|"
+            r"\bavailable on pub\.dev\b|\bpublished (on|to) pub\.dev\b|\bis production[- ]ready\b|"
+            r"\bproduction-security approved\b(?<!not production-security approved)",
+            re.IGNORECASE,
+        )
+        for relative in CURRENT_DOCUMENTS + ("docs/p8-dart-package/decisions.md",):
+            text = read(os.path.join(ROOT, relative))
+            if relative == "docs/p8-dart-package/README.md":
+                # The evidence section records the mutations, which quote the false claims.
+                text = text.split("\n## Evidence\n", 1)[0]
+            for line in text.splitlines():
+                for match in claims.finditer(line):
+                    before = line[max(0, match.start() - 40) : match.start()].lower()
+                    if re.search(r"\b(not|no|never|nor|neither|without)\b[^.]*$", before):
+                        continue  # a negated statement
+                    self.fail(f"{relative}: claim {match.group(0)!r} in: {line[:160]}")
+
+
 if __name__ == "__main__":
     unittest.main()
