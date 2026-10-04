@@ -144,6 +144,35 @@ jobs:
           grep -F 'listener replacement L1, detach, L2; connection close' native-network.log
           if grep -F 'Skip:' native-network.log; then exit 1; fi
           grep -F '+3: All tests passed!' native-network.log
+      # The P8.4 run, ceremony-control, and SAS presentation wrapper against the deterministic
+      # fake of the native services, on both platforms: exact-handle run identity and request-ID
+      # learning, the local Initiator start, every method's success contract, action and
+      # presentation record invariants, deadlines, WRITE_PENDING status versus flag, RUN_ENDED,
+      # CONNECTION_ENDED and owner-loop failure side effects, FATAL, explicit step separation,
+      # identity binding, the ceremony FFI marshalling, and the scope and public-API guards.
+      - name: P8.4 ceremony control (fake native services)
+        working-directory: dart
+        run: |
+          set -euo pipefail
+          dart test test/ceremony_test.dart test/native_ceremony_api_test.dart \
+            test/package_scope_test.dart test/public_api_test.dart test/status_test.dart \
+            --reporter expanded | tee ceremony-fake.log
+          if grep -F 'Skip:' ceremony-fake.log; then exit 1; fi
+          grep -F 'All tests passed!' ceremony-fake.log
+      # The P8.4 real two-endpoint ceremony on Windows, in a child OS process over the real DLL:
+      # two authorities, hosts, and listeners driven only through the public API, joined by a
+      # test-only byte-transparent relay; explicit start, authorization, exposure, equal SAS
+      # presentations, MATCH, BOOTSTRAP_MAC, INITIATOR_FINISH, and a local result on each side.
+      - name: Real native ceremony (Windows)
+        if: runner.os == 'Windows'
+        working-directory: dart
+        run: |
+          set -euo pipefail
+          dart test test/native_artifact_test.dart --reporter expanded \
+            --plain-name 'real ceremony (Windows)' | tee native-ceremony.log
+          grep -F 'two public Dart endpoints, explicit steps, equal SAS, local results' native-ceremony.log
+          if grep -F 'Skip:' native-ceremony.log; then exit 1; fi
+          grep -F '+1: All tests passed!' native-ceremony.log
       # P8 must not change the frozen core: the ABI v1 freeze consistency tests stay green.
       - name: Native ABI v1 freeze consistency
         run: |

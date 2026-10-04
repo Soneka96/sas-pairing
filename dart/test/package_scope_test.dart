@@ -310,7 +310,8 @@ void main() {
       };
       for (final MapEntry(key: method, value: export) in methods.entries) {
         final body = RegExp(
-          'SasPairingLocalAction $method\\([^)]*\\) => _act\\((.*?)\\);\\n',
+          // The whole call, up to the method's own closing line.
+          'SasPairingLocalAction $method\\([^)]*\\) => _act\\((.*?)\\n  \\);\\n',
           dotAll: true,
         ).firstMatch(ceremony)?.group(1);
         expect(body, isNotNull, reason: method);

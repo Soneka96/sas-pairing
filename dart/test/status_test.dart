@@ -8,6 +8,7 @@ import 'package:sas_pairing/src/native/abi_v1.dart';
 import 'package:sas_pairing/src/status.dart';
 import 'package:test/test.dart';
 
+import 'support/fake_ceremony.dart';
 import 'support/fake_lifecycle.dart';
 import 'support/fake_network.dart';
 import 'support/repository.dart';
@@ -85,7 +86,7 @@ void main() {
   });
 
   test(
-    'normal and cleanup lifecycle and network operations match the manifest fatal classes',
+    'normal and cleanup lifecycle, network, and ceremony operations match the manifest fatal classes',
     () {
       final manifest = parseManifestTables(readRepositoryFile(manifestPath));
       final classes = {
@@ -106,6 +107,16 @@ void main() {
         host.attachWindowsListener(listener: token(), local: testBootstrap());
         api.scriptDrive(FakeDrive(events: [accepted(100)]));
         final connection = host.drive().events.single.connection!;
+        api.scriptDrive(
+          FakeDrive(
+            events: [
+              inbound(100, requestId: [1], run: 5000),
+            ],
+          ),
+        );
+        final tracked = host.drive().events.single.run!;
+        api.ceremony.scriptPresentation(livePresentation(identityOf(1)));
+        final identity = tracked.presentation()!.ceremonyIdentity;
         api.script('authorityStatus', Scripted(fatal));
         expect(
           authority.queryStatus,
@@ -127,6 +138,16 @@ void main() {
           'sas_pairing_host_drive': host.drive,
           'sas_pairing_host_recheck_after_resume': host.recheckAfterResume,
           'sas_pairing_connection_close': connection.close,
+          'sas_pairing_connection_start_initiator': () =>
+              connection.startInitiator(local: testBootstrap()),
+          'sas_pairing_run_authorize_exposure': tracked.authorizeExposure,
+          'sas_pairing_run_expose_key': tracked.exposeKey,
+          'sas_pairing_run_presentation': tracked.presentation,
+          'sas_pairing_run_approve_sas': () => tracked.approveSas(identity),
+          'sas_pairing_run_emit_bootstrap_mac': tracked.emitBootstrapMac,
+          'sas_pairing_run_reject_sas': () => tracked.rejectSas(identity),
+          'sas_pairing_run_cancel_sas': () => tracked.cancelSas(identity),
+          'sas_pairing_run_emit_initiator_finish': tracked.emitInitiatorFinish,
         }[export]!;
         try {
           run();
@@ -149,9 +170,25 @@ void main() {
         'sas_pairing_host_drive',
         'sas_pairing_host_recheck_after_resume',
         'sas_pairing_connection_close',
+        'sas_pairing_connection_start_initiator',
+        'sas_pairing_run_authorize_exposure',
+        'sas_pairing_run_expose_key',
+        'sas_pairing_run_presentation',
+        'sas_pairing_run_approve_sas',
+        'sas_pairing_run_emit_bootstrap_mac',
+        'sas_pairing_run_reject_sas',
+        'sas_pairing_run_cancel_sas',
+        'sas_pairing_run_emit_initiator_finish',
       ]) {
         expect(observed(export), classes[export], reason: export);
       }
+      // Every ceremony export is normal: refused after FATAL.
+      expect([
+        for (final entry in classes.entries)
+          if (entry.key.startsWith('sas_pairing_run_') ||
+              entry.key == 'sas_pairing_connection_start_initiator')
+            entry.value,
+      ], List.filled(9, 'normal'));
     },
   );
 }

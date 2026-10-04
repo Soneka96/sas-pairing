@@ -230,6 +230,127 @@ void main() {
     expect(SasPairingCancelReason.values, hasLength(5));
   });
 
+  test('a consumer can use the P8.4 ceremony API from the entrypoint alone', () {
+    // Compiles only if every P8.4 member is reachable through the entrypoint, with no private
+    // import, handle, or pointer; no native library is needed to type-check a consumer.
+    void consumer(SasPairingHost host, SasPairingBootstrap local) {
+      for (final SasPairingEvent event in host.drive().events) {
+        final SasPairingRun? run = event.run;
+        expect(event.hasTrackedRun, run != null);
+        final SasPairingConnection? connection = event.connection;
+        final SasPairingLocalAction started = connection!.startInitiator(
+          local: local,
+        );
+        connection.startInitiator(local: local, expected: local);
+        final SasPairingRun? startedRun = started.run;
+        final List<Object?> fields = [
+          started.event,
+          started.deadlineKind,
+          started.writePending,
+          startedRun?.isEnded,
+        ];
+        if (run == null) continue;
+        final SasPairingLocalAction authorized = run.authorizeExposure();
+        final SasPairingLocalAction exposed = run.exposeKey();
+        final SasPairingSasPresentation? presented = run.presentation();
+        if (presented == null) continue;
+        final String decimal = presented.decimal;
+        final SasPairingCeremonyIdentity identity = presented.ceremonyIdentity;
+        final Uint8List identityBytes = identity.bytes;
+        // The application decides; the package never does.
+        final userChoseMatch = decimal.isNotEmpty;
+        if (userChoseMatch) {
+          run.approveSas(identity);
+          run.emitBootstrapMac();
+          run.emitInitiatorFinish();
+        } else {
+          run.rejectSas(identity);
+          run.cancelSas(identity);
+        }
+        expect([fields, authorized, exposed, identityBytes], isNotNull);
+      }
+    }
+
+    expect(consumer, isNotNull);
+    expect(SasPairingLocalEvent.values, hasLength(12));
+    expect(
+      SasPairingRunEndedException('SasPairingRun.exposeKey').operation,
+      'SasPairingRun.exposeKey',
+    );
+  });
+
+  test('the P8.4 public types carry no handle, result, or protocol field', () {
+    final ceremony = code(readPackageFile('lib/src/ceremony.dart'));
+    Set<String> members(String kind) {
+      final body = RegExp(
+        'final class $kind \\{(.*?)\\n\\}',
+        dotAll: true,
+      ).firstMatch(ceremony)!.group(1)!;
+      return {
+        for (final m in RegExp(
+          r'^  (?:final [\w<>?]+ |[\w<>?]+ get |[\w<>?]+ )(\w+)\b',
+          multiLine: true,
+        ).allMatches(body))
+          if (!m[1]!.startsWith('_') && m[1] != 'operator') m[1]!,
+      };
+    }
+
+    // Exactly the four payload fields: no raw flags, run handle, protocol bytes, or result.
+    expect(members('SasPairingLocalAction'), {
+      'event',
+      'run',
+      'deadlineKind',
+      'writePending',
+    });
+    expect(members('SasPairingSasPresentation'), {
+      'ceremonyIdentity',
+      'decimal',
+    });
+    expect(members('SasPairingCeremonyIdentity'), {'bytes', 'hashCode'});
+    // No public constructor can make an identity, a presentation, an action, or a run.
+    for (final kind in [
+      'SasPairingRun',
+      'SasPairingLocalAction',
+      'SasPairingSasPresentation',
+      'SasPairingCeremonyIdentity',
+    ]) {
+      expect(
+        // A private constructor (`$kind._(`) is allowed; an unnamed or public named one is not.
+        RegExp(
+          '^  $kind(\\.[A-Za-z]\\w*)?\\(',
+          multiLine: true,
+        ).hasMatch(ceremony),
+        isFalse,
+        reason: kind,
+      );
+    }
+    // The run's public surface is exactly the reviewed explicit steps.
+    final run = RegExp(
+      r'final class SasPairingRun \{(.*?)\n\}',
+      dotAll: true,
+    ).firstMatch(ceremony)!.group(1)!;
+    expect(
+      {
+        for (final m in RegExp(
+          r'^  [\w<>?]+ (?:get )?([a-z]\w*)\b',
+          multiLine: true,
+        ).allMatches(run))
+          m[1]!,
+      },
+      {
+        'isEnded',
+        'authorizeExposure',
+        'exposeKey',
+        'presentation',
+        'approveSas',
+        'emitBootstrapMac',
+        'rejectSas',
+        'cancelSas',
+        'emitInitiatorFinish',
+      },
+    );
+  });
+
   test(
     'no public P8.3 or P8.4 member exposes a private native type or raw value',
     () {

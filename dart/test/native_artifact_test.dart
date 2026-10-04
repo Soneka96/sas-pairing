@@ -3,9 +3,10 @@
 // the production process loader from the explicit SAS_PAIRING_NATIVE_LIBRARY path, exports all
 // 25 frozen symbols under their exact names, and reports ABI version 1. No stateful export is
 // called in the test process. This is the only test file that loads the real library in the test
-// process (one native owner isolate, P8-D-001 N); the P8.2 real lifecycle scenarios and the P8.3
-// real network scenarios run in child OS processes (test/support/lifecycle_child.dart and
-// test/support/network_child.dart), each with its own single owner isolate.
+// process (one native owner isolate, P8-D-001 N); the P8.2 real lifecycle scenarios, the P8.3
+// real network scenarios, and the P8.4 real two-endpoint ceremony run in child OS processes
+// (test/support/lifecycle_child.dart, test/support/network_child.dart, and
+// test/support/ceremony_child.dart), each with its own single owner isolate.
 import 'dart:convert';
 import 'dart:io';
 
@@ -17,8 +18,8 @@ import 'package:test/test.dart';
 final String? artifact = Platform.environment['SAS_PAIRING_NATIVE_LIBRARY'];
 
 /// Runs one fresh-process scenario: a loader scenario (test/support/loader_child.dart), a
-/// lifecycle scenario (test/support/lifecycle_child.dart), or a network scenario
-/// (test/support/network_child.dart).
+/// lifecycle scenario (test/support/lifecycle_child.dart), a network scenario
+/// (test/support/network_child.dart), or a ceremony scenario (test/support/ceremony_child.dart).
 Future<List<Map<String, Object?>>> runChild(
   String scenario, {
   String script = 'test/support/loader_child.dart',
@@ -314,6 +315,155 @@ void main() {
     },
     skip: Platform.isWindows ? false : 'Windows pairing platform only',
     timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  // P8.4 real two-endpoint ceremony (P8-D-004): one child OS process, one runtime, two
+  // authorities, hosts, listeners, and accepted connections, both endpoints driven only through
+  // the public API; a test-only byte-transparent relay joins the two accepted sockets.
+  test(
+    'real ceremony (Windows): two public Dart endpoints, explicit steps, equal SAS, local results',
+    () async {
+      final steps = {
+        for (final step in await runChild(
+          'windows-happy-path',
+          script: 'test/support/ceremony_child.dart',
+        ))
+          step['step']! as String: step,
+      };
+      Map<String, Object?> action(
+        String event, {
+        required bool writePending,
+        bool hasRun = true,
+      }) => {
+        'event': event,
+        'writePending': writePending,
+        'deadlineKind': 'none',
+        'hasRun': hasRun,
+      };
+      Map<String, Object?> of(String step) => {...steps[step]!}..remove('step');
+
+      expect(steps['attached']!['authorityA'], {
+        'state': 'ready',
+        'remaining': 10,
+      });
+      expect(steps['accepted'], {'step': 'accepted', 'a': false, 'b': false});
+      // Start: a live run, START retained; nothing else happened.
+      expect(of('A start'), {
+        ...action('initiatorStarted', writePending: true),
+        'runEnded': false,
+      });
+      // The second start before any drive did not run: native WRITE_PENDING, and B later sees
+      // exactly one START.
+      expect(
+        steps['A second start before drive']!['failure'],
+        SasPairingStatus.writePending.code,
+      );
+      // The Responder run surfaces on B through a drive event.
+      expect(of('B start accepted'), {
+        'sameConnection': true,
+        'hasTrackedRun': true,
+        'writePending': true,
+        'requestIdLength': 16,
+      });
+      // The event naming A's run carries the same object; its request ID was learned.
+      expect(of('A accept'), {'sameRun': true, 'requestIdsEqual': true});
+      // Authorization spends nothing and produces no key output; exposure spends one
+      // opportunity (the authority's guard is now held: busy).
+      expect(of('A authorize'), {
+        ...action('exposureAuthorized', writePending: false),
+        'sameRun': true,
+        'authority': {'state': 'ready', 'remaining': 10},
+      });
+      expect(of('A expose'), {
+        ...action('keyExposed', writePending: true),
+        'sameRun': true,
+        'authority': {'state': 'busy', 'remaining': 0},
+      });
+      expect(of('A presentation while key pending'), {'available': false});
+      expect(of('B initiator key'), {'sameRun': true});
+      expect(
+        of('B authorize'),
+        action('exposureAuthorized', writePending: false),
+      );
+      expect(of('B expose'), {
+        ...action('keyExposed', writePending: true),
+        'authority': {'state': 'busy', 'remaining': 0},
+      });
+      // Presentation is not blocked by a retained write: B's SAS is live while its key waits.
+      final presentedB = of('B presentation while key pending');
+      final presentedA = of('A presentation');
+      final display = RegExp(r'^[0-9]{4} [0-9]{4} [0-9]{4}$');
+      for (final presented in [presentedA, presentedB]) {
+        expect(presented['available'], isTrue);
+        expect(presented['decimal'], matches(display));
+        expect(presented['identity'], matches(RegExp(r'^[0-9a-f]{64}$')));
+      }
+      expect(presentedA['decimal'], presentedB['decimal']);
+      expect(presentedA['identity'], presentedB['identity']);
+      expect(of('SAS comparison'), {
+        'decimalEqual': true,
+        'identityEqual': true,
+      });
+      // MATCH is explicit and emits nothing: no frame was written on either side.
+      expect(of('A approve'), action('sasApproved', writePending: false));
+      expect(of('after A approve: one drive of each host'), {
+        'a': isEmpty,
+        'b': isEmpty,
+        'aPresentation': {'available': false},
+      });
+      // BOOTSTRAP_MAC is a separate explicit step; a second one before the drive did not run.
+      expect(
+        of('A emit MAC'),
+        action('bootstrapMacEmitted', writePending: true),
+      );
+      expect(
+        steps['A second MAC before drive']!['failure'],
+        SasPairingStatus.writePending.code,
+      );
+      expect(
+        of('A MAC retry after drive'),
+        action('bootstrapMacAlreadyEmitted', writePending: false),
+      );
+      expect(of('B approve'), action('sasApproved', writePending: false));
+      expect(
+        of('B emit MAC'),
+        action('bootstrapMacEmitted', writePending: true),
+      );
+      expect(of('MACs authenticated'), {'aSameRun': true, 'bSameRun': true});
+      // The Responder cannot emit INITIATOR_FINISH; its run continues.
+      expect(of('B initiator finish'), {
+        'failure': SasPairingStatus.notInitiator.code,
+        'runEnded': false,
+      });
+      // Only the Initiator emits INITIATOR_FINISH, explicitly; the native library confirmed the
+      // final ACK itself and both endpoints surfaced exactly one local result.
+      expect(
+        of('A finish'),
+        action('initiatorFinishEmitted', writePending: true),
+      );
+      final results = of('results');
+      expect(results['a'], 'connectionStep/confirmed/none/result');
+      expect(results['b'], 'connectionStep/inbound/initiatorFinishAck/result');
+      expect(results['aResults'], 1);
+      expect(results['bResults'], 1);
+      expect(results['runAEnded'], isTrue);
+      expect(results['runBEnded'], isTrue);
+      expect(results['authorityA'], {'state': 'ready', 'remaining': 9});
+      expect(results['authorityB'], {'state': 'ready', 'remaining': 9});
+      expect(results['startAcceptedAtB'], 1);
+      expect(results['relayAToB'], greaterThan(0));
+      expect(results['relayBToA'], greaterThan(0));
+      expect(steps['ended run refused locally']!['refused'], isTrue);
+      expect(of('detached'), {
+        'a': 'detached',
+        'b': 'detached',
+        'connectionsClosed': true,
+      });
+      expect(steps['done']!['transferred'], [true, true]);
+      expect(steps['done']!['closedByHarness'], [false, false]);
+    },
+    skip: Platform.isWindows ? false : 'Windows pairing platform only',
+    timeout: const Timeout(Duration(minutes: 3)),
   );
 
   test('fresh process: a pre-load failure leaves the loader usable', () async {
