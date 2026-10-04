@@ -1,4 +1,4 @@
-/// The exceptions of the public lifecycle API (P8-D-002 F, H, I, M).
+/// The exceptions of the public API (P8-D-002 F, H, I, M; P8-D-004 L).
 ///
 /// None of them carries a native handle, pointer, or authority scope, and none is a trust
 /// verdict.
@@ -126,6 +126,26 @@ final class SasPairingClosedException implements Exception {
   String toString() =>
       'SasPairingClosedException: $objectKind.$operation was called after the '
       '$objectKind was closed.';
+}
+
+/// An operation was attempted on a `SasPairingRun` that is already known to be ended: by a
+/// visible terminal drive event, a terminal local action (reject, cancel, or a deadline), an
+/// earlier `SasPairingStatus.runEnded`, or the end of its connection, host, or a parent.
+/// Raised locally; no native code was called and there is no native status.
+///
+/// A run that ended without a visible event may still look live (`isEnded == false`); the next
+/// native call then reports `SasPairingStatus.runEnded` as a [SasPairingNativeException], and
+/// only later calls raise this exception.
+final class SasPairingRunEndedException implements Exception {
+  SasPairingRunEndedException(this.operation);
+
+  /// The operation that was attempted, such as `SasPairingRun.exposeKey`.
+  final String operation;
+
+  @override
+  String toString() =>
+      'SasPairingRunEndedException: $operation was called on a run that is already known to '
+      'have ended.';
 }
 
 /// The native library reported success but broke a frozen ABI v1 success invariant (for

@@ -1,8 +1,10 @@
-// Public surface (P8-D-002 A, M; P8.2.1; P8-D-003 B): a package consumer that imports only the
-// public entrypoint sees exactly the lifecycle, status, and exception types, including the
-// public initialization failure, and the P8.3 Bootstrap, listener-transfer, drive, event, and
-// connection types; raw FFI, handles, sockets, event records, run and result references, the
-// loader and its exception, and the native services are not part of it.
+// Public surface (P8-D-002 A, M; P8.2.1; P8-D-003 B; P8-D-004 rule 1): a package consumer that
+// imports only the public entrypoint sees exactly the lifecycle, status, and exception types,
+// including the public initialization failure, the P8.3 Bootstrap, listener-transfer, drive,
+// event, and connection types, and the P8.4 run, local action, local event, SAS presentation,
+// ceremony identity, and run-ended types; raw FFI, handles, sockets, event, action, and
+// presentation records, run and result references, the loader and its exception, and the native
+// services are not part of it.
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -37,6 +39,12 @@ const publicNames = {
   'SasPairingDeadlineKind',
   'SasPairingCancelState',
   'SasPairingCancelReason',
+  'SasPairingRun',
+  'SasPairingLocalAction',
+  'SasPairingLocalEvent',
+  'SasPairingSasPresentation',
+  'SasPairingCeremonyIdentity',
+  'SasPairingRunEndedException',
 };
 
 const prohibitedNames = [
@@ -65,6 +73,18 @@ const prohibitedNames = [
   'resultStoreOf',
   'sas_pairing_event_t',
   'sas_pairing_bootstrap_view_t',
+  'NativeCeremonyApi',
+  'FfiNativeCeremonyApi',
+  'NativeActionRecord',
+  'NativeActionResult',
+  'NativePresentationRecord',
+  'NativePresentationResult',
+  'NativeBootstrapBytes',
+  'nativeBootstrapBytes',
+  'nativeBootstrapView',
+  'runReferenceOfRun',
+  'sas_pairing_action_t',
+  'sas_pairing_sas_presentation_t',
 ];
 
 /// The files the entrypoint exports from.
@@ -75,6 +95,10 @@ const publicFiles = [
   'lib/src/bootstrap.dart',
   'lib/src/network.dart',
 ];
+
+/// Every file that declares a public type: the exported files and the `ceremony.dart` part of
+/// `network.dart` (P8.4).
+const publicSources = [...publicFiles, 'lib/src/ceremony.dart'];
 
 String code(String source) => source
     .split('\n')
@@ -109,6 +133,12 @@ void main() {
       SasPairingDeadlineKind,
       SasPairingCancelState,
       SasPairingCancelReason,
+      SasPairingRun,
+      SasPairingLocalAction,
+      SasPairingLocalEvent,
+      SasPairingSasPresentation,
+      SasPairingCeremonyIdentity,
+      SasPairingRunEndedException,
     ];
     expect(types.map((t) => '$t').toSet(), publicNames);
     expect(SasPairingStatus.values, hasLength(48));
@@ -200,44 +230,50 @@ void main() {
     expect(SasPairingCancelReason.values, hasLength(5));
   });
 
-  test('no public P8.3 member exposes a private native type or raw value', () {
-    final network = code(readPackageFile('lib/src/network.dart'));
-    final bootstrap = code(readPackageFile('lib/src/bootstrap.dart'));
-    for (final source in [network, bootstrap]) {
-      for (final m in RegExp(
-        r'final class (SasPairing\w+)\b[^{]*\{(.*?)\n\}',
-        dotAll: true,
-      ).allMatches(source)) {
-        final body = m[2]!;
-        // A public field or getter typed by a private native type, or a raw-value getter.
-        expect(
-          RegExp(
-            r'(final\s+|^\s+)(Native\w*|HostNetwork|int)\??\s+(get\s+)?(?!_)\w*'
-            r'([Hh]andle|[Ss]ocket|[Rr]aw|[Ff]lags|[Cc]ode|[Rr]un|[Rr]esult)\w*\b',
-            multiLine: true,
-          ).firstMatch(body)?.group(0),
-          m[1] == 'SasPairingDriveFailure' ? 'final int statusCode' : null,
-          reason: m[1],
-        );
-        expect(
-          RegExp(
-            r'^\s+(final\s+)?(Native\w*|HostNetwork)\??\s+(get\s+)?(?!_)\w+',
-            multiLine: true,
-          ).firstMatch(body)?.group(0),
-          isNull,
-          reason: m[1],
-        );
+  test(
+    'no public P8.3 or P8.4 member exposes a private native type or raw value',
+    () {
+      final network = code(readPackageFile('lib/src/network.dart'));
+      final bootstrap = code(readPackageFile('lib/src/bootstrap.dart'));
+      final ceremony = code(readPackageFile('lib/src/ceremony.dart'));
+      for (final source in [network, bootstrap, ceremony]) {
+        for (final m in RegExp(
+          r'final class (SasPairing\w+)\b[^{]*\{(.*?)\n\}',
+          dotAll: true,
+        ).allMatches(source)) {
+          final body = m[2]!;
+          // A public field or getter typed by a private native type, or a raw-value getter.
+          expect(
+            RegExp(
+              // `hashCode` (the ceremony identity's value equality) is no raw value.
+              r'(final\s+|^\s+)(Native\w*|HostNetwork|int)\??\s+(get\s+)?'
+              r'(?!_|hashCode\b)\w*'
+              r'([Hh]andle|[Ss]ocket|[Rr]aw|[Ff]lags|[Cc]ode|[Rr]un|[Rr]esult)\w*\b',
+              multiLine: true,
+            ).firstMatch(body)?.group(0),
+            m[1] == 'SasPairingDriveFailure' ? 'final int statusCode' : null,
+            reason: m[1],
+          );
+          expect(
+            RegExp(
+              r'^\s+(final\s+)?(Native\w*|HostNetwork)\??\s+(get\s+)?(?!_)\w+',
+              multiLine: true,
+            ).firstMatch(body)?.group(0),
+            isNull,
+            reason: m[1],
+          );
+        }
       }
-    }
-    // The enums keep their raw ABI values private.
-    for (final m in RegExp(
-      r'enum (SasPairing\w+) \{(.*?)\n\}',
-      dotAll: true,
-    ).allMatches(network)) {
-      expect(m[2], isNot(contains('final int code')), reason: m[1]);
-      expect(m[2], isNot(contains('get code')), reason: m[1]);
-    }
-  });
+      // The enums keep their raw ABI values private.
+      for (final m in RegExp(
+        r'enum (SasPairing\w+) \{(.*?)\n\}',
+        dotAll: true,
+      ).allMatches(network + ceremony)) {
+        expect(m[2], isNot(contains('final int code')), reason: m[1]);
+        expect(m[2], isNot(contains('get code')), reason: m[1]);
+      }
+    },
+  );
 
   test(
     'the entrypoint exports exactly the public names, from the three public files',
@@ -273,14 +309,15 @@ void main() {
     final rawAccess = RegExp(
       r"\b(Pointer|DynamicLibrary|SasPairingNativeBindings|NativeLibraryLoader|"
       r"LoadedNativeLibrary|NativeLifecycleApi|FfiNativeLifecycleApi|FfiNativeNetworkApi|"
-      r"Struct|nullptr|sas_pairing_event_t|sas_pairing_bootstrap_view_t)\b|"
+      r"FfiNativeCeremonyApi|Struct|nullptr|sas_pairing_event_t|sas_pairing_bootstrap_view_t|"
+      r"sas_pairing_action_t|sas_pairing_sas_presentation_t)\b|"
       r"import 'dart:ffi'|import 'package:ffi",
     );
     final publicHandle = RegExp(
       r'\bget\s+(?!_)\w*([Hh]andle|[Pp]ointer|[Bb]inding|[Aa]ddress|[Ss]cope|[Ss]ocket)\w*\b|'
       r'\bfinal\s+[\w<>?]+\s+(?!_)\w*([Hh]andle|[Pp]ointer|[Bb]inding|[Aa]ddress|[Ss]cope)\w*\s*[;=]',
     );
-    for (final path in publicFiles) {
+    for (final path in publicSources) {
       final source = code(readPackageFile(path));
       expect(rawAccess.firstMatch(source)?.group(0), isNull, reason: path);
       expect(publicHandle.firstMatch(source)?.group(0), isNull, reason: path);
@@ -406,11 +443,12 @@ void main() {
   });
 
   test(
-    'lifecycle and network wrappers use object identity and print no handle',
+    'lifecycle, network, and ceremony wrappers use object identity and print no handle',
     () {
       final source =
           code(readPackageFile('lib/src/lifecycle.dart')) +
-          code(readPackageFile('lib/src/network.dart'));
+          code(readPackageFile('lib/src/network.dart')) +
+          code(readPackageFile('lib/src/ceremony.dart'));
       for (final kind in [
         'SasPairingRuntime',
         'SasPairingAuthority',
@@ -418,6 +456,9 @@ void main() {
         'SasPairingConnection',
         'SasPairingWindowsListenerSocket',
         'SasPairingEvent',
+        'SasPairingRun',
+        'SasPairingLocalAction',
+        'SasPairingSasPresentation',
       ]) {
         final body = RegExp(
           'final class $kind \\{(.*?)\\n\\}',

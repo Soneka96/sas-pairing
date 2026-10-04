@@ -1,9 +1,13 @@
-/// The public Windows listener, cooperative drive, event, and connection API (P8-D-003).
+/// The public Windows listener, cooperative drive, event, and connection API (P8-D-003), and,
+/// in the `ceremony.dart` part, the run, trusted-local ceremony control, and SAS presentation API
+/// (P8-D-004).
 ///
 /// A host has zero or one native network context (a listener and its owner loop), which owns
-/// zero or more connections. A connection never outlives listener detach, host close, authority
-/// close, runtime close, or an owner-loop failure. Network progress happens only inside one
-/// bounded synchronous call made by the caller: there is no background work of any kind.
+/// zero or more connections, each of which owns its runs. A connection never outlives listener
+/// detach, host close, authority close, runtime close, or an owner-loop failure, and a run never
+/// outlives its connection. Network progress happens only inside one bounded synchronous call
+/// made by the caller, and every ceremony step is one explicit synchronous call: there is no
+/// background work or automatic step of any kind.
 library;
 
 import 'dart:typed_data';
@@ -11,10 +15,14 @@ import 'dart:typed_data';
 import 'bootstrap.dart';
 import 'exceptions.dart';
 import 'native/generated/sas_pairing_bindings.g.dart' as raw;
+import 'native/native_bootstrap.dart';
+import 'native/native_ceremony_api.dart';
 import 'native/native_network_api.dart';
 import 'native/native_process_context.dart';
 import 'network_refs.dart';
 import 'status.dart';
+
+part 'ceremony.dart';
 
 /// One caller-owned, already-bound, already-listening Windows `SOCKET`, offered to a host for
 /// ownership transfer by `SasPairingHost.attachWindowsListener`.
@@ -246,18 +254,46 @@ Map<int, T> _index<T>(List<T> values, int Function(T value) code) => {
 /// identity, authentication, or trust.
 ///
 /// Every event of one native connection carries this same object. It is closed by [close], by a
-/// `connectionClosed` event, by `detachListener`, by an owner-loop failure, and by closing its
-/// host or a parent; a closed connection stays closed.
+/// `connectionClosed` event, by `detachListener`, by an owner-loop failure, by a ceremony call
+/// that reports `SasPairingStatus.connectionEnded`, and by closing its host or a parent; a closed
+/// connection stays closed and every [SasPairingRun] of it is ended.
 final class SasPairingConnection {
   SasPairingConnection._(this._network, this._handle);
 
   final HostNetwork _network;
   final int _handle;
-  final Map<int, NativeRunRef> _runs = {};
+
+  /// The runs of this connection, keyed by their exact native run handle (never a request ID).
+  final Map<int, SasPairingRun> _runs = {};
   bool _closed = false;
 
   /// Whether this connection was closed.
   bool get isClosed => _closed;
+
+  /// Starts an honest local Initiator on this connection with exactly one native call
+  /// (`sas_pairing_connection_start_initiator`), and returns the new run in
+  /// [SasPairingLocalAction.run] (event [SasPairingLocalEvent.initiatorStarted], with
+  /// [SasPairingLocalAction.writePending] true: native retains its START for a later drive).
+  ///
+  /// [local] is the explicit trusted-local Initiator configuration: not the listener's
+  /// Responder Bootstrap and never peer input. [expected] is the exact expected peer Bootstrap,
+  /// or null for none. Their bytes are passed exactly; the native core validates them
+  /// (`SasPairingStatus.invalidBootstrap`). The native core generates the request ID, which
+  /// this package learns only when a later drive event names the run; it is never invented.
+  ///
+  /// Nothing else happens: no drive, no exposure authorization, no exposure. A nonzero status
+  /// (for example `writePending`: the connection still retains a frame, so nothing started)
+  /// is thrown as a [SasPairingNativeException] and creates no run. Refused locally with a
+  /// [SasPairingClosedException] when the connection is closed.
+  SasPairingLocalAction startInitiator({
+    required SasPairingBootstrap local,
+    SasPairingBootstrap? expected,
+  }) {
+    if (_closed) {
+      throw SasPairingClosedException('SasPairingConnection', 'startInitiator');
+    }
+    return _network._startInitiator(this, local, expected);
+  }
 
   /// Closes this connection with exactly one native call (cleanup: allowed after
   /// `SAS_PAIRING_FATAL`). No CANCEL is sent and nothing is retried.
@@ -271,30 +307,61 @@ final class SasPairingConnection {
     _network._closeConnection(this);
   }
 
-  /// The reference of the exact native run [handle]: the existing one, or a new one after the
-  /// references under the same request ID were invalidated (that run is the only live one under
-  /// its request ID on this connection).
-  NativeRunRef _runRef(int handle, Uint8List requestId) {
+  /// The run of the exact native run [handle] that a drive event named under [requestId]: the
+  /// existing one, or a new one after the runs under the same request ID were ended (that run is
+  /// the only live one under its request ID on this connection).
+  ///
+  /// A locally started run learns its request ID here. Native retired every other reference
+  /// under that request ID when it bound the local run, and the exact run is still bound, so the
+  /// connection's other runs under it are ended too. The same handle reported under a different
+  /// known request ID breaks the frozen contract.
+  SasPairingRun _runFor(String operation, int handle, Uint8List requestId) {
     final existing = _runs[handle];
-    if (existing != null) return existing;
-    _retire(requestId);
-    return _runs[handle] = NativeRunRef(handle, requestId);
+    if (existing == null) {
+      _retire(requestId);
+      return _runs[handle] = SasPairingRun._(
+        this,
+        NativeRunRef(handle, requestId),
+      );
+    }
+    final ref = existing._ref;
+    if (ref.requestId == null) {
+      _retire(requestId);
+      ref.learnRequestId(requestId);
+    } else if (!ref.learnRequestId(requestId)) {
+      throw _network._context.violation(
+        operation,
+        'a run handle reported under a different request ID',
+      );
+    }
+    return existing;
   }
 
-  /// Invalidates every run reference under [requestId]: an event made that run's end visible.
+  /// A new local Initiator run for the exact native run [handle]; its request ID is unknown.
+  SasPairingRun _startRun(int handle) =>
+      _runs[handle] = SasPairingRun._(this, NativeRunRef(handle, null));
+
+  /// Ends every run known to be routed under [requestId]: an event made that run's end visible.
+  /// A run whose request ID is still unknown is never matched.
   void _retire(Uint8List requestId) {
     _runs.removeWhere((_, run) {
-      if (!run.hasRequestId(requestId)) return false;
-      run.invalidate();
+      if (!run._ref.hasRequestId(requestId)) return false;
+      run._ref.invalidate();
       return true;
     });
   }
 
-  /// Marks the connection closed and invalidates every run reference. No native call.
+  /// Ends exactly [run] (a terminal local action, or native `RUN_ENDED`). No native call.
+  void _endRun(SasPairingRun run) {
+    run._ref.invalidate();
+    if (identical(_runs[run._ref.handle], run)) _runs.remove(run._ref.handle);
+  }
+
+  /// Marks the connection closed and ends every run. No native call.
   void _invalidate() {
     _closed = true;
     for (final run in _runs.values) {
-      run.invalidate();
+      run._ref.invalidate();
     }
     _runs.clear();
   }
@@ -353,10 +420,9 @@ final class SasPairingEvent {
     required this.writePending,
     required this.runUntracked,
     required this.requestId,
-    required NativeRunRef? run,
+    required this.run,
     required NativeResultRef? result,
-  }) : _run = run,
-       _result = result;
+  }) : _result = result;
 
   final SasPairingEventKind kind;
 
@@ -383,12 +449,16 @@ final class SasPairingEvent {
   /// never a run, ceremony identity, peer identity, or authentication. Not text.
   final Uint8List requestId;
 
-  final NativeRunRef? _run;
+  /// The live run the event names, tracked by its exact native run (never by request ID), or
+  /// null. Every event and local action that names the same native run carries this same
+  /// object. Null for a run that ended (its end is reported with no run), for a run without a
+  /// handle ([runUntracked]), and for an event that names no run.
+  final SasPairingRun? run;
+
   final NativeResultRef? _result;
 
-  /// Whether the event names a live run that the package tracks (by its exact native run, never
-  /// by request ID).
-  bool get hasTrackedRun => _run != null;
+  /// Whether the event names a live run that the package tracks: exactly `run != null`.
+  bool get hasTrackedRun => run != null;
 
   /// Whether the event delivered a new local verified result, which a later version of this
   /// package exposes. It means only that this endpoint completed locally: not that the peer
@@ -402,14 +472,17 @@ final class SasPairingEvent {
 }
 
 /// The private run reference an event names, if any. Package-private (P8-D-003 N).
-NativeRunRef? runReferenceOf(SasPairingEvent event) => event._run;
+NativeRunRef? runReferenceOf(SasPairingEvent event) => event.run?._ref;
+
+/// The private run reference behind [run]. Package-private (P8-D-004 A).
+NativeRunRef runReferenceOfRun(SasPairingRun run) => run._ref;
 
 /// The private result reference an event delivered, if any. Package-private (P8-D-003 N).
 NativeResultRef? resultReferenceOf(SasPairingEvent event) => event._result;
 
 /// The private run references [connection] holds. Package-private (P8-D-003 N).
 List<NativeRunRef> runReferencesOf(SasPairingConnection connection) =>
-    List.unmodifiable(connection._runs.values);
+    List.unmodifiable([for (final run in connection._runs.values) run._ref]);
 
 final int _ok = SasPairingStatus.ok.code;
 final int _ownershipUncertain = SasPairingStatus.ownershipUncertain.code;
@@ -465,8 +538,8 @@ final class HostNetwork {
       _runtime,
       _host,
       offered,
-      _bytes(local),
-      expected == null ? null : _bytes(expected),
+      nativeBootstrapBytes(local),
+      expected == null ? null : nativeBootstrapBytes(expected),
     );
     // The slot is the only evidence of who owns the socket: record it before any status is
     // processed or anything is thrown.
@@ -654,7 +727,7 @@ final class HostNetwork {
     Never broken(String what) => throw _context.violation(operation, what);
     final record = event.record;
     SasPairingConnection? connection;
-    NativeRunRef? run;
+    SasPairingRun? run;
     NativeResultRef? result;
     switch (event.kind) {
       case SasPairingEventKind.connectionAccepted:
@@ -699,7 +772,7 @@ final class HostNetwork {
   }
 
   /// Applies the frozen run-reference rules (ABI contract §18.6) of one step event.
-  (NativeRunRef?, NativeResultRef?) _track(
+  (SasPairingRun?, NativeResultRef?) _track(
     String operation,
     SasPairingConnection connection,
     _Decoded event,
@@ -715,7 +788,7 @@ final class HostNetwork {
       return (null, _results.retain(record.result));
     }
     if (record.run != 0) {
-      return (connection._runRef(record.run, requestId), null);
+      return (connection._runFor(operation, record.run, requestId), null);
     }
     // Endings the event makes visible; RUN_UNTRACKED names a live run and ends nothing.
     final visibleEnd = switch (event.stepKind) {
@@ -729,10 +802,15 @@ final class HostNetwork {
     return (null, null);
   }
 
-  static NativeBootstrapBytes _bytes(SasPairingBootstrap bootstrap) => (
-    applicationIdentity: bootstrap.applicationIdentity,
-    keyAlgorithm: bootstrap.keyAlgorithm,
-    publicKey: bootstrap.publicKey,
-    sharedContext: bootstrap.sharedContext,
+  /// Removes [connection] after a ceremony call reported `CONNECTION_ENDED`: native already
+  /// invalidated it and every run of it. No `sas_pairing_connection_close` call.
+  void _dropConnection(SasPairingConnection connection) {
+    _connections.remove(connection._handle);
+    connection._invalidate();
+  }
+
+  /// Whether any connection of this host holds a run with the exact native [handle].
+  bool _holdsRun(int handle) => _connections.values.any(
+    (connection) => connection._runs.containsKey(handle),
   );
 }

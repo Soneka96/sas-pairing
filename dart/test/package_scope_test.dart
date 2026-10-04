@@ -1,10 +1,13 @@
-// Package scope guards (P8-D-001, P8-D-002, P8-D-003): the public entrypoint exports only the
-// P8.2 lifecycle and P8.3 network surface, the package is pure Dart with one runtime dependency,
-// the native library has no escape hatch (close, unload, reload, reset), cleanup is explicit (no
-// finalizer, no child-by-child cleanup), and there is no background machinery (timer, stream,
-// isolate, callback, loop), socket binding, later-increment API (ceremony, SAS, run, result), or
-// protocol code. P8.3 allows the Windows listener transfer, the cooperative drive, events, and
-// connections. Updated in P8.2 and P8.3, never removed.
+// Package scope guards (P8-D-001 to P8-D-004): the public entrypoint exports only the P8.2
+// lifecycle, P8.3 network, and P8.4 ceremony-control surface, the package is pure Dart with one
+// runtime dependency, the native library has no escape hatch (close, unload, reload, reset),
+// cleanup is explicit (no finalizer, no child-by-child cleanup), and there is no background
+// machinery (timer, stream, isolate, callback, loop), socket binding, result API (a later
+// increment), protocol code, cryptography, SAS generation, automatic approval or action
+// chaining, final-ACK confirmation, Dart-side ceremony accounting, or trust verdict. P8.3 allows
+// the Windows listener transfer, the cooperative drive, events, and connections; P8.4 allows the
+// public run, the nine explicit ceremony-control methods, and the SAS presentation model.
+// Updated in P8.2, P8.3, and P8.4, never removed.
 import 'dart:io';
 
 import 'package:test/test.dart';
@@ -101,40 +104,69 @@ void main() {
           r'getsockname|setsockopt|ioctlsocket|InternetAddress)\b|'
           r'ws2_32|\bWSA\w+|\blisten\s*\(',
         ),
-        'ceremony, SAS, run, result, or presentation API (later increments)': RegExp(
-          r'\b(SasPairingRun(?!time)\w*|SasPairingResult\w*|SasPresentation\w*|'
-          r'SasPairingSasPresentation\w*|SasPairingCeremony\w*|\w*[Pp]resentation\w*|'
-          r'startInitiator|authorizeExposure|exposeKey|approve\w*|reject\w*|'
-          r'cancelSas|emitBootstrapMac|emitInitiatorFinish|resultInfo|resultCopy|'
-          r'resultDestroy)\b',
+        'result API (a later increment)': RegExp(
+          r'\b(SasPairingResult\w*|PairingResult|resultInfo|resultCopy|'
+          r'resultDestroy|result_info|result_copy|result_destroy)\b',
         ),
-        'SAS logic': RegExp(
-          r'(?<![A-Za-z_])(sas|Sas|SAS)(?!Pairing|_pairing|_PAIRING)',
+        // The frozen local-event names (`sasApproved`, ...) are reported outcomes, not SAS
+        // logic.
+        'SAS logic or SAS generation': RegExp(
+          r'(?<![A-Za-z_])(sas|Sas|SAS)'
+          r'(?!Pairing|_pairing|_PAIRING|Approved\b|AlreadyApproved\b|Rejected\b|'
+          r'Cancelled\b)',
         ),
         'protocol frames, transcripts, deadlines, or attempt accounting': RegExp(
           // Frozen value names such as `abandonedPartialFrame` or `transcriptMismatch` are
-          // reported data, not protocol code.
-          r'\b(encode|decode|parse|serialize|build|write|read|emit|send|confirm|hash|'
-          r'compute|generate)\w*(Frame|Mac|Ack|Sas|Transcript|RequestId)\w*\b|'
+          // reported data, not protocol code; `emitBootstrapMac` is the one reviewed explicit
+          // native action (P8-D-004), which computes and sends nothing in Dart.
+          r'\b(?!emitBootstrapMac\b)(encode|decode|parse|serialize|build|write|read|emit|'
+          r'send|confirm|hash|compute|generate)\w*(Frame|Mac|Ack|Sas|Transcript|RequestId)'
+          r'\w*\b|'
           r'\b\w*([Ll]imiter|[Oo]pportunityBudget)\w*\b|'
           r'\b(DateTime|Stopwatch|Duration|clock)\b',
+        ),
+        'automatic approval, action chaining, or final-ACK confirmation': RegExp(
+          r'\b(authorizeAndExpose|exposeAndPresent|approveAndEmit\w*|emitAndFinish|'
+          r'completePairing|completeRun|finishAutomatically|autoApprove\w*|'
+          r'autoReject\w*|(confirm|send|sent|complete|write)\w*FinalAck\w*|'
+          r'finalAck(Sent|Confirmed|Written)|confirmSent|ackSent|finishAck|'
+          r'compareSas\w*|sasMatches|decimalMatches)\b',
+          caseSensitive: false,
+        ),
+        // A private mutable state field of these kinds would duplicate native authority (the
+        // P8.2 `_maxAuthorityOpportunities` validation bound is a constant, not state).
+        'Dart-side ceremony accounting or a write-pending gate': RegExp(
+          r'\b(bool|int)\??\s+_(isAuthorized|authorized|exposed|opportunit|remaining|'
+          r'spent|guard|writePending|pendingWrite|outbound)\w*\b',
+        ),
+        'trust verdicts': RegExp(
+          r'\b(isAttack|isCompromised|peerMalicious|shouldTrustPeer|authenticationFailed|'
+          r'isTrusted|trustPeer|isMalicious)\b',
         ),
         'cryptography, hashing, or randomness': RegExp(
           r'\b(sha\d+|hmac|hkdf|x25519|Digest|Random)\b',
           caseSensitive: false,
         ),
-        'text conversion of bytes': RegExp(
-          r'\b(utf8|Utf8|toNativeUtf8|latin1|ascii|codeUnits|fromCharCodes)\b',
-        ),
+        'text conversion of bytes (other than the one validated SAS display)':
+            RegExp(
+              r'\b(utf8|Utf8|toNativeUtf8|latin1|ascii|codeUnits|fromCharCodes)\b',
+            ),
         'library discovery': RegExp(
           r'DynamicLibrary\.(process|executable)\b|PATH',
         ),
       };
+      // The one reviewed text conversion: the fourteen validated ASCII bytes of the native
+      // decimal SAS display become `SasPairingSasPresentation.decimal` (P8-D-004 rule 5).
+      const display = 'String.fromCharCodes(decimal)';
       for (final file in handWrittenSources()) {
         // String literals are data (the frozen export-name table names every export).
-        final source = code(
+        var source = code(
           file.readAsStringSync(),
         ).replaceAll(RegExp(r"'[^'\n]*'"), "''");
+        if (slashes(file) == 'lib/src/ceremony.dart') {
+          expect(display.allMatches(source), hasLength(1));
+          source = source.replaceFirst(display, '');
+        }
         for (final rule in forbidden.entries) {
           expect(
             rule.value.hasMatch(source),
@@ -194,7 +226,7 @@ void main() {
   });
 
   test(
-    'stateful native calls: the seven lifecycle and five network exports, each in its service',
+    'stateful native calls: the seven lifecycle, five network, and nine ceremony exports, each in its service',
     () {
       const services = {
         'lib/src/native/native_lifecycle_api.dart': {
@@ -206,13 +238,24 @@ void main() {
           'sas_pairing_host_create',
           'sas_pairing_host_destroy',
         },
-        // No ceremony action, presentation, or result export is called anywhere.
         'lib/src/native/native_network_api.dart': {
           'sas_pairing_host_attach_windows_listener',
           'sas_pairing_host_detach_listener',
           'sas_pairing_host_drive',
           'sas_pairing_host_recheck_after_resume',
           'sas_pairing_connection_close',
+        },
+        // No result export is called anywhere.
+        'lib/src/native/native_ceremony_api.dart': {
+          'sas_pairing_connection_start_initiator',
+          'sas_pairing_run_authorize_exposure',
+          'sas_pairing_run_expose_key',
+          'sas_pairing_run_presentation',
+          'sas_pairing_run_approve_sas',
+          'sas_pairing_run_emit_bootstrap_mac',
+          'sas_pairing_run_reject_sas',
+          'sas_pairing_run_cancel_sas',
+          'sas_pairing_run_emit_initiator_finish',
         },
       };
       final call = RegExp(r'\.(sas_pairing_\w+)\b');
@@ -226,23 +269,66 @@ void main() {
     },
   );
 
-  test('FFI memory is handled only by the lifecycle and network services', () {
-    final memory = RegExp(
-      r'\b(calloc|malloc|using|Arena|nullptr|asTypedList)\b|Pointer<',
-    );
-    for (final file in handWrittenSources()) {
-      final path = slashes(file);
-      if (path == 'lib/src/native/native_lifecycle_api.dart' ||
-          path == 'lib/src/native/native_network_api.dart') {
-        continue;
-      }
-      expect(
-        memory.firstMatch(code(file.readAsStringSync()))?.group(0),
-        isNull,
-        reason: path,
+  test(
+    'FFI memory is handled only by the lifecycle, network, and ceremony services',
+    () {
+      final memory = RegExp(
+        r'\b(calloc|malloc|using|Arena|nullptr|asTypedList)\b|Pointer<',
       );
-    }
-  });
+      for (final file in handWrittenSources()) {
+        final path = slashes(file);
+        if (const {
+          'lib/src/native/native_lifecycle_api.dart',
+          'lib/src/native/native_network_api.dart',
+          'lib/src/native/native_ceremony_api.dart',
+          // The one shared Bootstrap marshaller, used by the network and ceremony services.
+          'lib/src/native/native_bootstrap.dart',
+        }.contains(path)) {
+          continue;
+        }
+        expect(
+          memory.firstMatch(code(file.readAsStringSync()))?.group(0),
+          isNull,
+          reason: path,
+        );
+      }
+    },
+  );
+
+  test(
+    'every ceremony method makes exactly its own one native call and chains nothing',
+    () {
+      final ceremony = code(readPackageFile('lib/src/ceremony.dart'));
+      const methods = {
+        'authorizeExposure': 'authorizeExposure',
+        'exposeKey': 'exposeKey',
+        'approveSas': 'approveSas',
+        'emitBootstrapMac': 'emitBootstrapMac',
+        'rejectSas': 'rejectSas',
+        'cancelSas': 'cancelSas',
+        'emitInitiatorFinish': 'emitInitiatorFinish',
+      };
+      for (final MapEntry(key: method, value: export) in methods.entries) {
+        final body = RegExp(
+          'SasPairingLocalAction $method\\([^)]*\\) => _act\\((.*?)\\);\\n',
+          dotAll: true,
+        ).firstMatch(ceremony)?.group(1);
+        expect(body, isNotNull, reason: method);
+        expect(RegExp(r'\bapi\.(\w+)\(').allMatches(body!).map((m) => m[1]), [
+          export,
+        ], reason: method);
+      }
+      // Neither the run nor the start drives, rechecks, closes, or calls a second action.
+      for (final forbidden in [
+        RegExp(r'\.drive\('),
+        RegExp(r'recheckAfterResume\('),
+        RegExp(r'\bclose\('),
+        RegExp(r'connectionClose\('),
+      ]) {
+        expect(forbidden.hasMatch(ceremony), isFalse, reason: '$forbidden');
+      }
+    },
+  );
 
   test('exactly one DynamicLibrary.open, inside the loader', () {
     final opens = [

@@ -1,14 +1,16 @@
 /// The package-private process context of the loaded native image (P8-D-002 B, G, H).
 ///
 /// Private to the package. One context belongs to each loaded image, so for the one process
-/// loader there is one per owner isolate (P8-D-001 N). It holds the native lifecycle and network
-/// services (P8-D-002 L, P8-D-003 Q) and the two latches that live below every runtime: the native FATAL latch and the
-/// contract-violation latch. Neither latch can be cleared: closing or recreating a runtime and
+/// loader there is one per owner isolate (P8-D-001 N). It holds the native lifecycle, network,
+/// and ceremony services (P8-D-002 L, P8-D-003 Q, P8-D-004 rule 8), all built over the same
+/// generated bindings of that image, and the two latches that live below every runtime: the
+/// native FATAL latch and the contract-violation latch. Neither latch can be cleared: closing or recreating a runtime and
 /// closing wrappers leave them set, and the only recovery is an OS process restart.
 library;
 
 import '../exceptions.dart';
 import '../status.dart';
+import 'native_ceremony_api.dart';
 import 'native_library_loader.dart';
 import 'native_lifecycle_api.dart';
 import 'native_network_api.dart';
@@ -22,8 +24,11 @@ NativeLifecycleApi _ffiApi(LoadedNativeLibrary library) =>
 NativeNetworkApi _ffiNetwork(LoadedNativeLibrary library) =>
     FfiNativeNetworkApi(library.bindings);
 
+NativeCeremonyApi _ffiCeremony(LoadedNativeLibrary library) =>
+    FfiNativeCeremonyApi(library.bindings);
+
 final class NativeProcessContext {
-  NativeProcessContext(this.api, this.network);
+  NativeProcessContext(this.api, this.network, this.ceremony);
 
   // One context per loaded image; the process loader returns the identical image every time.
   static final Expando<NativeProcessContext> _contexts = Expando(
@@ -32,18 +37,21 @@ final class NativeProcessContext {
 
   /// The context of the image at [libraryPath]: [load] initializes the loader (production: the
   /// P8.1 process loader, which opens nothing once ready), and the context is created once per
-  /// loaded image. Tests pass their own [load], [apiFor], and [networkFor].
+  /// loaded image. Tests pass their own [load], [apiFor], [networkFor], and [ceremonyFor].
   static NativeProcessContext forLibrary(
     String libraryPath, {
     LoadedNativeLibrary Function(String libraryPath) load = _processLoad,
     NativeLifecycleApi Function(LoadedNativeLibrary library) apiFor = _ffiApi,
     NativeNetworkApi Function(LoadedNativeLibrary library) networkFor =
         _ffiNetwork,
+    NativeCeremonyApi Function(LoadedNativeLibrary library) ceremonyFor =
+        _ffiCeremony,
   }) {
     final library = load(libraryPath);
     return _contexts[library] ??= NativeProcessContext(
       apiFor(library),
       networkFor(library),
+      ceremonyFor(library),
     );
   }
 
@@ -52,6 +60,9 @@ final class NativeProcessContext {
 
   /// The network exports (P8.3).
   final NativeNetworkApi network;
+
+  /// The trusted-local ceremony exports (P8.4).
+  final NativeCeremonyApi ceremony;
 
   bool _fatal = false;
   String? _contractViolation;

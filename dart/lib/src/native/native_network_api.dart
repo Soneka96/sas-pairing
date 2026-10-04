@@ -1,5 +1,6 @@
 /// The private native network service (P8-D-003 Q): the five network exports of the frozen ABI
-/// v1, with every piece of their FFI memory handled here.
+/// v1, with every piece of their FFI memory handled here (the Bootstrap views through the shared
+/// private marshaller in `native_bootstrap.dart`).
 ///
 /// Private to the package. This is not a second declaration layer: it calls only the generated
 /// bindings. It returns raw status values, the raw socket slot, and plain copies of the produced
@@ -14,14 +15,7 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
 import 'generated/sas_pairing_bindings.g.dart';
-
-/// The four exact byte fields of one Bootstrap configuration, in ABI order.
-typedef NativeBootstrapBytes = ({
-  Uint8List applicationIdentity,
-  Uint8List keyAlgorithm,
-  Uint8List publicKey,
-  Uint8List sharedContext,
-});
+import 'native_bootstrap.dart';
 
 /// An attach result: the raw status and the raw value of the in/out socket slot after the call.
 typedef NativeAttachResult = ({int status, int socketAfterCall});
@@ -125,10 +119,10 @@ final class FfiNativeNetworkApi implements NativeNetworkApi {
     NativeBootstrapBytes? expected,
   ) => using((arena) {
     final slot = arena<sas_pairing_socket_t>()..value = socket;
-    final localView = _bootstrap(arena, local);
+    final localView = nativeBootstrapView(arena, local);
     final expectedView = expected == null
         ? nullptr.cast<sas_pairing_bootstrap_view_t>()
-        : _bootstrap(arena, expected);
+        : nativeBootstrapView(arena, expected);
     final status = _bindings.sas_pairing_host_attach_windows_listener(
       runtime,
       host,
@@ -207,38 +201,5 @@ final class FfiNativeNetworkApi implements NativeNetworkApi {
       reserved: record.reserved,
       requestIdBytes: requestId,
     );
-  }
-
-  /// One Bootstrap view over exact copies of the four fields, valid until [arena] is released.
-  static Pointer<sas_pairing_bootstrap_view_t> _bootstrap(
-    Arena arena,
-    NativeBootstrapBytes bootstrap,
-  ) {
-    final view = arena<sas_pairing_bootstrap_view_t>();
-    _bytes(arena, view.ref.application_identity, bootstrap.applicationIdentity);
-    _bytes(arena, view.ref.key_algorithm, bootstrap.keyAlgorithm);
-    _bytes(arena, view.ref.public_key, bootstrap.publicKey);
-    _bytes(arena, view.ref.shared_context, bootstrap.sharedContext);
-    return view;
-  }
-
-  /// Exact bytes, pointer plus length: an empty field is a null pointer with length 0, any other
-  /// field an exact copy. No encoding, no terminator.
-  static void _bytes(
-    Arena arena,
-    sas_pairing_bytes_view_t view,
-    Uint8List bytes,
-  ) {
-    if (bytes.isEmpty) {
-      view
-        ..data = nullptr
-        ..len = 0;
-      return;
-    }
-    final copy = arena<Uint8>(bytes.length);
-    copy.asTypedList(bytes.length).setAll(0, bytes);
-    view
-      ..data = copy
-      ..len = bytes.length;
   }
 }

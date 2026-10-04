@@ -5,6 +5,7 @@ import 'dart:ffi';
 import 'dart:typed_data';
 
 import 'package:sas_pairing/src/native/generated/sas_pairing_bindings.g.dart';
+import 'package:sas_pairing/src/native/native_bootstrap.dart';
 import 'package:sas_pairing/src/native/native_network_api.dart';
 import 'package:test/test.dart';
 
