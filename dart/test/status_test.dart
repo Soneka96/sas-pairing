@@ -1,7 +1,7 @@
 // P8.2 status consistency (P8-D-002 C, I): the public SasPairingStatus enum is exactly the 48
 // frozen statuses of the private P8.1 table (which is itself checked against the manifest), and
-// the lifecycle's normal/cleanup split is exactly the manifest fatal class of each of the seven
-// lifecycle exports.
+// the wrapper's normal/cleanup split is exactly the manifest fatal class of each of the seven
+// lifecycle exports and (P8.3, P8-D-003) the five network exports.
 import 'package:sas_pairing/src/exceptions.dart';
 import 'package:sas_pairing/src/lifecycle.dart';
 import 'package:sas_pairing/src/native/abi_v1.dart';
@@ -9,6 +9,7 @@ import 'package:sas_pairing/src/status.dart';
 import 'package:test/test.dart';
 
 import 'support/fake_lifecycle.dart';
+import 'support/fake_network.dart';
 import 'support/repository.dart';
 
 /// `ceremonyIdentityMismatch` → `SAS_PAIRING_CEREMONY_IDENTITY_MISMATCH`.
@@ -84,7 +85,7 @@ void main() {
   });
 
   test(
-    'normal and cleanup lifecycle operations match the manifest fatal classes',
+    'normal and cleanup lifecycle and network operations match the manifest fatal classes',
     () {
       final manifest = parseManifestTables(readRepositoryFile(manifestPath));
       final classes = {
@@ -102,6 +103,9 @@ void main() {
         final runtime = createRuntime(context);
         final authority = runtime.registerAuthority(bytes([1]));
         final host = authority.createHost();
+        host.attachWindowsListener(listener: token(), local: testBootstrap());
+        api.scriptDrive(FakeDrive(events: [accepted(100)]));
+        final connection = host.drive().events.single.connection!;
         api.script('authorityStatus', Scripted(fatal));
         expect(
           authority.queryStatus,
@@ -117,6 +121,12 @@ void main() {
           'sas_pairing_host_destroy': host.close,
           'sas_pairing_authority_release': authority.close,
           'sas_pairing_runtime_destroy': runtime.close,
+          'sas_pairing_host_attach_windows_listener': () => host
+              .attachWindowsListener(listener: token(), local: testBootstrap()),
+          'sas_pairing_host_detach_listener': host.detachListener,
+          'sas_pairing_host_drive': host.drive,
+          'sas_pairing_host_recheck_after_resume': host.recheckAfterResume,
+          'sas_pairing_connection_close': connection.close,
         }[export]!;
         try {
           run();
@@ -134,6 +144,11 @@ void main() {
         'sas_pairing_authority_status',
         'sas_pairing_host_create',
         'sas_pairing_host_destroy',
+        'sas_pairing_host_attach_windows_listener',
+        'sas_pairing_host_detach_listener',
+        'sas_pairing_host_drive',
+        'sas_pairing_host_recheck_after_resume',
+        'sas_pairing_connection_close',
       ]) {
         expect(observed(export), classes[export], reason: export);
       }

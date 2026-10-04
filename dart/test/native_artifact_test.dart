@@ -3,8 +3,9 @@
 // the production process loader from the explicit SAS_PAIRING_NATIVE_LIBRARY path, exports all
 // 25 frozen symbols under their exact names, and reports ABI version 1. No stateful export is
 // called in the test process. This is the only test file that loads the real library in the test
-// process (one native owner isolate, P8-D-001 N); the P8.2 real lifecycle scenarios run in child
-// OS processes (test/support/lifecycle_child.dart), each with its own single owner isolate.
+// process (one native owner isolate, P8-D-001 N); the P8.2 real lifecycle scenarios and the P8.3
+// real network scenarios run in child OS processes (test/support/lifecycle_child.dart and
+// test/support/network_child.dart), each with its own single owner isolate.
 import 'dart:convert';
 import 'dart:io';
 
@@ -15,8 +16,9 @@ import 'package:test/test.dart';
 
 final String? artifact = Platform.environment['SAS_PAIRING_NATIVE_LIBRARY'];
 
-/// Runs one fresh-process scenario: a loader scenario (test/support/loader_child.dart) or a
-/// lifecycle scenario (test/support/lifecycle_child.dart).
+/// Runs one fresh-process scenario: a loader scenario (test/support/loader_child.dart), a
+/// lifecycle scenario (test/support/lifecycle_child.dart), or a network scenario
+/// (test/support/network_child.dart).
 Future<List<Map<String, Object?>>> runChild(
   String scenario, {
   String script = 'test/support/loader_child.dart',
@@ -194,6 +196,123 @@ void main() {
       expect(steps['done']!['closed'], isTrue);
     },
     skip: Platform.isLinux ? false : 'Linux only',
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  // P8.3 real network scenarios (P8-D-003): each in a child OS process with its own single
+  // native owner isolate, over loopback listeners made by the test-only WinSock harness. The
+  // harness closes a listening socket only while its token is untransferred.
+  Future<Map<String, Map<String, Object?>>> networkChild(
+    String scenario,
+  ) async => {
+    for (final step in await runChild(
+      scenario,
+      script: 'test/support/network_child.dart',
+    ))
+      step['step']! as String: step,
+  };
+
+  test(
+    'real network (Windows): attach, ownership transfer, bounded drive, detach',
+    () async {
+      final steps = await networkChild('windows-attach-detach');
+      expect(steps['host']!['state'], 'detached');
+      expect(
+        steps['drive before attach']!['failure'],
+        SasPairingStatus.listenerNotAttached.code,
+      );
+      final refused = steps['invalid bootstrap']!;
+      expect(refused['failure'], SasPairingStatus.invalidBootstrap.code);
+      expect(refused['transferred'], isFalse);
+      expect(refused['state'], 'detached');
+      expect(
+        steps['invalid bootstrap socket closed by caller']!['closedByHarness'],
+        isTrue,
+      );
+      expect(steps['attached']!['transferred'], isTrue);
+      expect(steps['attached']!['state'], 'attached');
+      final second = steps['second attach']!;
+      expect(second['failure'], SasPairingStatus.listenerAlreadyAttached.code);
+      expect(second['transferred'], isFalse);
+      expect(second['state'], 'attached');
+      final drive = steps['one drive without a client']!;
+      expect(drive['events'], 0);
+      expect(drive['failure'], isNull);
+      expect(drive['state'], 'attached');
+      expect(
+        drive['elapsedMs']! as int,
+        lessThan(5000),
+        reason: 'one bounded call (one readiness wait of at most 250 ms)',
+      );
+      expect(steps['recheck']!['events'], 0);
+      expect(steps['recheck']!['failure'], isNull);
+      final detached = steps['detached']!;
+      expect(detached['state'], 'detached');
+      expect(detached['hostClosed'], isFalse);
+      expect(detached['authorityClosed'], isFalse);
+      expect(detached['authority'], {'state': 'ready', 'remaining': 10});
+      expect(
+        steps['drive after detach']!['failure'],
+        SasPairingStatus.listenerNotAttached.code,
+      );
+      expect(steps['host closed']!['state'], 'detached');
+      expect(steps['done']!['transferred'], [false, true, false]);
+      expect(steps['done']!['closedByHarness'], [true, false, true]);
+    },
+    skip: Platform.isWindows ? false : 'Windows pairing platform only',
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'real network (Windows): loopback accept, same wrapper, peer close',
+    () async {
+      final steps = await networkChild('windows-accept');
+      expect(steps['accepted']!['closed'], isFalse);
+      expect(steps['accepted']!['acceptedEvents'], 1);
+      expect(steps['accepted']!['state'], 'attached');
+      final closedByPeer = steps['closed by peer']!;
+      expect(closedByPeer['sameObject'], isTrue);
+      expect(closedByPeer['everyLaterEventSameObject'], isTrue);
+      expect(closedByPeer['closed'], isTrue);
+      expect(closedByPeer['kinds'], contains('connectionClosed'));
+      expect(steps['detached']!['state'], 'detached');
+      expect(steps['done']!['transferred'], isTrue);
+      expect(steps['done']!['closedByHarness'], isFalse);
+    },
+    skip: Platform.isWindows ? false : 'Windows pairing platform only',
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'real network (Windows): listener replacement L1, detach, L2; connection close',
+    () async {
+      final steps = await networkChild('windows-reattach');
+      expect(steps['L1 accepted']!['state'], 'attached');
+      expect(steps['L1 accepted']!['c1Closed'], isFalse);
+      final detached = steps['L1 detached']!;
+      expect(detached['state'], 'detached');
+      expect(
+        detached['c1Closed'],
+        isTrue,
+        reason: 'no stale connection survives L1',
+      );
+      expect(detached['l1Transferred'], isTrue);
+      expect(steps['L2 attached']!['state'], 'attached');
+      expect(steps['L2 attached']!['l2Transferred'], isTrue);
+      final l2 = steps['L2 accepted']!;
+      expect(l2['distinct'], isTrue);
+      expect(l2['c1Closed'], isTrue);
+      expect(l2['c2Closed'], isFalse);
+      expect(steps['c2 closed manually']!['c2Closed'], isTrue);
+      expect(steps['c2 closed manually']!['state'], 'attached');
+      final accounting = steps['accounting']!;
+      expect(accounting['before'], {'state': 'ready', 'remaining': 10});
+      expect(accounting['after'], accounting['before']);
+      expect(steps['host closed']!['state'], 'detached');
+      expect(steps['done']!['transferred'], [true, true]);
+      expect(steps['done']!['closedByHarness'], [false, false]);
+    },
+    skip: Platform.isWindows ? false : 'Windows pairing platform only',
     timeout: const Timeout(Duration(minutes: 2)),
   );
 
