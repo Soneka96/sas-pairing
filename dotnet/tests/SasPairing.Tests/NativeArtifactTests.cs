@@ -12,11 +12,12 @@ namespace SasPairing.Tests;
 /// locally and fail under CI. Only <c>sas_pairing_abi_version()</c> is ever called: no lifecycle or pairing
 /// operation. Loading the Linux library proves ABI loading only, not Linux pairing support.
 /// </summary>
+[Collection(RealNativeTests.Name)]
 public sealed class NativeArtifactTests
 {
     private const string ArtifactVariable = "SAS_PAIRING_NATIVE_LIBRARY";
 
-    private static string ArtifactPath()
+    internal static string ArtifactPath()
     {
         string? path = Environment.GetEnvironmentVariable(ArtifactVariable);
         if (string.IsNullOrEmpty(path))

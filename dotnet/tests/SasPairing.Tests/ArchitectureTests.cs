@@ -324,6 +324,7 @@ public sealed partial class ArchitectureTests
             "dotnet restore --locked-mode", "dotnet build --no-restore -warnaserror", "dotnet format --verify-no-changes",
             "SAS_PAIRING_NATIVE_LIBRARY: ${{ github.workspace }}/core/target/release/${{ matrix.artifact }}",
             "sas_pairing_core.dll", "libsas_pairing_core.so", "tooling/check_abi_exports.py",
+            "--filter-class SasPairing.Tests.NativeArtifactTests", "--filter-class SasPairing.Tests.NativeLifecycleArtifactTests",
         })
         {
             Assert.Contains(required, workflow, StringComparison.Ordinal);

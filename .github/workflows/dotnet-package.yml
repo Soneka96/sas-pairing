@@ -1,11 +1,13 @@
 name: .NET package
 
 # P9 .NET package (dotnet/): the private exact native ABI v1 interop of the SasPairing library and
-# its explicit-path, process-lifetime loader (P9-D-001), checked against a real native artifact
-# built from this commit. Windows is the only pairing-networking platform; on Linux the same ABI v1
-# library is loaded only to verify the ABI version and the 25 exports (no Linux pairing support is
-# claimed, and P9.1 performs no pairing operation on any platform). Nothing is packed, uploaded,
-# or published: no NuGet package, artifact, tag, or release.
+# its explicit-path, process-lifetime loader (P9-D-001), and the public Runtime / Authority / Host
+# lifecycle wrapper (P9-D-002), checked against a real native artifact built from this commit.
+# Windows is the only pairing-networking platform: there the lifecycle runs through the public API;
+# on Linux the same ABI v1 library loads, a runtime is created, and authority registration fails
+# closed with UnsupportedPlatform (no Linux pairing support is claimed, and no listener, network,
+# or ceremony operation is made on any platform). Nothing is packed, uploaded, or published: no
+# NuGet package, artifact, tag, or release.
 
 on:
   push:
@@ -105,6 +107,19 @@ jobs:
           grep -F 'passed SasPairing.Tests.NativeArtifactTests.TheRealArtifactExportsAllTwentyFiveFrozenSymbolsByExactName' native-smoke.log
           grep -E '^\s*succeeded: 6$' native-smoke.log
           grep -E '^\s*skipped: 0$' native-smoke.log
+      # The P9.2 native success criterion as its own step: the lifecycle through the PUBLIC API against
+      # the real artifact (Windows: runtime, binary-scope authority, hosts, status, disposal cascade;
+      # Linux: runtime and the UnsupportedPlatform authority registration).
+      - name: Real native lifecycle (public API)
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet test --no-build --output Detailed --no-ansi --no-progress \
+            --filter-class SasPairing.Tests.NativeLifecycleArtifactTests | tee native-lifecycle.log
+          grep -F 'passed SasPairing.Tests.NativeLifecycleArtifactTests.ThePublicLifecycleRunsAgainstTheRealLibraryAsThePlatformDefines' native-lifecycle.log
+          grep -F 'passed SasPairing.Tests.NativeLifecycleArtifactTests.ASecondLiveRuntimeIsRefusedNativelyAndRecreationReusesTheImageAndTheProcessContext' native-lifecycle.log
+          grep -E '^\s*succeeded: 4$' native-lifecycle.log
+          grep -E '^\s*skipped: 0$' native-lifecycle.log
       # P9 must not change the frozen core: the ABI v1 freeze consistency tests stay green.
       - name: Native ABI v1 freeze consistency
         run: |
