@@ -2,7 +2,20 @@
 
 ## Status
 
-🔵 Next. Its native prerequisite is met: P7 is complete and native ABI v1 is frozen ([P7 final closure](../docs/p7-native-abi/final-closure.md), [P7-D-013](../docs/p7-native-abi/decisions.md#p7-d-013--abi-v1-final-freeze-and-wrapper-handoff)). P8, the Dart package, is complete ([P8 final closure](../docs/p8-dart-package/final-closure.md)). P9 has not started.
+🔵 In progress — **P9 IN PROGRESS, P9.1 current** (.NET package foundation + exact ABI v1 interop). Its native prerequisite is met: P7 is complete and native ABI v1 is frozen ([P7 final closure](../docs/p7-native-abi/final-closure.md), [P7-D-013](../docs/p7-native-abi/decisions.md#p7-d-013--abi-v1-final-freeze-and-wrapper-handoff)). P8, the Dart package, is complete ([P8 final closure](../docs/p8-dart-package/final-closure.md)) and merged. P9 work: [P9 package](../docs/p9-dotnet-package/README.md), [decisions](../docs/p9-dotnet-package/decisions.md).
+
+## Increment plan
+
+P9 is built in six increments on **one long-lived branch**, `feature/p9-dotnet-package`, created from `main` at `03afc8dd6ef8c473ef648ec7e06cee5042d0083a` (the merge of the P8 pull request #14). Every increment lands on that branch; there is no branch or pull request per increment, and exactly **one P9 pull request** is opened at the final P9 closure. Each increment closes only with its exact head green in CI. Only the current increment is designed in depth; later increments are milestone boundaries.
+
+| Increment | Milestone | Boundary |
+|---|---|---|
+| P9.1 | .NET package foundation + exact ABI v1 interop | Solution and projects (`SasPairing`, `SasPairing.Tests`, `net10.0`), private exact ABI v1 constants, records, and 25-export function table, explicit-path process-lifetime loader, consistency, scope, and public-surface guards, Windows and Linux CI. No public pairing API ([P9-D-001](../docs/p9-dotnet-package/decisions.md#p9-d-001--net-abi-v1-binding-and-loader-architecture)) |
+| P9.2 | Runtime / Authority / Host lifecycle wrapper | First public types: runtime, authority, and host lifecycle over the private layer; the public status and initialization error surface; `SAS_PAIRING_FATAL` handling (process restart) |
+| P9.3 | Windows listener + cooperative network driver | Listening-socket handoff through the in/out slot, attach and detach, bounded drive and resume recheck, events, connections, `RUN_UNTRACKED` guidance |
+| P9.4 | Run + ceremony control + SAS presentation | Runs by exact native handle, the nine explicit trusted-local ceremony steps, SAS presentation, decisions bound to the exact `ceremony_identity` |
+| P9.5 | PairingResult API + ownership | Runtime-owned results, explicit reads, destruction, local completion only |
+| P9.6 | .NET/native distribution + final P9 closure | NuGet and native artifact distribution decision, documentation and status cleanup, P9-wide audit, final closure, the one P9 pull request |
 
 ## Goal
 

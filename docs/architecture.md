@@ -14,7 +14,7 @@ The experimental Dart package ([`dart/`](../dart/README.md), complete in P8) pro
 
 ## .NET wrapper
 
-The future .NET package provides an idiomatic C# API over the same native core. It does not implement an independent production cryptographic protocol.
+The experimental .NET package ([`dotnet/`](../dotnet/README.md), in progress in P9) will provide an idiomatic C# API over the same native core through the frozen native ABI v1. It does not implement an independent production cryptographic protocol. Its private ABI v1 interop loads one native library from an explicit absolute path and keeps it loaded for the process lifetime ([P9-D-001](p9-dotnet-package/decisions.md#p9-d-001--net-abi-v1-binding-and-loader-architecture)); no public pairing API exists yet.
 
 ## Consumer application
 
