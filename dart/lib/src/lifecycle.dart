@@ -17,7 +17,6 @@ import 'native/native_library_loader.dart'
     show NativeLibraryInitializationException, NativeLoadFailure;
 import 'native/native_process_context.dart';
 import 'network.dart';
-import 'network_refs.dart';
 
 /// The largest remaining-opportunity count a successful `READY` status can report (ABI contract
 /// §15: 1–10). Used only to validate one native success output; Dart keeps no budget.
@@ -73,7 +72,7 @@ SasPairingRuntime createRuntime(NativeProcessContext context) {
   );
 }
 
-/// The private result references of [runtime] (P8-D-003 N). Package-private.
+/// The runtime-owned result store of [runtime] (P8-D-005 B, E). Package-private.
 NativeResultStore resultStoreOf(SasPairingRuntime runtime) => runtime._results;
 
 /// The one native runtime of this process: the owning root of authorities and hosts.
@@ -84,7 +83,10 @@ NativeResultStore resultStoreOf(SasPairingRuntime runtime) => runtime._results;
 /// recorded `SAS_PAIRING_FATAL` stays recorded. Close it explicitly, in a `finally` block; no
 /// finalizer does it for you.
 final class SasPairingRuntime {
-  SasPairingRuntime._(this._context, this._handle);
+  SasPairingRuntime._(NativeProcessContext context, int handle)
+    : _context = context,
+      _handle = handle,
+      _results = NativeResultStore(context, handle);
 
   /// Creates the native runtime, loading the native library from the absolute
   /// [nativeLibraryPath] the first time (it is never loaded twice; later calls ignore the
@@ -114,9 +116,9 @@ final class SasPairingRuntime {
   final NativeProcessContext _context;
   final int _handle;
   final Set<SasPairingAuthority> _authorities = {};
-  // Native results are runtime-owned: they outlive connections, listeners, hosts, and
-  // authorities, and end only with result destruction (later) or runtime destruction.
-  final NativeResultStore _results = NativeResultStore();
+  // Native results are runtime-owned: they outlive connections, listeners, hosts, authorities,
+  // and the fatal state, and end only with result destruction or runtime destruction.
+  final NativeResultStore _results;
   bool _closed = false;
 
   /// Whether this runtime was closed. A closed runtime stays closed.
@@ -145,7 +147,8 @@ final class SasPairingRuntime {
 
   /// Destroys the native runtime with exactly one native call, which also releases every
   /// authority, destroys every host, closes every listener and connection, and drops every
-  /// result it owns; all of those objects are then closed too, with no other native call.
+  /// result it owns; all of those objects (every open `SasPairingResult` included) are then
+  /// closed too, with no other native call. Result data already read stays usable.
   ///
   /// The runtime is closed after the first call whatever the native result, and a failure is
   /// thrown once as a [SasPairingNativeException]; it is never retried. Later calls do nothing.
@@ -250,7 +253,7 @@ final class SasPairingAuthority {
 
   /// Releases the registration with exactly one native call, which also destroys every host of
   /// this authority with its listener and connections; those objects are then closed too, with
-  /// no other native call. The runtime and native results stay.
+  /// no other native call. The runtime and its results stay open.
   ///
   /// The authority is closed after the first call whatever the native result (for example
   /// `ownershipUncertain`), and a failure is thrown once as a [SasPairingNativeException]; it is
@@ -376,7 +379,7 @@ final class SasPairingHost {
 
   /// Destroys the host with exactly one native call, which also closes its listener and every
   /// connection; those connections are then closed too, with no other native call. Its
-  /// authority stays registered and open, and native results stay.
+  /// authority stays registered and open, and results stay open.
   ///
   /// The host is closed after the first call whatever the native result, and a failure is
   /// thrown once as a [SasPairingNativeException]; it is never retried. Later calls do nothing.

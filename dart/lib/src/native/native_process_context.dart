@@ -2,10 +2,11 @@
 ///
 /// Private to the package. One context belongs to each loaded image, so for the one process
 /// loader there is one per owner isolate (P8-D-001 N). It holds the native lifecycle, network,
-/// and ceremony services (P8-D-002 L, P8-D-003 Q, P8-D-004 rule 8), all built over the same
-/// generated bindings of that image, and the two latches that live below every runtime: the
-/// native FATAL latch and the contract-violation latch. Neither latch can be cleared: closing or recreating a runtime and
-/// closing wrappers leave them set, and the only recovery is an OS process restart.
+/// ceremony, and result services (P8-D-002 L, P8-D-003 Q, P8-D-004 rule 8, P8-D-005 rule 1), all
+/// built over the same generated bindings of that image, and the two latches that live below
+/// every runtime: the native FATAL latch and the contract-violation latch. Neither latch can be
+/// cleared: closing or recreating a runtime and closing wrappers leave them set, and the only
+/// recovery is an OS process restart.
 library;
 
 import '../exceptions.dart';
@@ -14,6 +15,7 @@ import 'native_ceremony_api.dart';
 import 'native_library_loader.dart';
 import 'native_lifecycle_api.dart';
 import 'native_network_api.dart';
+import 'native_result_api.dart';
 
 LoadedNativeLibrary _processLoad(String libraryPath) =>
     NativeLibraryLoader.initialize(libraryPath: libraryPath);
@@ -27,8 +29,11 @@ NativeNetworkApi _ffiNetwork(LoadedNativeLibrary library) =>
 NativeCeremonyApi _ffiCeremony(LoadedNativeLibrary library) =>
     FfiNativeCeremonyApi(library.bindings);
 
+NativeResultApi _ffiResults(LoadedNativeLibrary library) =>
+    FfiNativeResultApi(library.bindings);
+
 final class NativeProcessContext {
-  NativeProcessContext(this.api, this.network, this.ceremony);
+  NativeProcessContext(this.api, this.network, this.ceremony, this.results);
 
   // One context per loaded image; the process loader returns the identical image every time.
   static final Expando<NativeProcessContext> _contexts = Expando(
@@ -37,7 +42,8 @@ final class NativeProcessContext {
 
   /// The context of the image at [libraryPath]: [load] initializes the loader (production: the
   /// P8.1 process loader, which opens nothing once ready), and the context is created once per
-  /// loaded image. Tests pass their own [load], [apiFor], [networkFor], and [ceremonyFor].
+  /// loaded image. Tests pass their own [load], [apiFor], [networkFor], [ceremonyFor], and
+  /// [resultsFor].
   static NativeProcessContext forLibrary(
     String libraryPath, {
     LoadedNativeLibrary Function(String libraryPath) load = _processLoad,
@@ -46,12 +52,15 @@ final class NativeProcessContext {
         _ffiNetwork,
     NativeCeremonyApi Function(LoadedNativeLibrary library) ceremonyFor =
         _ffiCeremony,
+    NativeResultApi Function(LoadedNativeLibrary library) resultsFor =
+        _ffiResults,
   }) {
     final library = load(libraryPath);
     return _contexts[library] ??= NativeProcessContext(
       apiFor(library),
       networkFor(library),
       ceremonyFor(library),
+      resultsFor(library),
     );
   }
 
@@ -63,6 +72,9 @@ final class NativeProcessContext {
 
   /// The trusted-local ceremony exports (P8.4).
   final NativeCeremonyApi ceremony;
+
+  /// The result-data exports (P8.5).
+  final NativeResultApi results;
 
   bool _fatal = false;
   String? _contractViolation;
@@ -85,6 +97,21 @@ final class NativeProcessContext {
             'observed in this process',
       );
     }
+    final violation = _contractViolation;
+    if (violation != null) {
+      throw SasPairingContractException(
+        operation,
+        'refused locally without a native call after an earlier violation '
+        '($violation)',
+      );
+    }
+  }
+
+  /// Refuses a result-data read, without a native call, once a contract violation was observed
+  /// (P8-D-005 G). Native FATAL does NOT refuse it: ABI v1 keeps existing results readable after
+  /// `SAS_PAIRING_FATAL`, because reading never enters the core. Result destruction never calls
+  /// this.
+  void admitData(String operation) {
     final violation = _contractViolation;
     if (violation != null) {
       throw SasPairingContractException(

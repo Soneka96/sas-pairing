@@ -8,10 +8,11 @@
 /// of [SasPairingEvent] values, and [SasPairingConnection]; P8.3), and trusted-local ceremony
 /// control (a [SasPairingRun] from a drive event or `SasPairingConnection.startInitiator`, its
 /// explicit steps returning a [SasPairingLocalAction], and the [SasPairingSasPresentation] with
-/// its [SasPairingCeremonyIdentity]; P8.4). There is no result content API yet: a completed
-/// ceremony shows only `SasPairingEvent.hasResult`. Raw FFI types, pointers, native handles,
-/// sockets, event, action, and presentation records, the `DynamicLibrary`, the generated
-/// bindings, and the loader stay private.
+/// its [SasPairingCeremonyIdentity]; P8.4), and local verified results (a [SasPairingResult]
+/// delivered in `SasPairingEvent.result`, read explicitly into an immutable
+/// [SasPairingResultData] with the PEER's [SasPairingPeerRole]; P8.5). Raw FFI types, pointers,
+/// native handles, sockets, event, action, presentation, and result records, result field
+/// numbers, the `DynamicLibrary`, the generated bindings, and the loader stay private.
 ///
 /// A native library that cannot be loaded or verified is a [SasPairingInitializationException];
 /// its `processRestartRequired` says whether a corrected retry is possible in this process.
@@ -33,6 +34,12 @@
 /// security-spending step. A [SasPairingNativeException] with `SasPairingStatus.writePending`
 /// means the requested action did not run (drive, then retry if still appropriate), while
 /// `SasPairingLocalAction.writePending` means it ran and its output waits for a drive.
+///
+/// A [SasPairingResult] is ONE local verified completion of this endpoint: never proof that the
+/// peer completed, a bilateral commit, or persisted trust, and the package trusts, persists, and
+/// enrolls nothing. It belongs to the runtime: it survives connection close, listener detach,
+/// owner-loop failure, host and authority close, and `SAS_PAIRING_FATAL` (its data stays
+/// readable then), and ends only with `SasPairingResult.close()` or `SasPairingRuntime.close()`.
 ///
 /// Not production-security approved, not audited, and not formally verified. The protocol is
 /// implemented only by the native Rust core; this package implements no protocol or
@@ -70,7 +77,10 @@ export 'src/network.dart'
         SasPairingHostNetworkState,
         SasPairingLocalAction,
         SasPairingLocalEvent,
+        SasPairingPeerRole,
         SasPairingProtocolEvent,
+        SasPairingResult,
+        SasPairingResultData,
         SasPairingRun,
         SasPairingSasPresentation,
         SasPairingStepKind,

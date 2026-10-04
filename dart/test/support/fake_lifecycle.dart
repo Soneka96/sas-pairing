@@ -1,5 +1,6 @@
 // A deterministic fake of the private native lifecycle and network services, with the ceremony
-// service of fake_ceremony.dart sharing its call log: no native library is loaded. Every call is
+// service of fake_ceremony.dart and the result service of fake_result.dart sharing its call log:
+// no native library is loaded. Every call is
 // recorded in one log; each operation answers from its script queue first and otherwise succeeds
 // (new nonzero handles, READY with 10 remaining, attach adopting the socket, an empty drive).
 import 'dart:typed_data';
@@ -12,6 +13,7 @@ import 'package:sas_pairing/src/native/native_network_api.dart';
 import 'package:sas_pairing/src/native/native_process_context.dart';
 
 import 'fake_ceremony.dart';
+import 'fake_result.dart';
 
 int status(String name) => abiV1Statuses[name]!;
 int namespaceValue(String name) => abiV1Namespaces[name]!;
@@ -43,6 +45,9 @@ final class FakeLifecycleApi implements NativeLifecycleApi, NativeNetworkApi {
 
   /// The fake ceremony service, recording into the same [calls] log.
   late final FakeNativeCeremonyApi ceremony = FakeNativeCeremonyApi(calls);
+
+  /// The fake result service, recording into the same [calls] log.
+  late final FakeNativeResultApi results = FakeNativeResultApi(calls);
 
   /// Copies of the scope bytes each authorityRegister call received.
   final List<Uint8List> scopes = [];
@@ -215,7 +220,7 @@ final class FakeDrive {
 /// A fresh fake process context and its fake service.
 (NativeProcessContext, FakeLifecycleApi) fakeContext() {
   final api = FakeLifecycleApi();
-  return (NativeProcessContext(api, api, api.ceremony), api);
+  return (NativeProcessContext(api, api, api.ceremony, api.results), api);
 }
 
 /// A runtime over a fresh fake context.

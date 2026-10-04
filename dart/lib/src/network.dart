@@ -1,13 +1,14 @@
-/// The public Windows listener, cooperative drive, event, and connection API (P8-D-003), and,
-/// in the `ceremony.dart` part, the run, trusted-local ceremony control, and SAS presentation API
-/// (P8-D-004).
+/// The public Windows listener, cooperative drive, event, and connection API (P8-D-003); in the
+/// `ceremony.dart` part, the run, trusted-local ceremony control, and SAS presentation API
+/// (P8-D-004); and in the `result.dart` part, the runtime-owned PairingResult API (P8-D-005).
 ///
 /// A host has zero or one native network context (a listener and its owner loop), which owns
 /// zero or more connections, each of which owns its runs. A connection never outlives listener
 /// detach, host close, authority close, runtime close, or an owner-loop failure, and a run never
-/// outlives its connection. Network progress happens only inside one bounded synchronous call
-/// made by the caller, and every ceremony step is one explicit synchronous call: there is no
-/// background work or automatic step of any kind.
+/// outlives its connection; a result is owned by the runtime and outlives all of them. Network
+/// progress happens only inside one bounded synchronous call made by the caller, and every
+/// ceremony step is one explicit synchronous call: there is no background work or automatic step
+/// of any kind.
 library;
 
 import 'dart:typed_data';
@@ -19,10 +20,12 @@ import 'native/native_bootstrap.dart';
 import 'native/native_ceremony_api.dart';
 import 'native/native_network_api.dart';
 import 'native/native_process_context.dart';
+import 'native/native_result_api.dart';
 import 'network_refs.dart';
 import 'status.dart';
 
 part 'ceremony.dart';
+part 'result.dart';
 
 /// One caller-owned, already-bound, already-listening Windows `SOCKET`, offered to a host for
 /// ownership transfer by `SasPairingHost.attachWindowsListener`.
@@ -421,8 +424,8 @@ final class SasPairingEvent {
     required this.runUntracked,
     required this.requestId,
     required this.run,
-    required NativeResultRef? result,
-  }) : _result = result;
+    required this.result,
+  });
 
   final SasPairingEventKind kind;
 
@@ -455,15 +458,18 @@ final class SasPairingEvent {
   /// handle ([runUntracked]), and for an event that names no run.
   final SasPairingRun? run;
 
-  final NativeResultRef? _result;
+  /// The new local verified result this event delivered, or null. It is owned by the runtime
+  /// (not by [connection]) and nothing of it has been read yet: call `read()` for its data and
+  /// `close()` when done. It means only that THIS endpoint completed locally: not that the peer
+  /// succeeded or received the final message, not a bilateral commit, and not persisted trust.
+  final SasPairingResult? result;
 
   /// Whether the event names a live run that the package tracks: exactly `run != null`.
   bool get hasTrackedRun => run != null;
 
-  /// Whether the event delivered a new local verified result, which a later version of this
-  /// package exposes. It means only that this endpoint completed locally: not that the peer
-  /// succeeded or received the final message, not a bilateral commit, and not persisted trust.
-  bool get hasResult => _result != null;
+  /// Whether the event delivered a new local verified result: exactly `result != null`. Local
+  /// completion only, never peer or bilateral success.
+  bool get hasResult => result != null;
 
   /// True when [runUntracked] is set on a connection event: after consuming the whole batch, the
   /// consumer SHOULD call `event.connection?.close()`, because no exact run handle exists for
@@ -476,9 +482,6 @@ NativeRunRef? runReferenceOf(SasPairingEvent event) => event.run?._ref;
 
 /// The private run reference behind [run]. Package-private (P8-D-004 A).
 NativeRunRef runReferenceOfRun(SasPairingRun run) => run._ref;
-
-/// The private result reference an event delivered, if any. Package-private (P8-D-003 N).
-NativeResultRef? resultReferenceOf(SasPairingEvent event) => event._result;
 
 /// The private run references [connection] holds. Package-private (P8-D-003 N).
 List<NativeRunRef> runReferencesOf(SasPairingConnection connection) =>
@@ -728,7 +731,7 @@ final class HostNetwork {
     final record = event.record;
     SasPairingConnection? connection;
     SasPairingRun? run;
-    NativeResultRef? result;
+    SasPairingResult? result;
     switch (event.kind) {
       case SasPairingEventKind.connectionAccepted:
         if (_connections.containsKey(record.connection)) {
@@ -772,7 +775,7 @@ final class HostNetwork {
   }
 
   /// Applies the frozen run-reference rules (ABI contract §18.6) of one step event.
-  (SasPairingRun?, NativeResultRef?) _track(
+  (SasPairingRun?, SasPairingResult?) _track(
     String operation,
     SasPairingConnection connection,
     _Decoded event,
@@ -780,9 +783,14 @@ final class HostNetwork {
     final record = event.record;
     final requestId = event.requestId;
     if (record.result != 0) {
-      // A local verified completion: the run is terminal, and the result is runtime-owned.
-      if (_results.holds(record.result)) {
-        throw _context.violation(operation, 'a result handle already held');
+      // A local verified completion: the run is terminal, and the result is runtime-owned. Native
+      // delivers each result once and never reuses a handle, also after it was destroyed. Nothing
+      // of the result is read here.
+      if (_results.delivered(record.result)) {
+        throw _context.violation(
+          operation,
+          'a result handle that was already delivered',
+        );
       }
       connection._retire(requestId);
       return (null, _results.retain(record.result));

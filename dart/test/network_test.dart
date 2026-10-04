@@ -12,7 +12,7 @@ import 'package:sas_pairing/src/native/abi_v1.dart';
 import 'package:sas_pairing/src/native/native_network_api.dart';
 import 'package:sas_pairing/src/network_refs.dart';
 import 'package:sas_pairing/src/network.dart'
-    show runReferenceOf, resultReferenceOf, runReferencesOf;
+    show runReferenceOf, runReferencesOf;
 import 'package:test/test.dart';
 
 import 'support/fake_lifecycle.dart';
@@ -1282,7 +1282,7 @@ void main() {
     }
   });
 
-  group('private result references', () {
+  group('runtime-owned results (P8.3, public since P8.5)', () {
     test(
       'results are retained at runtime lifetime and only runtime close ends them',
       () {
@@ -1310,22 +1310,20 @@ void main() {
           [responder.hasTrackedRun, initiator.hasTrackedRun],
           [false, false],
         );
-        final r1 = resultReferenceOf(responder)!;
-        final r2 = resultReferenceOf(initiator)!;
-        expect([r1.handle, r2.handle], [9000, 9001]);
-        expect(resultStoreOf(fake.runtime).references.map((r) => r.handle), [
-          9000,
-          9001,
-        ]);
+        final r1 = responder.result!;
+        final r2 = initiator.result!;
+        expect(resultStoreOf(fake.runtime).live, [r1, r2]);
+        expect(resultStoreOf(fake.runtime).delivered(9000), isTrue);
+        expect(resultStoreOf(fake.runtime).delivered(9001), isTrue);
 
         c.close();
         fake.host.detachListener();
         fake.drive([], failure: status('SAS_PAIRING_NETWORK_POLL_FAILED'));
         fake.host.close();
         fake.authority.close();
-        expect([r1.isValid, r2.isValid], [true, true]);
-        expect(resultStoreOf(fake.runtime).references, hasLength(2));
-        // No result is destroyed, read, or interpreted by P8.3.
+        expect([r1.isClosed, r2.isClosed], [false, false]);
+        expect(resultStoreOf(fake.runtime).live, hasLength(2));
+        // No drive or teardown destroys, reads, or interprets a result.
         expect(
           fake.api.operations.where(
             (op) => op.toLowerCase().contains('result'),
@@ -1333,8 +1331,9 @@ void main() {
           isEmpty,
         );
         fake.runtime.close();
-        expect([r1.isValid, r2.isValid], [false, false]);
+        expect([r1.isClosed, r2.isClosed], [true, true]);
         expect('$responder', isNot(contains('9000')));
+        expect('$r1', isNot(contains('9000')));
       },
     );
 
@@ -1359,7 +1358,7 @@ void main() {
         step(100, step: 'CONFIRMED', requestId: [1], result: 9000),
       ], failure: status('SAS_PAIRING_OWNERSHIP_UNCERTAIN'));
       expect(batch.events.single.hasResult, isTrue);
-      expect(resultReferenceOf(batch.events.single)!.isValid, isTrue);
+      expect(batch.events.single.result!.isClosed, isFalse);
       expect(fake.host.networkState, SasPairingHostNetworkState.failedClosed);
     });
   });

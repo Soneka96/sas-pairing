@@ -1,10 +1,10 @@
-/// Package-private references to native run and result handles (P8-D-003 N, P8-D-004 A-D).
+/// Package-private references to native run handles (P8-D-003 N, P8-D-004 A-D).
 ///
-/// Private to the package and never exported. Drive events may name an exact native run or a new
-/// native result, and a local Initiator start returns a new exact run. A public `SasPairingRun`
-/// is backed by one run reference; results are kept here until a later increment wraps them.
-/// Nothing is reconstructed from request IDs, connections, or event order, and no handle is ever
-/// destroyed, re-targeted, or interpreted here.
+/// Private to the package and never exported. Drive events may name an exact native run, and a
+/// local Initiator start returns a new exact run. A public `SasPairingRun` is backed by one run
+/// reference. Nothing is reconstructed from request IDs, connections, or event order, and no
+/// handle is ever re-targeted or interpreted here. Results are runtime-owned and live in the
+/// runtime's `NativeResultStore` (P8-D-005).
 library;
 
 import 'dart:typed_data';
@@ -59,44 +59,4 @@ final class NativeRunRef {
   }
 
   void invalidate() => _valid = false;
-}
-
-/// One native result handle the runtime now owns: a local verified completion only, never
-/// bilateral success. It outlives its connection, the listener, the owner loop, the host, and
-/// the authority; only result destruction (a later increment) or runtime destruction ends it.
-final class NativeResultRef {
-  NativeResultRef(this.handle);
-
-  /// The exact native result handle.
-  final int handle;
-
-  bool _valid = true;
-
-  /// Whether the native result still exists (false once its runtime was destroyed).
-  bool get isValid => _valid;
-
-  void invalidate() => _valid = false;
-}
-
-/// The result references of one runtime, in delivery order.
-final class NativeResultStore {
-  final Map<int, NativeResultRef> _results = {};
-
-  /// Every reference retained so far.
-  List<NativeResultRef> get references => List.unmodifiable(_results.values);
-
-  /// Whether [handle] is already retained.
-  bool holds(int handle) => _results.containsKey(handle);
-
-  /// Retains a new [handle]; the caller checked it is not already held.
-  NativeResultRef retain(int handle) =>
-      _results[handle] = NativeResultRef(handle);
-
-  /// Invalidates every reference: native runtime destruction dropped every result.
-  void invalidateAll() {
-    for (final result in _results.values) {
-      result.invalidate();
-    }
-    _results.clear();
-  }
 }
