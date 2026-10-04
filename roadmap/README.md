@@ -21,7 +21,7 @@ P7 ✅ Native ABI (complete: P7.1–P7.7; native ABI v1 frozen by P7-D-013 with 
  ↓
 P8 ✅ Dart Package (complete: P8.1–P8.6; experimental Dart wrapper over the frozen ABI v1 with lifecycle, Windows network driver, ceremony + SAS, and PairingResult; Windows x64 native library distributed as an unsigned experimental CI artifact per commit; not a release; not production-security approved)
  ↓
-P9 🔵 .NET Package — IN PROGRESS (P9.1 complete: .NET package foundation + exact ABI v1 interop; P9.2 lifecycle wrapper next; P9.3–P9.6 planned; one branch, one final PR)
+P9 🔵 .NET Package — IN PROGRESS (P9.1 complete: .NET package foundation + exact ABI v1 interop; P9.2 complete: Runtime / Authority / Host lifecycle wrapper; P9.3 listener + network driver next; P9.4–P9.6 planned; one branch, one final PR)
  ↓
 P10 🟡 Consumer Integration / DovahLink Example
  ↓

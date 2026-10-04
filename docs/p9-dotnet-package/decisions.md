@@ -5,7 +5,7 @@ Stable owner decisions taken during P9. IDs `P9-D-NNN` are never reused. A decis
 | Decision | State |
 |---|---|
 | [P9-D-001 — .NET ABI v1 binding and loader architecture](#p9-d-001--net-abi-v1-binding-and-loader-architecture) | Decided P9.1; implemented in P9.1 |
-| [P9-D-002 — .NET lifecycle ownership, public errors, and fail-closed state](#p9-d-002--net-lifecycle-ownership-public-errors-and-fail-closed-state) | Decided P9.2; implementation in progress (P9.2) |
+| [P9-D-002 — .NET lifecycle ownership, public errors, and fail-closed state](#p9-d-002--net-lifecycle-ownership-public-errors-and-fail-closed-state) | Decided P9.2; implemented in P9.2 |
 
 ## P9-D-001 — .NET ABI v1 Binding and Loader Architecture
 
@@ -57,4 +57,4 @@ Stable owner decisions taken during P9. IDs `P9-D-NNN` are never reused. A decis
   - **R. Scope of P9.2.** No listener, socket, network drive, event, connection, run, ceremony control, SAS presentation, result, Bootstrap, protocol, or cryptography, and no placeholder public type for any of them; P9.3–P9.5 own them. Linux: runtime creation works and authority registration fails closed with `UnsupportedPlatform`; that is not Linux pairing support.
 - **Why:** `IDisposable` is the idiomatic, analyzable deterministic-cleanup contract of .NET, and a throwing first `Dispose` is the only honest way to surface a native cleanup failure that has nevertheless consumed the handle; mirroring the native cascade locally (one native call, local invalidation of descendants) keeps the managed graph exactly as valid as the native one and never issues a cleanup call the native library already performed; latching both native `FATAL` and impossible success outputs process-wide, below every runtime, is the fail-closed reading of P7-D-001 and P6-D-004, while leaving cleanup open matches the native fatal classification; keeping the loader exception private and translating it exhaustively gives consumers one stable public error type per class of failure without committing to internal structure.
 - **Unchanged:** P9-D-001 and the P9.1 loader, binding, and layouts; every P7 file, export, signature, value, layout, and ownership rule (ABI v1 frozen by P7-D-013); every P8 file and decision.
-- **Status:** decided by the owner for P9.2, 2026-10-04; implementation in progress (P9.2).
+- **Status:** decided by the owner for P9.2, 2026-10-04; implemented in `dotnet/` (P9.2).

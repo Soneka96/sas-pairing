@@ -2,7 +2,7 @@
 
 ## Status
 
-🔵 In progress — **P9 IN PROGRESS — P9.1 COMPLETE** (.NET package foundation + exact ABI v1 interop, [evidence](../docs/p9-dotnet-package/README.md#p91-evidence)); P9.2 (Runtime / Authority / Host lifecycle wrapper) is next and not started. Its native prerequisite is met: P7 is complete and native ABI v1 is frozen ([P7 final closure](../docs/p7-native-abi/final-closure.md), [P7-D-013](../docs/p7-native-abi/decisions.md#p7-d-013--abi-v1-final-freeze-and-wrapper-handoff)). P8, the Dart package, is complete ([P8 final closure](../docs/p8-dart-package/final-closure.md)) and merged. P9 work: [P9 package](../docs/p9-dotnet-package/README.md), [decisions](../docs/p9-dotnet-package/decisions.md).
+🔵 In progress — **P9 IN PROGRESS — P9.2 COMPLETE**: P9.1 (.NET package foundation + exact ABI v1 interop, [evidence](../docs/p9-dotnet-package/README.md#p91-evidence)) and P9.2 (Runtime / Authority / Host lifecycle wrapper, [evidence](../docs/p9-dotnet-package/README.md#p92-evidence)) are complete; P9.3 (Windows listener ownership + cooperative network driver) is next and not started. Its native prerequisite is met: P7 is complete and native ABI v1 is frozen ([P7 final closure](../docs/p7-native-abi/final-closure.md), [P7-D-013](../docs/p7-native-abi/decisions.md#p7-d-013--abi-v1-final-freeze-and-wrapper-handoff)). P8, the Dart package, is complete ([P8 final closure](../docs/p8-dart-package/final-closure.md)) and merged. P9 work: [P9 package](../docs/p9-dotnet-package/README.md), [decisions](../docs/p9-dotnet-package/decisions.md).
 
 ## Increment plan
 
@@ -11,7 +11,7 @@ P9 is built in six increments on **one long-lived branch**, `feature/p9-dotnet-p
 | Increment | Milestone | Boundary |
 |---|---|---|
 | P9.1 | .NET package foundation + exact ABI v1 interop | Solution and projects (`SasPairing`, `SasPairing.Tests`, `net10.0`), private exact ABI v1 constants, records, and 25-export function table, explicit-path process-lifetime loader, consistency, scope, and public-surface guards, Windows and Linux CI. No public pairing API ([P9-D-001](../docs/p9-dotnet-package/decisions.md#p9-d-001--net-abi-v1-binding-and-loader-architecture)) |
-| P9.2 | Runtime / Authority / Host lifecycle wrapper | First public types: runtime, authority, and host lifecycle over the private layer; the public status and initialization error surface; `SAS_PAIRING_FATAL` handling (process restart) |
+| P9.2 | Runtime / Authority / Host lifecycle wrapper | First public types: `IDisposable` runtime, authority, and host over the seven lifecycle exports with native-cascade ownership; the public initialization, status (48 values), native, and contract error model; process-wide `SAS_PAIRING_FATAL` and contract-violation latches (process restart only); exact binary authority scope; `READY` 1–10 status validation. Complete ([P9-D-002](../docs/p9-dotnet-package/decisions.md#p9-d-002--net-lifecycle-ownership-public-errors-and-fail-closed-state)) |
 | P9.3 | Windows listener + cooperative network driver | Listening-socket handoff through the in/out slot, attach and detach, bounded drive and resume recheck, events, connections, `RUN_UNTRACKED` guidance |
 | P9.4 | Run + ceremony control + SAS presentation | Runs by exact native handle, the nine explicit trusted-local ceremony steps, SAS presentation, decisions bound to the exact `ceremony_identity` |
 | P9.5 | PairingResult API + ownership | Runtime-owned results, explicit reads, destruction, local completion only |
