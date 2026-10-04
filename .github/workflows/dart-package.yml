@@ -159,10 +159,29 @@ jobs:
             --reporter expanded | tee ceremony-fake.log
           if grep -F 'Skip:' ceremony-fake.log; then exit 1; fi
           grep -F 'All tests passed!' ceremony-fake.log
+      # The P8.5 PairingResult wrapper against the deterministic fake of the native services, on
+      # both platforms: drive delivery without reading, runtime ownership and survival across
+      # connection close, detach, owner-loop failure, host and authority close, and FATAL; the
+      # snapshot read (info, then four exact-length copies), length and BUFFER_TOO_SMALL
+      # contradictions, data admission after FATAL versus after a contract violation, explicit
+      # and runtime-cascade destruction, never-reused handles, immutability, the result FFI
+      # marshalling, and the scope, public-API, fatal-class, and P8.3 network guards.
+      - name: P8.5 results (fake native services)
+        working-directory: dart
+        run: |
+          set -euo pipefail
+          dart test test/result_test.dart test/native_result_api_test.dart \
+            test/network_test.dart test/package_scope_test.dart test/public_api_test.dart \
+            test/status_test.dart --reporter expanded | tee result-fake.log
+          if grep -F 'Skip:' result-fake.log; then exit 1; fi
+          grep -F 'All tests passed!' result-fake.log
       # The P8.4 real two-endpoint ceremony on Windows, in a child OS process over the real DLL:
       # two authorities, hosts, and listeners driven only through the public API, joined by a
       # test-only byte-transparent relay; explicit start, authorization, exposure, equal SAS
       # presentations, MATCH, BOOTSTRAP_MAC, INITIATOR_FINISH, and a local result on each side.
+      # P8.5: both public results are read after every connection, listener, host, and authority
+      # is gone (identity equals the presentation, opposite peer roles, equal request IDs,
+      # profile data, and shared context), then destroyed explicitly (A) and by the runtime (B).
       - name: Real native ceremony (Windows)
         if: runner.os == 'Windows'
         working-directory: dart

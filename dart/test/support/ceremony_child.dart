@@ -1,6 +1,7 @@
-// A fresh OS process for the real-native P8.4 two-endpoint ceremony on Windows (run by
-// native_artifact_test.dart). This process has exactly one isolate, which is its one native
-// owner (P8-D-001 N). Prints one `RESULT <json>` line.
+// A fresh OS process for the real-native P8.4 two-endpoint ceremony on Windows, extended in P8.5
+// with the public results and their lifetimes (run by native_artifact_test.dart). This process
+// has exactly one isolate, which is its one native owner (P8-D-001 N). Prints one
+// `RESULT <json>` line.
 //
 //   dart run test/support/ceremony_child.dart windows-happy-path <artifact>
 //
@@ -49,6 +50,30 @@ SasPairingBootstrap bootstrapB() => SasPairingBootstrap(
   publicKey: Uint8List.fromList(List.filled(32, 0xB8)),
   sharedContext: text(sharedContext),
 );
+
+/// Whether [needle] occurs as one contiguous run of bytes in [haystack]. Test-only evidence that
+/// an exact field value is present in an opaque byte string; nothing is parsed.
+bool containsBytes(List<int> haystack, List<int> needle) {
+  for (var i = 0; i + needle.length <= haystack.length; i++) {
+    var match = true;
+    for (var j = 0; j < needle.length && match; j++) {
+      match = haystack[i + j] == needle[j];
+    }
+    if (match) return true;
+  }
+  return false;
+}
+
+/// Every value of one result snapshot, as JSON-friendly data.
+Map<String, Object?> snapshot(SasPairingResultData data) => {
+  'identity': hex(data.ceremonyIdentity.bytes),
+  'peerRole': data.peerRole.name,
+  'profileVersion': data.profileVersion,
+  'requestId': hex(data.requestId),
+  'peerBootstrap': hex(data.authenticatedPeerBootstrap),
+  'sharedContext': hex(data.authenticatedSharedContext),
+  'profileIdentifier': hex(data.profileIdentifier),
+};
 
 /// A unique, non-text authority scope for this process.
 Uint8List scope(String tag) => Uint8List.fromList([
@@ -435,7 +460,7 @@ Future<void> happyPath(String artifact) async {
     final finishA = runA.emitInitiatorFinish();
     record('A finish', describe(finishA));
 
-    // 13. Drive until both local results are surfaced (result contents are P8.5 work).
+    // 13. Drive until both local results are surfaced; nothing of them is read yet.
     await pump.until(
       'both local results',
       (a, b) =>
@@ -474,12 +499,119 @@ Future<void> happyPath(String artifact) async {
       }(),
     });
 
+    // 14. P8.5: each endpoint holds exactly its own public result object, from its own event.
+    final publicA = resultA.result!;
+    final publicB = resultB.result!;
+    record('result objects', {
+      'aObjects': pump.eventsA
+          .where((e) => e.result != null)
+          .map((e) => e.result)
+          .toSet()
+          .length,
+      'bObjects': pump.eventsB
+          .where((e) => e.result != null)
+          .map((e) => e.result)
+          .toSet()
+          .length,
+      'distinct': !identical(publicA, publicB),
+      'aClosed': publicA.isClosed,
+      'bClosed': publicB.isClosed,
+    });
+
     hostA.detachListener();
     hostB.detachListener();
     record('detached', {
       'a': hostA.networkState.name,
       'b': hostB.networkState.name,
       'connectionsClosed': connectionA.isClosed && connectionB.isClosed,
+    });
+
+    // 15. Tear down every networking object while the runtime stays open: connections and
+    //     listeners are gone (detach above), then both hosts and both authorities close.
+    hostA.close();
+    hostB.close();
+    authorityA.close();
+    authorityB.close();
+    record('teardown before read', {
+      'connectionsClosed': connectionA.isClosed && connectionB.isClosed,
+      'hostsClosed': hostA.isClosed && hostB.isClosed,
+      'authoritiesClosed': authorityA.isClosed && authorityB.isClosed,
+      'runtimeClosed': runtime.isClosed,
+      'resultsClosed': [publicA.isClosed, publicB.isClosed],
+    });
+
+    // 16. Both results are still readable through the public API alone.
+    final dataA = publicA.read();
+    final dataB = publicB.read();
+    final again = publicA.read();
+    final a = snapshot(dataA);
+    final b = snapshot(dataB);
+    final peerBootstrapA = List<int>.of(dataA.authenticatedPeerBootstrap);
+    final peerBootstrapB = List<int>.of(dataB.authenticatedPeerBootstrap);
+    record('result data', {
+      'a': a,
+      'b': b,
+      'repeatReadEqual': '${snapshot(again)}' == '$a',
+      'aIdentityIsPresentationA':
+          dataA.ceremonyIdentity == presentedA.ceremonyIdentity,
+      'bIdentityIsPresentationB':
+          dataB.ceremonyIdentity == presentedB.ceremonyIdentity,
+      'identitiesEqual': dataA.ceremonyIdentity == dataB.ceremonyIdentity,
+      'requestIdsEqual': a['requestId'] == b['requestId'],
+      'requestIdIsStartAccepted':
+          a['requestId'] == hex(startAccepted.requestId),
+      'requestIdLength': dataA.requestId.length,
+      'expectedSharedContext': hex(text(sharedContext)),
+      // The peer's exact canonical Bootstrap frame contains the peer's configured field
+      // values verbatim and not this endpoint's own identity (test-only byte search).
+      'aPeerBootstrapHasB':
+          containsBytes(peerBootstrapA, bootstrapB().applicationIdentity) &&
+          containsBytes(peerBootstrapA, bootstrapB().publicKey),
+      'aPeerBootstrapHasA': containsBytes(
+        peerBootstrapA,
+        bootstrapA().applicationIdentity,
+      ),
+      'bPeerBootstrapHasA':
+          containsBytes(peerBootstrapB, bootstrapA().applicationIdentity) &&
+          containsBytes(peerBootstrapB, bootstrapA().publicKey),
+      'bPeerBootstrapHasB': containsBytes(
+        peerBootstrapB,
+        bootstrapB().applicationIdentity,
+      ),
+      'peerBootstrapLengths': [peerBootstrapA.length, peerBootstrapB.length],
+    });
+
+    // 17. Result A is destroyed explicitly (twice: the second call does nothing); result B is
+    //     left to the runtime cascade.
+    publicA.close();
+    final aClosedOnce = publicA.isClosed;
+    publicA.close();
+    record('result A closed', {
+      'aClosed': aClosedOnce && publicA.isClosed,
+      'bClosed': publicB.isClosed,
+      'aReadRefused': () {
+        try {
+          publicA.read();
+          return false;
+        } on SasPairingClosedException {
+          return true;
+        }
+      }(),
+    });
+    runtime.close();
+    record('runtime closed', {
+      'bClosed': publicB.isClosed,
+      'bReadRefused': () {
+        try {
+          publicB.read();
+          return false;
+        } on SasPairingClosedException {
+          return true;
+        }
+      }(),
+      // The snapshots are plain Dart data and outlive both native owners.
+      'aSnapshotUnchanged': '${snapshot(dataA)}' == '$a',
+      'bSnapshotUnchanged': '${snapshot(dataB)}' == '$b',
     });
   } finally {
     relay?.close();

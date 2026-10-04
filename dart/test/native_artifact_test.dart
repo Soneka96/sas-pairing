@@ -4,7 +4,8 @@
 // 25 frozen symbols under their exact names, and reports ABI version 1. No stateful export is
 // called in the test process. This is the only test file that loads the real library in the test
 // process (one native owner isolate, P8-D-001 N); the P8.2 real lifecycle scenarios, the P8.3
-// real network scenarios, and the P8.4 real two-endpoint ceremony run in child OS processes
+// real network scenarios, and the P8.4 real two-endpoint ceremony (with the P8.5 results) run in
+// child OS processes
 // (test/support/lifecycle_child.dart, test/support/network_child.dart, and
 // test/support/ceremony_child.dart), each with its own single owner isolate.
 import 'dart:convert';
@@ -319,7 +320,9 @@ void main() {
 
   // P8.4 real two-endpoint ceremony (P8-D-004): one child OS process, one runtime, two
   // authorities, hosts, listeners, and accepted connections, both endpoints driven only through
-  // the public API; a test-only byte-transparent relay joins the two accepted sockets.
+  // the public API; a test-only byte-transparent relay joins the two accepted sockets. P8.5
+  // (P8-D-005): each endpoint's public result is read only after its connections, listeners,
+  // hosts, and authorities are gone, then destroyed explicitly (A) or by the runtime (B).
   test(
     'real ceremony (Windows): two public Dart endpoints, explicit steps, equal SAS, local results',
     () async {
@@ -454,10 +457,85 @@ void main() {
       expect(results['relayAToB'], greaterThan(0));
       expect(results['relayBToA'], greaterThan(0));
       expect(steps['ended run refused locally']!['refused'], isTrue);
+      // P8.5: exactly one local result object per endpoint, from its own event.
+      expect(of('result objects'), {
+        'aObjects': 1,
+        'bObjects': 1,
+        'distinct': true,
+        'aClosed': false,
+        'bClosed': false,
+      });
       expect(of('detached'), {
         'a': 'detached',
         'b': 'detached',
         'connectionsClosed': true,
+      });
+      expect(of('teardown before read'), {
+        'connectionsClosed': true,
+        'hostsClosed': true,
+        'authoritiesClosed': true,
+        'runtimeClosed': false,
+        'resultsClosed': [false, false],
+      });
+      final data = of('result data');
+      final a = data['a']! as Map<String, Object?>;
+      final b = data['b']! as Map<String, Object?>;
+      // Read after every networking object was torn down, and repeatable.
+      expect(data['repeatReadEqual'], isTrue);
+      // The result identity is the presented ceremony identity of the same ceremony.
+      expect(data['aIdentityIsPresentationA'], isTrue);
+      expect(data['bIdentityIsPresentationB'], isTrue);
+      expect(data['identitiesEqual'], isTrue);
+      expect(a['identity'], steps['A presentation']!['identity']);
+      expect(
+        b['identity'],
+        steps['B presentation while key pending']!['identity'],
+      );
+      // PEER roles: the Initiator (A) holds a result whose peer is the Responder, and back.
+      expect(a['peerRole'], 'responder');
+      expect(b['peerRole'], 'initiator');
+      // The same exact request ID on both sides, the one the ceremony was routed under (the
+      // core generates 16 bytes for a local Initiator start, core/src/abi/mod.rs).
+      expect(data['requestIdsEqual'], isTrue);
+      expect(data['requestIdIsStartAccepted'], isTrue);
+      expect(data['requestIdLength'], 16);
+      // One protocol profile on both sides; the values are the frozen profile constants
+      // (core/src/protocol.rs PROFILE_ID and VERSION), compared as exact bytes.
+      expect(a['profileVersion'], b['profileVersion']);
+      expect(a['profileVersion'], 1);
+      expect(a['profileIdentifier'], b['profileIdentifier']);
+      expect(
+        a['profileIdentifier'],
+        utf8
+            .encode('sas-pairing-vodozemac-profile-draft-01')
+            .map((x) => x.toRadixString(16).padLeft(2, '0'))
+            .join(),
+      );
+      // The fixture's shared context, authenticated on both sides, exactly.
+      expect(a['sharedContext'], data['expectedSharedContext']);
+      expect(b['sharedContext'], data['expectedSharedContext']);
+      // Each peer Bootstrap is the peer's exact canonical frame: present, distinct, holding
+      // the peer's configured values and not this endpoint's own identity (never parsed).
+      expect(a['peerBootstrap'], isNot(b['peerBootstrap']));
+      expect(
+        data['peerBootstrapLengths'],
+        everyElement(inInclusiveRange(1, 16384)),
+      );
+      expect(data['aPeerBootstrapHasB'], isTrue);
+      expect(data['aPeerBootstrapHasA'], isFalse);
+      expect(data['bPeerBootstrapHasA'], isTrue);
+      expect(data['bPeerBootstrapHasB'], isFalse);
+      // Explicit destroy of A, runtime cascade of B, snapshots unchanged.
+      expect(of('result A closed'), {
+        'aClosed': true,
+        'bClosed': false,
+        'aReadRefused': true,
+      });
+      expect(of('runtime closed'), {
+        'bClosed': true,
+        'bReadRefused': true,
+        'aSnapshotUnchanged': true,
+        'bSnapshotUnchanged': true,
       });
       expect(steps['done']!['transferred'], [true, true]);
       expect(steps['done']!['closedByHarness'], [false, false]);

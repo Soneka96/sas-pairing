@@ -1,10 +1,11 @@
-// Public surface (P8-D-002 A, M; P8.2.1; P8-D-003 B; P8-D-004 rule 1): a package consumer that
-// imports only the public entrypoint sees exactly the lifecycle, status, and exception types,
-// including the public initialization failure, the P8.3 Bootstrap, listener-transfer, drive,
-// event, and connection types, and the P8.4 run, local action, local event, SAS presentation,
-// ceremony identity, and run-ended types; raw FFI, handles, sockets, event, action, and
-// presentation records, run and result references, the loader and its exception, and the native
-// services are not part of it.
+// Public surface (P8-D-002 A, M; P8.2.1; P8-D-003 B; P8-D-004 rule 1; P8-D-005 C): a package
+// consumer that imports only the public entrypoint sees exactly the lifecycle, status, and
+// exception types, including the public initialization failure, the P8.3 Bootstrap,
+// listener-transfer, drive, event, and connection types, the P8.4 run, local action, local
+// event, SAS presentation, ceremony identity, and run-ended types, and the P8.5 result, result
+// data, and peer-role types; raw FFI, handles, sockets, event, action, presentation, and result
+// records, result field numbers, run references, the result store, the loader and its exception,
+// and the native services are not part of it.
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -45,6 +46,9 @@ const publicNames = {
   'SasPairingSasPresentation',
   'SasPairingCeremonyIdentity',
   'SasPairingRunEndedException',
+  'SasPairingResult',
+  'SasPairingResultData',
+  'SasPairingPeerRole',
 };
 
 const prohibitedNames = [
@@ -85,6 +89,13 @@ const prohibitedNames = [
   'runReferenceOfRun',
   'sas_pairing_action_t',
   'sas_pairing_sas_presentation_t',
+  'NativeResultApi',
+  'FfiNativeResultApi',
+  'NativeResultInfoRecord',
+  'NativeResultInfoResult',
+  'NativeResultCopyResult',
+  'SasPairingResultField',
+  'sas_pairing_result_info_t',
 ];
 
 /// The files the entrypoint exports from.
@@ -96,9 +107,13 @@ const publicFiles = [
   'lib/src/network.dart',
 ];
 
-/// Every file that declares a public type: the exported files and the `ceremony.dart` part of
-/// `network.dart` (P8.4).
-const publicSources = [...publicFiles, 'lib/src/ceremony.dart'];
+/// Every file that declares a public type: the exported files and the `ceremony.dart` (P8.4) and
+/// `result.dart` (P8.5) parts of `network.dart`.
+const publicSources = [
+  ...publicFiles,
+  'lib/src/ceremony.dart',
+  'lib/src/result.dart',
+];
 
 String code(String source) => source
     .split('\n')
@@ -139,6 +154,9 @@ void main() {
       SasPairingSasPresentation,
       SasPairingCeremonyIdentity,
       SasPairingRunEndedException,
+      SasPairingResult,
+      SasPairingResultData,
+      SasPairingPeerRole,
     ];
     expect(types.map((t) => '$t').toSet(), publicNames);
     expect(SasPairingStatus.values, hasLength(48));
@@ -279,6 +297,104 @@ void main() {
     );
   });
 
+  test('a consumer can use the P8.5 result API from the entrypoint alone', () {
+    // Compiles only if every P8.5 member is reachable through the entrypoint, with no private
+    // import, handle, field number, or pointer; no native library is needed to type-check it.
+    void consumer(SasPairingHost host) {
+      for (final SasPairingEvent event in host.drive().events) {
+        final SasPairingResult? result = event.result;
+        expect(event.hasResult, result != null);
+        if (result == null) continue;
+        try {
+          final bool closed = result.isClosed;
+          final SasPairingResultData data = result.read();
+          final SasPairingCeremonyIdentity identity = data.ceremonyIdentity;
+          final SasPairingPeerRole peer = data.peerRole;
+          final int version = data.profileVersion;
+          final List<Uint8List> fields = [
+            data.requestId,
+            data.authenticatedPeerBootstrap,
+            data.authenticatedSharedContext,
+            data.profileIdentifier,
+          ];
+          // Application policy decides what to do with the authenticated bytes.
+          expect([closed, identity.bytes, peer, version, fields], isNotNull);
+        } finally {
+          result.close();
+        }
+      }
+    }
+
+    expect(consumer, isNotNull);
+    expect(SasPairingPeerRole.values.map((r) => r.name), [
+      'initiator',
+      'responder',
+    ]);
+  });
+
+  test('the P8.5 public types carry exactly their reviewed members', () {
+    final result = code(readPackageFile('lib/src/result.dart'));
+    Set<String> members(String kind) {
+      final body = RegExp(
+        'final class $kind \\{(.*?)\\n\\}',
+        dotAll: true,
+      ).firstMatch(result)!.group(1)!;
+      return {
+        for (final m in RegExp(
+          r'^  (?:final [\w<>?]+ |[\w<>?]+ get |[\w<>?]+ )(\w+)\b',
+          multiLine: true,
+        ).allMatches(body))
+          if (!m[1]!.startsWith('_') && m[1] != 'operator') m[1]!,
+      };
+    }
+
+    // No handle, raw field access, trust, or bilateral member.
+    expect(members('SasPairingResult'), {'isClosed', 'read', 'close'});
+    expect(members('SasPairingResultData'), {
+      'ceremonyIdentity',
+      'peerRole',
+      'profileVersion',
+      'requestId',
+      'authenticatedPeerBootstrap',
+      'authenticatedSharedContext',
+      'profileIdentifier',
+    });
+    // The result's identity is the one P8.4 type; no second identity type exists.
+    expect(
+      RegExp(
+        r'final SasPairingCeremonyIdentity ceremonyIdentity;',
+      ).allMatches(result),
+      hasLength(1),
+    );
+    expect(RegExp(r'class \w*Identity\b').hasMatch(result), isFalse);
+    // No public constructor makes a result or its data.
+    for (final kind in ['SasPairingResult', 'SasPairingResultData']) {
+      expect(
+        RegExp(
+          '^  $kind(\\.[A-Za-z]\\w*)?\\(',
+          multiLine: true,
+        ).hasMatch(result),
+        isFalse,
+        reason: kind,
+      );
+    }
+    // The peer role has exactly two members: no `unknown` and no `invalid`.
+    final role = RegExp(
+      r'enum SasPairingPeerRole \{(.*?)\n\}',
+      dotAll: true,
+    ).firstMatch(result)!.group(1)!;
+    expect(
+      {
+        for (final m in RegExp(
+          r'^  ([a-z]\w*)\(',
+          multiLine: true,
+        ).allMatches(role))
+          m[1]!,
+      },
+      {'initiator', 'responder'},
+    );
+  });
+
   test('the P8.4 public types carry no handle, result, or protocol field', () {
     final ceremony = code(readPackageFile('lib/src/ceremony.dart'));
     Set<String> members(String kind) {
@@ -357,7 +473,8 @@ void main() {
       final network = code(readPackageFile('lib/src/network.dart'));
       final bootstrap = code(readPackageFile('lib/src/bootstrap.dart'));
       final ceremony = code(readPackageFile('lib/src/ceremony.dart'));
-      for (final source in [network, bootstrap, ceremony]) {
+      final result = code(readPackageFile('lib/src/result.dart'));
+      for (final source in [network, bootstrap, ceremony, result]) {
         for (final m in RegExp(
           r'final class (SasPairing\w+)\b[^{]*\{(.*?)\n\}',
           dotAll: true,
@@ -389,7 +506,7 @@ void main() {
       for (final m in RegExp(
         r'enum (SasPairing\w+) \{(.*?)\n\}',
         dotAll: true,
-      ).allMatches(network + ceremony)) {
+      ).allMatches(network + ceremony + result)) {
         expect(m[2], isNot(contains('final int code')), reason: m[1]);
         expect(m[2], isNot(contains('get code')), reason: m[1]);
       }
@@ -430,8 +547,9 @@ void main() {
     final rawAccess = RegExp(
       r"\b(Pointer|DynamicLibrary|SasPairingNativeBindings|NativeLibraryLoader|"
       r"LoadedNativeLibrary|NativeLifecycleApi|FfiNativeLifecycleApi|FfiNativeNetworkApi|"
-      r"FfiNativeCeremonyApi|Struct|nullptr|sas_pairing_event_t|sas_pairing_bootstrap_view_t|"
-      r"sas_pairing_action_t|sas_pairing_sas_presentation_t)\b|"
+      r"FfiNativeCeremonyApi|FfiNativeResultApi|Struct|nullptr|sas_pairing_event_t|"
+      r"sas_pairing_bootstrap_view_t|sas_pairing_action_t|sas_pairing_sas_presentation_t|"
+      r"sas_pairing_result_info_t)\b|"
       r"import 'dart:ffi'|import 'package:ffi",
     );
     final publicHandle = RegExp(
@@ -564,12 +682,13 @@ void main() {
   });
 
   test(
-    'lifecycle, network, and ceremony wrappers use object identity and print no handle',
+    'lifecycle, network, ceremony, and result wrappers use object identity and print no handle',
     () {
       final source =
           code(readPackageFile('lib/src/lifecycle.dart')) +
           code(readPackageFile('lib/src/network.dart')) +
-          code(readPackageFile('lib/src/ceremony.dart'));
+          code(readPackageFile('lib/src/ceremony.dart')) +
+          code(readPackageFile('lib/src/result.dart'));
       for (final kind in [
         'SasPairingRuntime',
         'SasPairingAuthority',
@@ -580,6 +699,8 @@ void main() {
         'SasPairingRun',
         'SasPairingLocalAction',
         'SasPairingSasPresentation',
+        'SasPairingResult',
+        'SasPairingResultData',
       ]) {
         final body = RegExp(
           'final class $kind \\{(.*?)\\n\\}',

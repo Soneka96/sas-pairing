@@ -86,7 +86,7 @@ void main() {
   });
 
   test(
-    'normal and cleanup lifecycle, network, and ceremony operations match the manifest fatal classes',
+    'normal, cleanup, and result-data operations match the manifest fatal classes',
     () {
       final manifest = parseManifestTables(readRepositoryFile(manifestPath));
       final classes = {
@@ -189,6 +189,49 @@ void main() {
               entry.key == 'sas_pairing_connection_start_initiator')
             entry.value,
       ], List.filled(9, 'normal'));
+
+      // The three result exports are data access (P8-D-005 G): with the FATAL latch set, a
+      // result delivered earlier is still read (info, then a copy) and destroyed natively.
+      String observedData(String export) {
+        final (context, api) = fakeContext();
+        final runtime = createRuntime(context);
+        final host = runtime.registerAuthority(bytes([1])).createHost();
+        host.attachWindowsListener(listener: token(), local: testBootstrap());
+        api.scriptDrive(FakeDrive(events: [accepted(100)]));
+        host.drive();
+        api.scriptDrive(
+          FakeDrive(
+            events: [
+              step(100, step: 'CONFIRMED', requestId: [1], result: 9000),
+            ],
+          ),
+        );
+        final result = host.drive().events.single.result!;
+        api.scriptDrive(FakeDrive(status: fatal));
+        expect(host.drive, throwsA(isA<SasPairingNativeException>()));
+        expect(context.isFatal, isTrue);
+        final operation = {
+          'sas_pairing_result_info': 'resultInfo',
+          'sas_pairing_result_copy': 'resultCopy',
+          'sas_pairing_result_destroy': 'resultDestroy',
+        }[export]!;
+        final before = api.count(operation);
+        if (export == 'sas_pairing_result_destroy') {
+          result.close();
+        } else {
+          result.read();
+        }
+        return api.count(operation) > before ? 'data' : 'refused';
+      }
+
+      for (final export in [
+        'sas_pairing_result_info',
+        'sas_pairing_result_copy',
+        'sas_pairing_result_destroy',
+      ]) {
+        expect(classes[export], 'data', reason: export);
+        expect(observedData(export), 'data', reason: export);
+      }
     },
   );
 }
