@@ -2,7 +2,7 @@
 
 > **Pre-alpha, experimental.** P8 builds the Dart binding of the frozen sas-pairing native ABI v1. It is not production-security approved, not audited, and not formally verified. The protocol is implemented only by the native Rust core; Dart binds C.
 
-**Status: P8 IN PROGRESS — P8.5 COMPLETE; P8.6 next.** Roadmap: [P8 — Dart Package](../../roadmap/P8-dart-package.md). Decisions: [decisions.md](decisions.md). Package: [`dart/`](../../dart/README.md).
+**Status: P8 IN PROGRESS — P8.5 COMPLETE; P8.6 (native artifact distribution + final closure) in progress.** Roadmap: [P8 — Dart Package](../../roadmap/P8-dart-package.md). Decisions: [decisions.md](decisions.md). Package: [`dart/`](../../dart/README.md).
 
 ## Baseline
 
@@ -21,7 +21,7 @@
 | P8.3 | Windows listener ownership and cooperative network driver: Bootstrap value model, listening-socket ownership handoff, attach and detach, bounded host drive and resume recheck, event mapping, connection wrappers, `RUN_UNTRACKED` close guidance | [P8-D-003](decisions.md#p8-d-003--dart-windows-listener-cooperative-drive-and-connection-lifetime) | **Complete** ([evidence](#p83-evidence)) |
 | P8.4 | Run + ceremony control + SAS presentation: public runs from drive events and local starts, the nine trusted-local ceremony actions, SAS presentation and ceremony-identity binding | [P8-D-004](decisions.md#p8-d-004--dart-run-identity-explicit-ceremony-control-and-sas-binding) | **Complete** ([evidence](#p84-evidence)) |
 | P8.5 | PairingResult API + result ownership: public runtime-owned results from drive events, explicit synchronous snapshot reads, explicit and runtime-cascade destruction, result data access after native FATAL | [P8-D-005](decisions.md#p8-d-005--dart-pairingresult-ownership-data-access-and-local-completion) | **Complete** ([evidence](#p85-evidence)) |
-| P8.6 | Native artifact distribution + final P8 closure | — | Next |
+| P8.6 | Windows x64 native artifact distribution + final P8 closure: one experimental CI artifact per exact commit (`sas-pairing-dart-windows-x64-abi1-<commit>`), staged, verified, and tested as the distributed copy; integrity and provenance metadata; licenses and dependency inventory; documentation and status cleanup; P8-wide freeze audit | [P8-D-006](decisions.md#p8-d-006--dart-native-artifact-distribution-and-p8-final-closure) | In progress |
 
 ## P7 wrapper handoff
 
@@ -206,6 +206,26 @@ SasPairingRuntime                 owns every SasPairingResult (NativeResultStore
 | Connection close, detach, host close, authority close, owner-loop failure, FATAL | their own calls only | none |
 | `SasPairingRuntime.close()` | 1 × `sas_pairing_runtime_destroy`, 0 × result destroy | every open result closed |
 
+## Native artifact distribution contract (P8-D-006)
+
+```text
+CI run of commit <SHA> (Dart package workflow, windows-latest job)
+  cargo build --release --features native-abi ──► core/target/release/sas_pairing_core.dll
+  export audit (25) ──► package_dart_native.py stage ──► dist/sas-pairing-dart-windows-x64-abi1/
+  verify (+ hash identity with the build DLL, export audit of the staged DLL)
+  SAS_PAIRING_NATIVE_LIBRARY = <absolute path of the STAGED dll>
+    dart test (all) · ABI smoke · real lifecycle · real network · real ceremony + results
+  native freeze test ──► verify again (+ hash identity) ──► upload-artifact
+                                         sas-pairing-dart-windows-x64-abi1-<SHA>  (90 days)
+```
+
+- **Scope.** One consumer artifact: Windows x64 (`x86_64-pc-windows-msvc`), `sas_pairing_core.dll`, ABI v1, exactly 25 exports. The Linux `.so` is built and tested in CI only and never uploaded; no Linux, macOS, mobile, ARM64, or 32-bit pairing artifact exists or is claimed.
+- **Channel.** An experimental GitHub Actions artifact of one exact commit, named `sas-pairing-dart-windows-x64-abi1-<full commit SHA>`, kept 90 days. Not a release, pub.dev package, signed binary, or compatibility promise beyond ABI v1; no tag, GitHub Release, or publication is created.
+- **Bundle (exactly nine files).** `sas_pairing_core.dll`, `ARTIFACT-MANIFEST.json`, `SHA256SUMS.txt`, `README.md`, `LICENSE-MIT`, `LICENSE-APACHE`, `THIRD-PARTY-NOTICES.md`, `sas_pairing.h`, `abi-v1-manifest.md`; nothing else (no `.pdb`, `.lib`, `.exp`, `.ilk`, `.so`, second `.dll`, logs, or subdirectory).
+- **Metadata.** The manifest names the commit, the Dart package and core crate versions (read from `dart/pubspec.yaml` and `core/Cargo.toml`), ABI version 1, 25 exports, `windows` / `x86_64` / `x86_64-pc-windows-msvc`, the DLL and its SHA-256, `security_status: experimental-pre-alpha`, and `code_signed: false`. `SHA256SUMS.txt` covers the eight other files. A checksum is integrity metadata, not a signature; the DLL is unsigned.
+- **Tool.** `tooling/package_dart_native.py` `stage` (explicit inputs, PE AMD64 check, 25-export audit, byte-for-byte copy with equal SHA-256, generated metadata, then `verify`) and `verify` (file set, manifest, checksums, PE machine, exports, copied files equal to the repository's, notices and README structure, optional hash identity with the build DLL). It compiles nothing. Its tests are `tooling/tests/test_package_dart_native.py` (the tool) and `tooling/tests/test_p8_distribution_contract.py` (workflow, package, and documentation guards), with `dart/test/distribution_scope_test.dart` for the package.
+- **Consumer use.** Take the Dart source and the artifact from the same commit, verify `SHA256SUMS.txt`, extract once, pass the DLL's absolute path to `SasPairingRuntime.create(nativeLibraryPath: ...)`, keep that image resident, and never replace or reload it in the process ([package README](../../dart/README.md#installation-and-native-artifact-pre-alpha)). The loader is unchanged: no search, no download, ABI version 1 and all 25 symbols still checked.
+
 ## Real-native test topology
 
 `dart test` runs each test file in its own isolate of one VM process. To keep the one-owner-isolate rule (P8-D-001 N), only `test/native_artifact_test.dart` loads the real library into the test process, and it calls only the version query there. The P8.2 real lifecycle scenarios the P8.3 real network scenarios, and the P8.4 real two-endpoint ceremony (extended in P8.5 with both results' reads, lifetimes, and destruction) run in child OS processes (`dart run test/support/lifecycle_child.dart <scenario> <artifact>`, `dart run test/support/network_child.dart <scenario> <artifact>`, `dart run test/support/ceremony_child.dart windows-happy-path <artifact>`), each with a single isolate that is its native owner; the test process never registers an authority. The ceremony child joins its two accepted loopback connections with a test-only byte-transparent relay (two Dart client sockets that copy every byte unchanged and only count them). The network scenarios bind loopback listening sockets with the test-only WinSock harness `test/support/winsock.dart`, which closes a socket only while its token is untransferred. Every Windows scenario uses unique, non-text scopes (a literal, the child's process ID, and the bytes `00 80 FF`). All other lifecycle tests use a deterministic fake of the private lifecycle service and load nothing; the production loader has no test reset.
@@ -379,6 +399,10 @@ Commits on `feature/p8-dart-package`, from `4877db4`: `b259c16` (`docs: define p
 | Mutations (temporary, reverted) | Each made its tests fail: (A) connection close invalidates results → 1 survival test; (B) authority close invalidates results → 2 tests; (C) `read()` uses `admitNormal` → 4 FATAL-read tests; (D) `BUFFER_TOO_SMALL` resized and retried → 3 tests; (E) copy length mismatch accepted → 3 tests; (F) a second `close()` calls native → 5 tests; (G) runtime close closes each result first → 2 cascade tests and 2 scope tests; (H) peer roles reversed → 3 fake tests and the real Windows ceremony; (I) public `int get nativeHandle` → 3 public-API tests and the scope test; (J) a Dart decoder of `authenticatedPeerBootstrap` into `SasPairingBootstrap` → the Bootstrap-bytes scope test and the members test; (K) `bool get peerSucceeded => true` → the scope trust rule and the members test; (L) only live handles checked, so a destroyed handle is accepted again → the never-reused-handle test |
 | Dart tests | 549 (Windows with the real DLL: 548 passed, 1 Linux-only skipped): manifest 7, generated bindings 6, record layout 4, loader 19, initialization 11, lifecycle 41, FFI lifecycle 7, FFI network 10, FFI ceremony 20, FFI result 15, network 95, ceremony 193, result 70, Bootstrap 4, status 5, public API 17, scope 14, real artifact 11 (the real ceremony extended); `dart format` clean; `dart analyze --fatal-infos` clean |
 | Native regression | `abi::tests::freeze` 3 passed (1 ignored) locally and in the Dart workflow; `Rust security core` (`windows-core`, `unsupported-platform-fails-closed`) and `Repository consistency` green on the same head |
+
+### P8.6 evidence
+
+Recorded at P8.6 closure.
 
 ## Nonclaims
 
