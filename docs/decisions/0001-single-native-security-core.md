@@ -4,6 +4,8 @@
 
 Accepted as the intended implementation architecture. The P4 experimental native Rust security core is implemented; a public native API/ABI and the Dart and .NET bindings do not yet exist.
 
+Status update (P8 closure, 2026-10-04): the native ABI v1 now exists and is frozen ([P7 final closure](../p7-native-abi/final-closure.md)), and the experimental Dart binding exists as a wrapper around the one core ([P8 final closure](../p8-dart-package/final-closure.md)); the .NET binding (P9) does not yet exist. The decision is unchanged.
+
 ## Context
 
 The project intends to support Dart and .NET consumers while keeping security-sensitive protocol behavior consistent and reviewable. Separate production cryptographic implementations would multiply the code that needs review and risk divergent behavior.

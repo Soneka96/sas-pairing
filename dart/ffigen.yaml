@@ -1,0 +1,89 @@
+# Generates the one private raw FFI layer of the frozen sas-pairing native ABI v1
+# (docs/p7-native-abi/abi-v1-manifest.md, P7-D-013) from the frozen header.
+#
+# Regenerate (from dart/):  dart run ffigen --config ffigen.yaml
+# CI regenerates on Linux and fails on any `git diff` (P8-D-001).
+#
+# Every declaration is listed explicitly and everything else is excluded, so a future
+# addition to the header is never absorbed silently: it needs conscious P8 work. The
+# function list must equal `abiV1Exports` in lib/src/native/abi_v1.dart (checked by tests).
+name: SasPairingNativeBindings
+description: Raw bindings to the frozen sas-pairing native ABI v1. Private to package:sas_pairing.
+output: lib/src/native/generated/sas_pairing_bindings.g.dart
+headers:
+  entry-points:
+    - ../core/include/sas_pairing.h
+  include-directives:
+    - ../core/include/sas_pairing.h
+exclude-all-by-default: true
+comments: false
+preamble: |
+  // Raw FFI declarations of the frozen sas-pairing native ABI v1, generated from
+  // core/include/sas_pairing.h. Private to package:sas_pairing: never exported from
+  // lib/sas_pairing.dart. Do not edit; regenerate with `dart run ffigen --config ffigen.yaml`.
+functions:
+  include:
+    - sas_pairing_abi_version
+    - sas_pairing_runtime_create
+    - sas_pairing_runtime_destroy
+    - sas_pairing_authority_register
+    - sas_pairing_authority_release
+    - sas_pairing_authority_status
+    - sas_pairing_host_create
+    - sas_pairing_host_destroy
+    - sas_pairing_host_attach_windows_listener
+    - sas_pairing_host_detach_listener
+    - sas_pairing_host_drive
+    - sas_pairing_host_recheck_after_resume
+    - sas_pairing_connection_close
+    - sas_pairing_result_info
+    - sas_pairing_result_copy
+    - sas_pairing_result_destroy
+    - sas_pairing_connection_start_initiator
+    - sas_pairing_run_authorize_exposure
+    - sas_pairing_run_expose_key
+    - sas_pairing_run_presentation
+    - sas_pairing_run_approve_sas
+    - sas_pairing_run_emit_bootstrap_mac
+    - sas_pairing_run_reject_sas
+    - sas_pairing_run_cancel_sas
+    - sas_pairing_run_emit_initiator_finish
+structs:
+  include:
+    - sas_pairing_bytes_view
+    - sas_pairing_bootstrap_view
+    - sas_pairing_event
+    - sas_pairing_result_info
+    - sas_pairing_action
+    - sas_pairing_sas_presentation
+  # Each record is named by its C typedef name, exactly as in the manifest (the struct tags would
+  # collide with the function sas_pairing_result_info). The record typedefs then add nothing.
+  rename:
+    'sas_pairing_(.*)': 'sas_pairing_$1_t'
+typedefs:
+  include:
+    - sas_pairing_status_t
+    - sas_pairing_runtime_t
+    - sas_pairing_authority_t
+    - sas_pairing_host_t
+    - sas_pairing_authority_state_t
+    - sas_pairing_socket_t
+    - sas_pairing_connection_t
+    - sas_pairing_run_t
+    - sas_pairing_result_t
+    - sas_pairing_event_kind_t
+    - sas_pairing_step_kind_t
+    - sas_pairing_protocol_event_t
+    - sas_pairing_event_reason_t
+    - sas_pairing_deadline_kind_t
+    - sas_pairing_cancel_state_t
+    - sas_pairing_cancel_reason_t
+    - sas_pairing_event_flags_t
+    - sas_pairing_role_t
+    - sas_pairing_result_field_t
+    - sas_pairing_local_event_t
+    - sas_pairing_action_flags_t
+include-unused-typedefs: true
+macros:
+  include:
+    - SAS_PAIRING_.*

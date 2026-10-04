@@ -1,0 +1,288 @@
+name: Dart package
+
+# P8 Dart package (dart/): the raw bindings of the frozen native ABI v1, the
+# process-lifetime loader (P8-D-001), the runtime / authority / host lifecycle wrapper
+# (P8-D-002), the Windows listener ownership transfer and cooperative network driver
+# (P8-D-003), run and ceremony control (P8-D-004), and PairingResult (P8-D-005), checked
+# against a real native artifact built from this commit. Windows is the supported pairing
+# platform; on Linux the same ABI v1 library loads and binds, but pairing operations fail
+# closed (no Linux pairing support is claimed), and the network, ceremony, and result wrappers
+# are verified there against the deterministic fake only.
+#
+# P8-D-006 distribution: the Windows job stages the built DLL into the bundle
+# dist/sas-pairing-dart-windows-x64-abi1, runs EVERY Dart test against that staged copy,
+# verifies the bundle again, and (on push only) uploads it as the experimental CI artifact
+# sas-pairing-dart-windows-x64-abi1-<commit>. The Linux job distributes nothing. No tag,
+# GitHub Release, or pub.dev publication is ever created here.
+
+on:
+  push:
+    paths:
+      - 'dart/**'
+      - 'core/include/sas_pairing.h'
+      - 'core/src/**'
+      - 'core/Cargo.toml'
+      - 'core/Cargo.lock'
+      - 'docs/p7-native-abi/abi-v1-manifest.md'
+      - 'tooling/check_abi_exports.py'
+      - 'tooling/package_dart_native.py'
+      - 'tooling/tests/**'
+      - 'LICENSE-MIT'
+      - 'LICENSE-APACHE'
+      - '.github/workflows/dart-package.yml'
+  pull_request:
+    paths:
+      - 'dart/**'
+      - 'core/include/sas_pairing.h'
+      - 'core/src/**'
+      - 'core/Cargo.toml'
+      - 'core/Cargo.lock'
+      - 'docs/p7-native-abi/abi-v1-manifest.md'
+      - 'tooling/check_abi_exports.py'
+      - 'tooling/package_dart_native.py'
+      - 'tooling/tests/**'
+      - 'LICENSE-MIT'
+      - 'LICENSE-APACHE'
+      - '.github/workflows/dart-package.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  dart-package:
+    name: dart-package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows: every Dart test loads the STAGED distribution copy of the DLL (P8-D-006 K).
+          - os: windows-latest
+            artifact: sas_pairing_core.dll
+            tested_library: dist/sas-pairing-dart-windows-x64-abi1/sas_pairing_core.dll
+            python: python
+            lifecycle: Windows
+          # Linux: the job-local build output; never staged or uploaded (P8-D-006 B).
+          - os: ubuntu-latest
+            artifact: libsas_pairing_core.so
+            tested_library: core/target/release/libsas_pairing_core.so
+            python: python3
+            lifecycle: Linux
+    env:
+      BUILD_LIBRARY: core/target/release/${{ matrix.artifact }}
+      SAS_PAIRING_NATIVE_LIBRARY: ${{ github.workspace }}/${{ matrix.tested_library }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # The exact SDK the committed bindings were generated and formatted with.
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.13.4
+      - run: dart --version
+      - name: dart pub get
+        working-directory: dart
+        run: dart pub get
+      - name: dart format
+        working-directory: dart
+        run: dart format --output=none --set-exit-if-changed .
+      - name: dart analyze
+        working-directory: dart
+        run: dart analyze --fatal-infos
+      # The committed bindings must regenerate byte-for-byte from the frozen header.
+      - name: Install libclang
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+      - name: Regenerate the raw bindings (ffigen) and require no diff
+        working-directory: dart
+        run: |
+          set -euo pipefail
+          dart run ffigen --config ffigen.yaml
+          git status --porcelain -- .
+          git diff --exit-code -- .
+          test -z "$(git status --porcelain -- .)"
+      - name: Build the native ABI v1 artifact
+        run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
+      - name: Native ABI export audit
+        run: ${{ matrix.python }} tooling/check_abi_exports.py --library "$BUILD_LIBRARY" --expect manifest
+      # P8-D-006: stage the Windows x64 bundle from the build output before any Dart test, so
+      # that every later test loads the staged copy. The Rust target comes from the toolchain,
+      # not the runner label; the tool also checks the PE machine (AMD64) and the 25 exports.
+      - name: Stage the Windows x64 distribution bundle
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          target="$(rustc -vV | tr -d '\r' | sed -n 's/^host: //p')"
+          echo "rustc host target: $target"
+          python tooling/package_dart_native.py stage --library "$BUILD_LIBRARY" \
+            --output dist/sas-pairing-dart-windows-x64-abi1 --git-sha "$GITHUB_SHA" \
+            --rust-target "$target"
+      - name: Verify the staged bundle (hash identity, PE machine, exports)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          case "$SAS_PAIRING_NATIVE_LIBRARY" in
+            */dist/sas-pairing-dart-windows-x64-abi1/sas_pairing_core.dll) ;;
+            *) echo "::error::the Dart tests must load the staged DLL"; exit 1 ;;
+          esac
+          python tooling/package_dart_native.py verify \
+            --bundle dist/sas-pairing-dart-windows-x64-abi1 --git-sha "$GITHUB_SHA" \
+            --source-library "$BUILD_LIBRARY"
+          python tooling/check_abi_exports.py --library "$SAS_PAIRING_NATIVE_LIBRARY" --expect manifest
+          sha256sum "$BUILD_LIBRARY" "$SAS_PAIRING_NATIVE_LIBRARY"
+          (cd dist/sas-pairing-dart-windows-x64-abi1 && sha256sum -c SHA256SUMS.txt)
+          ls -la dist/sas-pairing-dart-windows-x64-abi1
+      # The packaging tool's own tests, including the real-DLL tests against the staged copy.
+      - name: Packaging tool tests (real staged DLL)
+        if: runner.os == 'Windows'
+        env:
+          SAS_PAIRING_REQUIRE_REAL_DLL: '1'
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tooling/tests -v 2>&1 | tee packaging-tests.log
+          if grep -E 'RealWindowsDll.* skipped' packaging-tests.log; then exit 1; fi
+          grep -E '^OK' packaging-tests.log
+      # Every Dart test, with the real artifact supplied explicitly (CI=true makes a missing
+      # artifact a failure, never a skip).
+      - name: dart test
+        working-directory: dart
+        run: |
+          set -euo pipefail
+          dart test --reporter expanded | tee dart-test.log
+          grep -F 'All tests passed!' dart-test.log
+      # The P8.1 native success criterion as its own step: the real artifact loads through the
+      # process loader, all 25 frozen symbols resolve by exact name, and the ABI version is 1.
+      - name: Real native ABI v1 smoke (symbols and version)
+        working-directory: dart
+        run: |
+          set -euo pipefail
+          dart test test/native_artifact_test.dart --reporter expanded | tee native-smoke.log
+          grep -F 'the real artifact exports all 25 frozen symbols by their exact names' native-smoke.log
+          grep -F 'All tests passed!' native-smoke.log
+      # The P8.2 real lifecycle scenario for this platform, in a child OS process with its own
+      # single native owner isolate: Windows registers a binary-scope authority, creates and
+      # closes hosts, and checks both cascades; Linux creates the runtime and sees authority
+      # registration fail closed with SAS_PAIRING_UNSUPPORTED_PLATFORM (no Linux pairing claim).
+      - name: Real native lifecycle (${{ matrix.lifecycle }})
+        working-directory: dart
+        run: |
+          set -euo pipefail
+          dart test test/native_artifact_test.dart --reporter expanded \
+            --plain-name 'real lifecycle (${{ matrix.lifecycle }})' | tee native-lifecycle.log
+          grep -F 'real lifecycle (${{ matrix.lifecycle }})' native-lifecycle.log
+          if grep -F 'Skip:' native-lifecycle.log; then exit 1; fi
+          grep -F '+1: All tests passed!' native-lifecycle.log
+      # The P8.3 network wrapper against the deterministic fake of the native services, on both
+      # platforms: attach ownership matrix, detach, drive versus out_failure, event mapping and
+      # record invariants, connections, RUN_UNTRACKED guidance, private run and result
+      # references, parent cascade, FFI marshalling, and the Bootstrap value. Nothing skipped.
+      - name: P8.3 network wrapper (fake native services)
+        working-directory: dart
+        run: |
+          set -euo pipefail
+          dart test test/network_test.dart test/native_network_api_test.dart             test/bootstrap_test.dart --reporter expanded | tee network-fake.log
+          if grep -F 'Skip:' network-fake.log; then exit 1; fi
+          grep -F 'All tests passed!' network-fake.log
+      # The P8.3 real network scenarios on Windows, each in a child OS process over the real DLL
+      # and loopback listening sockets from the test-only WinSock harness: attach with ownership
+      # transfer (and pre-adoption refusals that leave the socket with the caller), one bounded
+      # drive, resume recheck, detach; loopback accept, the same connection object, peer close;
+      # listener replacement (L1, detach, L2) and manual connection close. No external network.
+      - name: Real native network (Windows)
+        if: runner.os == 'Windows'
+        working-directory: dart
+        run: |
+          set -euo pipefail
+          dart test test/native_artifact_test.dart --reporter expanded             --plain-name 'real network (Windows)' | tee native-network.log
+          grep -F 'attach, ownership transfer, bounded drive, detach' native-network.log
+          grep -F 'loopback accept, same wrapper, peer close' native-network.log
+          grep -F 'listener replacement L1, detach, L2; connection close' native-network.log
+          if grep -F 'Skip:' native-network.log; then exit 1; fi
+          grep -F '+3: All tests passed!' native-network.log
+      # The P8.4 run, ceremony-control, and SAS presentation wrapper against the deterministic
+      # fake of the native services, on both platforms: exact-handle run identity and request-ID
+      # learning, the local Initiator start, every method's success contract, action and
+      # presentation record invariants, deadlines, WRITE_PENDING status versus flag, RUN_ENDED,
+      # CONNECTION_ENDED and owner-loop failure side effects, FATAL, explicit step separation,
+      # identity binding, the ceremony FFI marshalling, and the scope and public-API guards.
+      - name: P8.4 ceremony control (fake native services)
+        working-directory: dart
+        run: |
+          set -euo pipefail
+          dart test test/ceremony_test.dart test/native_ceremony_api_test.dart \
+            test/package_scope_test.dart test/public_api_test.dart test/status_test.dart \
+            --reporter expanded | tee ceremony-fake.log
+          if grep -F 'Skip:' ceremony-fake.log; then exit 1; fi
+          grep -F 'All tests passed!' ceremony-fake.log
+      # The P8.5 PairingResult wrapper against the deterministic fake of the native services, on
+      # both platforms: drive delivery without reading, runtime ownership and survival across
+      # connection close, detach, owner-loop failure, host and authority close, and FATAL; the
+      # snapshot read (info, then four exact-length copies), length and BUFFER_TOO_SMALL
+      # contradictions, data admission after FATAL versus after a contract violation, explicit
+      # and runtime-cascade destruction, never-reused handles, immutability, the result FFI
+      # marshalling, and the scope, public-API, fatal-class, and P8.3 network guards.
+      - name: P8.5 results (fake native services)
+        working-directory: dart
+        run: |
+          set -euo pipefail
+          dart test test/result_test.dart test/native_result_api_test.dart \
+            test/network_test.dart test/package_scope_test.dart test/public_api_test.dart \
+            test/status_test.dart --reporter expanded | tee result-fake.log
+          if grep -F 'Skip:' result-fake.log; then exit 1; fi
+          grep -F 'All tests passed!' result-fake.log
+      # The P8.4 real two-endpoint ceremony on Windows, in a child OS process over the real DLL:
+      # two authorities, hosts, and listeners driven only through the public API, joined by a
+      # test-only byte-transparent relay; explicit start, authorization, exposure, equal SAS
+      # presentations, MATCH, BOOTSTRAP_MAC, INITIATOR_FINISH, and a local result on each side.
+      # P8.5: both public results are read after every connection, listener, host, and authority
+      # is gone (identity equals the presentation, opposite peer roles, equal request IDs,
+      # profile data, and shared context), then destroyed explicitly (A) and by the runtime (B).
+      - name: Real native ceremony (Windows)
+        if: runner.os == 'Windows'
+        working-directory: dart
+        run: |
+          set -euo pipefail
+          dart test test/native_artifact_test.dart --reporter expanded \
+            --plain-name 'real ceremony (Windows)' | tee native-ceremony.log
+          grep -F 'two public Dart endpoints, explicit steps, equal SAS, local results' native-ceremony.log
+          if grep -F 'Skip:' native-ceremony.log; then exit 1; fi
+          grep -F '+1: All tests passed!' native-ceremony.log
+      # P8 must not change the frozen core: the ABI v1 freeze consistency tests stay green.
+      - name: Native ABI v1 freeze consistency
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib \
+            abi::tests::freeze | tee freeze.log
+          grep -E 'test result: ok\. [1-9][0-9]* passed' freeze.log
+      # P8-D-006 K: after every test, the bundle is verified again and its DLL must still be
+      # byte-identical to the build output, so the uploaded copy is the tested copy.
+      - name: Re-verify the tested bundle before upload
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          python tooling/package_dart_native.py verify \
+            --bundle dist/sas-pairing-dart-windows-x64-abi1 --git-sha "$GITHUB_SHA" \
+            --source-library "$BUILD_LIBRARY"
+          python tooling/check_abi_exports.py \
+            --library dist/sas-pairing-dart-windows-x64-abi1/sas_pairing_core.dll --expect manifest
+      # The experimental CI artifact of this exact commit (push runs only: a pull-request run
+      # builds a temporary merge commit). Never a release, tag, or publication.
+      - name: Upload the tested Windows x64 bundle (experimental CI artifact)
+        id: upload
+        if: runner.os == 'Windows' && github.event_name == 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: sas-pairing-dart-windows-x64-abi1-${{ github.sha }}
+          path: dist/sas-pairing-dart-windows-x64-abi1/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Report the uploaded artifact
+        if: runner.os == 'Windows' && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          build="$(sha256sum "$BUILD_LIBRARY" | cut -d' ' -f1)"
+          staged="$(sha256sum dist/sas-pairing-dart-windows-x64-abi1/sas_pairing_core.dll | cut -d' ' -f1)"
+          test "$build" = "$staged"
+          echo "::notice title=P8 distribution artifact::sas-pairing-dart-windows-x64-abi1-$GITHUB_SHA id=${{ steps.upload.outputs.artifact-id }} digest=${{ steps.upload.outputs.artifact-digest }} build_dll_sha256=$build staged_dll_sha256=$staged"

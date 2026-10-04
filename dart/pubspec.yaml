@@ -1,0 +1,23 @@
+name: sas_pairing
+description: >-
+  Experimental, pre-alpha Dart wrapper over the sas-pairing native ABI v1:
+  lifecycle, Windows network driver, SAS ceremony control, and local pairing
+  results. Not production-security approved, audited, or formally verified.
+version: 0.1.0-dev.1
+repository: https://github.com/Soneka96/sas-pairing
+# Never published to pub.dev (P8-D-006): use it from the repository at one exact
+# commit, with the Windows x64 native CI artifact of that same commit, whose
+# absolute path is passed to SasPairingRuntime.create. No binary is bundled.
+publish_to: none
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  ffi: ^2.2.0
+
+dev_dependencies:
+  # Pinned exactly: the committed bindings must regenerate byte-for-byte.
+  ffigen: 22.0.0
+  lints: ^6.1.0
+  test: ^1.32.0
