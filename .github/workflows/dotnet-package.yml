@@ -1,0 +1,114 @@
+name: .NET package
+
+# P9 .NET package (dotnet/): the private exact native ABI v1 interop of the SasPairing library and
+# its explicit-path, process-lifetime loader (P9-D-001), checked against a real native artifact
+# built from this commit. Windows is the only pairing-networking platform; on Linux the same ABI v1
+# library is loaded only to verify the ABI version and the 25 exports (no Linux pairing support is
+# claimed, and P9.1 performs no pairing operation on any platform). Nothing is packed, uploaded,
+# or published: no NuGet package, artifact, tag, or release.
+
+on:
+  push:
+    paths:
+      - 'dotnet/**'
+      - 'core/include/sas_pairing.h'
+      - 'core/src/**'
+      - 'core/Cargo.toml'
+      - 'core/Cargo.lock'
+      - 'docs/p7-native-abi/abi-v1-manifest.md'
+      - 'tooling/check_abi_exports.py'
+      - '.github/workflows/dotnet-package.yml'
+  pull_request:
+    paths:
+      - 'dotnet/**'
+      - 'core/include/sas_pairing.h'
+      - 'core/src/**'
+      - 'core/Cargo.toml'
+      - 'core/Cargo.lock'
+      - 'docs/p7-native-abi/abi-v1-manifest.md'
+      - 'tooling/check_abi_exports.py'
+      - '.github/workflows/dotnet-package.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  dotnet-package:
+    name: dotnet-package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: sas_pairing_core.dll
+            python: python
+          - os: ubuntu-latest
+            artifact: libsas_pairing_core.so
+            python: python3
+    env:
+      DOTNET_NOLOGO: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      # The real artifact, by absolute path, for the native smoke tests (CI=true makes a missing
+      # artifact a failure, never a skip).
+      SAS_PAIRING_NATIVE_LIBRARY: ${{ github.workspace }}/core/target/release/${{ matrix.artifact }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # The exact SDK pinned by dotnet/global.json (rollForward latestPatch within its feature band).
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: dotnet/global.json
+      - name: dotnet --info
+        working-directory: dotnet
+        run: dotnet --info
+      - name: Build the native ABI v1 artifact
+        run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
+      - name: Native ABI export audit
+        run: ${{ matrix.python }} tooling/check_abi_exports.py --library "$SAS_PAIRING_NATIVE_LIBRARY" --expect manifest
+      - name: dotnet restore
+        working-directory: dotnet
+        run: dotnet restore --locked-mode
+      - name: dotnet format
+        working-directory: dotnet
+        run: dotnet format --verify-no-changes --no-restore --verbosity diagnostic
+      - name: dotnet build
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet build --no-restore -warnaserror | tee build.log
+          grep -E '^\s*0 Warning\(s\)' build.log
+          grep -E '^\s*0 Error\(s\)' build.log
+      # Every test (Microsoft.Testing.Platform runner, selected by dotnet/global.json), with the
+      # real artifact supplied explicitly: nothing may be skipped under CI.
+      - name: dotnet test
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet test --no-build --output Detailed --no-ansi --no-progress | tee test.log
+          grep -F 'Test run summary: Passed!' test.log
+          grep -E '^\s*failed: 0$' test.log
+          grep -E '^\s*skipped: 0$' test.log
+          if grep -E '^skipped ' test.log; then exit 1; fi
+      # The P9.1 native success criterion as its own step: the real artifact loads through the
+      # production loader, all 25 frozen exports resolve by exact name, and the ABI version is 1.
+      - name: Real native ABI v1 smoke (exports and version)
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet test --no-build --output Detailed --no-ansi --no-progress \
+            --filter-class SasPairing.Tests.NativeArtifactTests | tee native-smoke.log
+          grep -F 'passed SasPairing.Tests.NativeArtifactTests.TheRealArtifactLoadsThroughTheProcessLoaderWithAbiVersionOne' native-smoke.log
+          grep -F 'passed SasPairing.Tests.NativeArtifactTests.TheRealArtifactExportsAllTwentyFiveFrozenSymbolsByExactName' native-smoke.log
+          grep -E '^\s*succeeded: 6$' native-smoke.log
+          grep -E '^\s*skipped: 0$' native-smoke.log
+      # P9 must not change the frozen core: the ABI v1 freeze consistency tests stay green.
+      - name: Native ABI v1 freeze consistency
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib \
+            abi::tests::freeze | tee freeze.log
+          grep -E 'test result: ok\. [1-9][0-9]* passed' freeze.log
