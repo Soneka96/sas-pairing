@@ -2,7 +2,7 @@
 
 ## Status
 
-🔵 In progress — **P9 IN PROGRESS, P9.1 current** (.NET package foundation + exact ABI v1 interop). Its native prerequisite is met: P7 is complete and native ABI v1 is frozen ([P7 final closure](../docs/p7-native-abi/final-closure.md), [P7-D-013](../docs/p7-native-abi/decisions.md#p7-d-013--abi-v1-final-freeze-and-wrapper-handoff)). P8, the Dart package, is complete ([P8 final closure](../docs/p8-dart-package/final-closure.md)) and merged. P9 work: [P9 package](../docs/p9-dotnet-package/README.md), [decisions](../docs/p9-dotnet-package/decisions.md).
+🔵 In progress — **P9 IN PROGRESS — P9.1 COMPLETE** (.NET package foundation + exact ABI v1 interop, [evidence](../docs/p9-dotnet-package/README.md#p91-evidence)); P9.2 (Runtime / Authority / Host lifecycle wrapper) is next and not started. Its native prerequisite is met: P7 is complete and native ABI v1 is frozen ([P7 final closure](../docs/p7-native-abi/final-closure.md), [P7-D-013](../docs/p7-native-abi/decisions.md#p7-d-013--abi-v1-final-freeze-and-wrapper-handoff)). P8, the Dart package, is complete ([P8 final closure](../docs/p8-dart-package/final-closure.md)) and merged. P9 work: [P9 package](../docs/p9-dotnet-package/README.md), [decisions](../docs/p9-dotnet-package/decisions.md).
 
 ## Increment plan
 

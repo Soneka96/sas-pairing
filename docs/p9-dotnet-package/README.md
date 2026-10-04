@@ -2,7 +2,7 @@
 
 > **Pre-alpha, experimental.** P9 builds the .NET binding of the frozen sas-pairing native ABI v1. It is not production-security approved, not audited, and not formally verified. The protocol is implemented only by the native Rust core; C# binds C.
 
-**Status: P9 IN PROGRESS — P9.1 current.** Roadmap: [P9 — .NET Package](../../roadmap/P9-dotnet-package.md). Decisions: [decisions.md](decisions.md). Package: [`dotnet/`](../../dotnet/README.md).
+**Status: P9 IN PROGRESS — P9.1 COMPLETE.** Next: P9.2 (Runtime / Authority / Host lifecycle wrapper), not started. Roadmap: [P9 — .NET Package](../../roadmap/P9-dotnet-package.md). Decisions: [decisions.md](decisions.md). Package: [`dotnet/`](../../dotnet/README.md).
 
 ## Baseline
 
@@ -17,8 +17,8 @@
 
 | Increment | Scope | Decisions | State |
 |---|---|---|---|
-| P9.1 | .NET package foundation + exact ABI v1 interop: solution, `SasPairing` library and `SasPairing.Tests` projects (`net10.0`), private exact ABI v1 constants, records, and 25-export function table, explicit-path process-lifetime loader (64-bit gate, symbol preflight, ABI version 1, permanent post-load failure), header and manifest consistency tests, architecture and scope guards, Windows and Linux CI | [P9-D-001](decisions.md#p9-d-001--net-abi-v1-binding-and-loader-architecture) | **Current** |
-| P9.2 | Runtime / Authority / Host lifecycle wrapper and the public initialization error surface | — | Planned |
+| P9.1 | .NET package foundation + exact ABI v1 interop: solution, `SasPairing` library and `SasPairing.Tests` projects (`net10.0`), private exact ABI v1 constants, records, and 25-export function table, explicit-path process-lifetime loader (64-bit gate, symbol preflight, ABI version 1, permanent post-load failure), header and manifest consistency tests, architecture and scope guards, Windows and Linux CI | [P9-D-001](decisions.md#p9-d-001--net-abi-v1-binding-and-loader-architecture) | **Complete** ([evidence](#p91-evidence)) |
+| P9.2 | Runtime / Authority / Host lifecycle wrapper and the public initialization error surface | — | Next (not started) |
 | P9.3 | Windows listener ownership handoff and cooperative network driver | — | Planned |
 | P9.4 | Runs, trusted-local ceremony control, and SAS presentation | — | Planned |
 | P9.5 | PairingResult API and result ownership | — | Planned |
@@ -79,4 +79,47 @@ The library exports no public type in P9.1: there is no pairing API yet.
 
 ## Evidence
 
-Per-increment evidence is recorded here when each increment closes.
+### P9.1 evidence
+
+P9.1 — .NET package foundation + exact ABI v1 interop, under [P9-D-001](decisions.md#p9-d-001--net-abi-v1-binding-and-loader-architecture). Commits on `feature/p9-dotnet-package`: `9f0148c` (`docs: define p9 dotnet interop foundation`), `d1fb72e` (`feat: add dotnet abi v1 interop foundation`), `cee36e5` (`test: verify dotnet abi v1 bindings and loader`), then the closure commit `docs: close p9.1 dotnet interop foundation`.
+
+| Item | Result |
+|---|---|
+| Starting state | `main` at `03afc8dd6ef8c473ef648ec7e06cee5042d0083a` (P8 pull request #14 merged; P8 final closure present); the branch existed locally at exactly that commit, clean, not on the remote; no P9 pull request |
+| Toolchain | .NET SDK 10.0.401 (runtime 10.0.12) locally; `dotnet/global.json` pins `10.0.401` with `rollForward: latestPatch` and selects the Microsoft.Testing.Platform test runner; CI installs it with `actions/setup-dotnet@v6` from that file |
+| Projects | `src/SasPairing` (library, `net10.0`, `SasPairing` 0.1.0-dev.1, `IsPackable` false, no package dependency) and `tests/SasPairing.Tests` (xUnit v3 4.0.1 on Microsoft.Testing.Platform 2.4.0); `packages.lock.json` committed for both, restored with `--locked-mode` |
+| Interop surface | 145 constants (2 version, 48 statuses, 84 namespace values, 6 handle invalid values, the `nuint` socket invalid value, 4 `nuint` scalar limits); 6 records; 25 function-table fields; all internal, all under `Interop/` |
+| Records (x64) | bytes view 16/8, bootstrap view 64/8, event 128/8, result info 56/4, action 24/8, SAS presentation 56/4; all 37 manifest field offsets and sizes equal, no padding; measured with `sizeof`, `Marshal.SizeOf`, `Marshal.OffsetOf`, pointer arithmetic, and alignment probes |
+| Unsafe audit | 5 `unsafe` declarations, all under `Interop/`, each preceded by a `// UNSAFE:` justification: the bytes-view record (raw pointer), 3 records with inline arrays (5 fixed buffers), and the function table (25 unmanaged function pointers); no unsafe block or method elsewhere |
+| Tests | 60, all passing: `AbiV1ConstantsTests` 8, `AbiV1LayoutTests` 9, `AbiV1ExportTests` 9, `NativeLoaderTests` 13, `NativeArtifactTests` 6, `ArchitectureTests` 15. Locally on Windows with `SAS_PAIRING_NATIVE_LIBRARY` set: 60 passed, 0 skipped; without it, the 4 artifact-dependent tests are skipped locally (under `CI=true` they fail instead) |
+| Build and analysis | `dotnet build --no-restore -warnaserror`: 0 warnings, 0 errors, `latest-recommended` built-in analyzers enforced as errors (probed: a deliberate CA2201 violation fails the build); no `NoWarn`, no suppression |
+| Format | `dotnet format --verify-no-changes`: clean (probed: injected whitespace drift is reported) |
+| Fresh clone | A fresh clone of the test head reproduced the CI sequence locally (locked restore, format, build, 60 of 60 tests, 6 of 6 artifact tests) |
+| Real Windows DLL | `core/target/release/sas_pairing_core.dll` built from the same commit with `--release --features native-abi`, loaded through `NativeAbiV1Loader.Process`: ABI version 1, all 25 exports found by exact name, each function-table field equal to its export's address, the same binding returned for the same path, another path, and a bare name; a real-platform loader opened it once across repeated initialization |
+| Real Linux `.so` | `libsas_pairing_core.so` built in the Ubuntu job, loaded through the same production loader: ABI version 1 and all 25 exports (CI). This proves ABI loading only, not Linux pairing support |
+| Real post-load poisoning | A real foreign image (`kernel32.dll` on Windows, `libc.so.6` on Linux) through a real-platform loader: `MissingSymbol` (25 of 25), image retained, and neither the same path nor the real artifact path ever loaded again (one open) |
+| Header and manifest | Constants, types, record fields, export names, order, signatures (return and parameter types, `Cdecl` unmanaged convention) parsed from `core/include/sas_pairing.h` and `docs/p7-native-abi/abi-v1-manifest.md` and compared exactly; no missing or extra constant or export |
+| Native diff gate | `git diff 03afc8dd6ef8c473ef648ec7e06cee5042d0083a -- core` is empty (and `-- dart` is empty) |
+| CI (`cee36e5`) | All seven triggered jobs green: `dotnet-package (windows-latest)` and `dotnet-package (ubuntu-latest)` (every step, including locked restore, format, build, 60 tests with nothing skipped, the real native ABI v1 smoke with 6 of 6, and the ABI v1 freeze test), `windows-core`, `unsupported-platform-fails-closed`, `consistency`, `dart-package (windows-latest)`, `dart-package (ubuntu-latest)` |
+
+Mutations (each applied alone, built, run against the full suite with the real DLL, then restored byte-for-byte; the suite was green again afterwards):
+
+| Mutation | Killed by |
+|---|---|
+| A: required ABI version 1 → 2 | 13 tests, including `TheAbiVersionIsExactlyOneAndZeroIsInvalid`, `EveryHeaderDefineMatchesTheDeclaredConstantAndType`, and the real-artifact load |
+| B: `SAS_PAIRING_FATAL` 900 → 901 | `AllFortyEightStatusesExistExactlyOnceWithTheirFrozenValues`, `EveryHeaderDefineMatchesTheDeclaredConstantAndType` |
+| B2: `SAS_PAIRING_WRITE_PENDING` 205 → 299 | the same two tests |
+| C: one export removed from the function table | 6 tests, including `TheFunctionTableHasExactlyOneFieldPerFrozenExport` and `EverySignatureMatchesTheHeaderThroughTheMapping` |
+| C2: one export removed from the names list | 14 tests, including both names-versus-manifest and names-versus-header tests |
+| D: `sas_pairing_future_magic` added to the expected exports | 11 tests, including the manifest, header, and table comparisons and the real-artifact load |
+| E: event `request_id` 64 → 56 (record 128 → 120) | `RequiredX64SizesAndAlignments`, `SizesAndAlignmentsMatchTheManifest`, `FieldOrderOffsetsAndSizesMatchTheManifest`, `FieldTypesFollowTheHeaderThroughTheMapping` |
+| E2: event fields `connection` and `run` swapped | `FieldOrderOffsetsAndSizesMatchTheManifest`, `CriticalOffsetsMeasuredByPointerArithmetic`, `FieldTypesFollowTheHeaderThroughTheMapping` |
+| F: bytes-view `size_t len` as `ulong` (still 8 bytes) | `FieldTypesFollowTheHeaderThroughTheMapping` |
+| F2: `sas_pairing_authority_register` `size_t` parameter as `ulong` | `EverySignatureMatchesTheHeaderThroughTheMapping`, `PointerSizedParametersAreNuintNeverUlong` |
+| G: `NativeLibrary.Free` added to production | `ProductionNeverReleasesTheNativeImage` |
+| H: `NativeLibrary.Load("sas_pairing_core")` added | `TheOnlyNativeLibraryLoadIsTheExplicitCanonicalPathInTheLoader`, `ProductionUsesNoDefaultLibraryResolution` |
+| H2: `[DllImport("sas_pairing_core")]` added | `ProductionUsesNoDefaultLibraryResolution` |
+| I: a second load allowed after a post-load failure | 5 tests, including the missing-symbol, binding, and version state-machine tests and the real foreign-image test |
+| J: the function table made `public` | `TheAssemblyExportsNoPublicType`, `NoProductionTypeIsDeclaredPublic`, `NoRawInteropConceptIsVisibleOutsideTheAssembly`, `TheTableIsInternalAndSealed` |
+
+One test defect was found and fixed by the mutation runs before commit: an exception on a worker thread of the concurrency test ended the test host instead of failing the test (mutation A ran 55 of 60 tests); worker exceptions are now captured and asserted.
