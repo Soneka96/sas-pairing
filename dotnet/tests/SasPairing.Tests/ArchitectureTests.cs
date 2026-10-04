@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -8,14 +9,33 @@ using SasPairing.Tests.Support;
 namespace SasPairing.Tests;
 
 /// <summary>
-/// P9.1 architecture and scope guards over the production sources (comments removed) and the built assembly:
-/// raw interop private and localized under <c>Interop/</c>, one explicit-path load and no release of the
-/// image, no library search, no public surface, and nothing of later increments, the protocol, cryptography,
-/// networking, or threads.
+/// P9.1 and P9.2 architecture and scope guards over the production sources (comments removed) and the built
+/// assembly: raw interop private and localized under <c>Interop/</c>, one explicit-path load and no release of
+/// the image, no library search, exactly the P9.2 public lifecycle surface (P9-D-002) with deterministic
+/// disposal and no finalizer, and nothing of later increments, the protocol, cryptography, networking, or
+/// threads.
 /// </summary>
 public sealed partial class ArchitectureTests
 {
     private static readonly Assembly Library = typeof(AbiV1Constants).Assembly;
+
+    /// <summary>The exact P9.2 public surface (P9-D-002): nothing else is public.</summary>
+    internal static readonly string[] PublicTypes =
+    [
+        "SasPairing.SasPairingAuthority",
+        "SasPairing.SasPairingAuthorityState",
+        "SasPairing.SasPairingAuthorityStatus",
+        "SasPairing.SasPairingContractException",
+        "SasPairing.SasPairingHost",
+        "SasPairing.SasPairingInitializationException",
+        "SasPairing.SasPairingInitializationFailure",
+        "SasPairing.SasPairingNativeException",
+        "SasPairing.SasPairingRuntime",
+        "SasPairing.SasPairingStatus",
+    ];
+
+    /// <summary>The three lifecycle wrappers: the only production files that may implement disposal.</summary>
+    private static readonly string[] LifecycleFiles = ["SasPairingAuthority.cs", "SasPairingHost.cs", "SasPairingRuntime.cs"];
 
     private static void AssertAbsent(Regex pattern, string what)
     {
@@ -27,12 +47,12 @@ public sealed partial class ArchitectureTests
     }
 
     [Fact]
-    public void TheAssemblyExportsNoPublicType()
+    public void TheAssemblyExportsExactlyTheP92PublicSurface()
     {
-        // P9.1 has no public API: the allowlist is empty (P9.2 starts the public surface).
-        string[] allowed = [];
-        Assert.Equal(allowed, Library.GetExportedTypes().Select(t => t.FullName));
-        Assert.DoesNotContain(Library.GetTypes(), t => t.IsPublic);
+        // P9.1 exported nothing; P9.2 adds exactly the lifecycle, status, and error types (P9-D-002).
+        Assert.Equal(PublicTypes, Library.GetExportedTypes().Select(t => t.FullName!).Order(StringComparer.Ordinal));
+        Assert.Equal(PublicTypes, Library.GetTypes().Where(t => t.IsPublic).Select(t => t.FullName!).Order(StringComparer.Ordinal));
+        Assert.DoesNotContain(Library.GetExportedTypes(), t => t.Namespace != "SasPairing");
     }
 
     [Fact]
@@ -62,17 +82,32 @@ public sealed partial class ArchitectureTests
     }
 
     [Fact]
-    public void NoProductionTypeIsDeclaredPublic()
+    public void PublicTypesAreDeclaredOnlyInTheirOwnFilesOutsideInterop()
     {
-        AssertAbsent(PublicTypeDeclaration(), "a public type declaration");
+        foreach ((string file, string code) in ProductionSource.AllCode())
+        {
+            string[] declared = [.. PublicTypeDeclarationName().Matches(code).Select(m => m.Groups["name"].Value)];
+            if (file.StartsWith("Interop/", StringComparison.Ordinal) || file == "NativeProcessContext.cs")
+            {
+                Assert.True(declared.Length == 0, $"{file}: raw interop and the process context declare no public type: {string.Join(", ", declared)}");
+            }
+            else
+            {
+                Assert.Equal([Path.GetFileNameWithoutExtension(file)], declared);
+            }
+        }
     }
 
     [Fact]
-    public void P91SourceLivesOnlyUnderInterop()
+    public void SourceLayoutIsTheRawInteropPlusTheP92LifecycleWrapper()
     {
-        IReadOnlyList<string> files = ProductionSource.Files();
-        Assert.NotEmpty(files);
-        Assert.All(files, file => Assert.StartsWith("Interop/", file, StringComparison.Ordinal));
+        string[] interop =
+        [
+            "Interop/AbiV1Constants.cs", "Interop/AbiV1Exports.cs", "Interop/AbiV1Structs.cs", "Interop/FfiNativeLifecycleApi.cs",
+            "Interop/INativeLifecycleApi.cs", "Interop/NativeAbiV1.cs", "Interop/NativeInitializationFailure.cs", "Interop/NativeLibraryLoader.cs",
+        ];
+        string[] root = [.. PublicTypes.Select(t => t["SasPairing.".Length..] + ".cs").Append("NativeProcessContext.cs")];
+        Assert.Equal([.. root.Concat(interop).Order(StringComparer.Ordinal)], ProductionSource.Files());
         string[] directories = [.. Directory.EnumerateDirectories(ProductionSource.Directory).Select(Path.GetFileName).Where(d => d is not ("bin" or "obj"))!];
         Assert.Equal(["Interop"], directories);
     }
@@ -132,7 +167,33 @@ public sealed partial class ArchitectureTests
     public void ProductionNeverReleasesTheNativeImage()
     {
         AssertAbsent(NativeLibraryFree(), "NativeLibrary.Free");
-        AssertAbsent(FinalizerOrRelease(), "a finalizer, SafeHandle, disposal, or shutdown release");
+        AssertAbsent(FinalizerOrRelease(), "a finalizer, SafeHandle, or shutdown release");
+    }
+
+    [Fact]
+    public void OnlyTheThreeLifecycleWrappersAreDisposableAndNothingHasAFinalizer()
+    {
+        // P9-D-002: deterministic IDisposable on Runtime, Authority, and Host only; the loader, the image, the
+        // binding, the process context, and the lifecycle service are never disposed.
+        foreach ((string file, string code) in ProductionSource.AllCode())
+        {
+            bool lifecycle = LifecycleFiles.Contains(file);
+            Assert.True(lifecycle || !Disposal().IsMatch(code), $"{file}: disposal outside the three lifecycle wrappers");
+            if (lifecycle)
+            {
+                Assert.Matches(@"public sealed class \w+ : IDisposable\b", code);
+                Assert.Single(DisposeDeclaration().Matches(code));
+            }
+        }
+
+        string[] disposable = [.. Library.GetTypes().Where(t => typeof(IDisposable).IsAssignableFrom(t)).Select(t => t.Name).Order(StringComparer.Ordinal)];
+        Assert.Equal(["SasPairingAuthority", "SasPairingHost", "SasPairingRuntime"], disposable);
+        foreach (Type type in Library.GetTypes())
+        {
+            Assert.Null(type.GetMethod("Finalize", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly));
+            Assert.False(typeof(SafeHandle).IsAssignableFrom(type), type.FullName);
+            Assert.False(typeof(System.Runtime.ConstrainedExecution.CriticalFinalizerObject).IsAssignableFrom(type), type.FullName);
+        }
     }
 
     [Fact]
@@ -152,13 +213,19 @@ public sealed partial class ArchitectureTests
     }
 
     [Fact]
-    public void ProductionDeclaresNoHighLevelWrapper()
+    public void ProductionDeclaresNoWrapperOfALaterIncrement()
     {
-        AssertAbsent(HighLevelWrapper(), "a high-level lifecycle, network, ceremony, or result wrapper");
+        // P9.2 allows the Runtime, Authority, and Host lifecycle; listeners, networking, connections, runs,
+        // ceremony control, SAS presentation, results, and Bootstrap belong to P9.3-P9.5.
+        AssertAbsent(LaterIncrementWrapper(), "a network, listener, connection, run, ceremony, SAS, Bootstrap, or result wrapper");
         string[] types = [.. Library.GetTypes().Where(t => !t.Name.StartsWith('<')).Select(t => t.Name)];
         foreach (string name in types)
         {
-            Assert.DoesNotMatch(HighLevelTypeName(), name);
+            Assert.DoesNotMatch(LaterIncrementTypeName(), name);
+            if (name.StartsWith("SasPairing", StringComparison.Ordinal))
+            {
+                Assert.Contains("SasPairing." + name, PublicTypes);
+            }
         }
     }
 
@@ -173,12 +240,28 @@ public sealed partial class ArchitectureTests
         Assert.Matches(DefaultResolution(), "[LibraryImport(\"sas_pairing_core\")]");
         Assert.Matches(DefaultResolution(), "static extern int sas_pairing_runtime_create(ulong* x);");
         Assert.Matches(LibrarySearch(), "Path.Combine(AppContext.BaseDirectory, \"x\")");
-        Assert.Matches(PublicTypeDeclaration(), "public sealed unsafe class AbiV1FunctionTable");
+        Assert.Matches(PublicTypeDeclarationName(), "public sealed unsafe class AbiV1FunctionTable");
+        Assert.Matches(PublicTypeDeclarationName(), "public readonly record struct SasPairingAuthorityStatus(");
         Assert.Matches(FinalizerOrRelease(), "~Loader() { }");
+        Assert.Matches(FinalizerOrRelease(), "~SasPairingRuntime()");
+        Assert.Matches(FinalizerOrRelease(), "internal sealed class LifecycleHandle : SafeHandle");
+        Assert.Matches(Disposal(), "internal sealed class NativeAbiV1 : IDisposable");
+        Assert.Matches(Disposal(), "public void Dispose() { }");
         Assert.Matches(Networking(), "new TcpListener(address, 0)");
         Assert.Matches(Threading(), "new Timer(callback)");
         Assert.Matches(Cryptography(), "using System.Security.Cryptography;");
-        Assert.Matches(HighLevelWrapper(), "internal sealed class SasPairingRuntime");
+        Assert.Matches(Threading(), "public Task<SasPairingRuntime> CreateAsync()");
+        Assert.Matches(Threading(), "ValueTask Run()");
+        Assert.Matches(ProtocolCode(), "Encoding.UTF8.GetBytes(scope)");
+        Assert.Matches(ProtocolCode(), "internal sealed class SasPresentation");
+        Assert.DoesNotMatch(ProtocolCode(), "public sealed class SasPairingRuntime : IDisposable");
+        Assert.Matches(LaterIncrementWrapper(), "public sealed class SasPairingConnection");
+        Assert.Matches(LaterIncrementWrapper(), "public sealed class SasPairingBootstrap");
+        Assert.Matches(LaterIncrementWrapper(), "public sealed class SasPairingResult");
+        Assert.Matches(LaterIncrementWrapper(), "public sealed class SasPairingRun");
+        Assert.Matches(LaterIncrementWrapper(), "internal sealed class WindowsListener");
+        Assert.DoesNotMatch(LaterIncrementWrapper(), "public sealed class SasPairingRuntime : IDisposable");
+        Assert.DoesNotMatch(LaterIncrementWrapper(), "public sealed class SasPairingHost : IDisposable");
         Assert.DoesNotMatch(Networking(), "AbiV1Constants.SAS_PAIRING_SOCKET_INVALID");
     }
 
@@ -251,8 +334,8 @@ public sealed partial class ArchitectureTests
         Assert.Matches(new Regex(@"(?m)^permissions:\n  contents: read$"), workflow.Replace("\r\n", "\n", StringComparison.Ordinal));
     }
 
-    [GeneratedRegex(@"\bpublic\s+(?:(?:static|sealed|abstract|readonly|unsafe|partial|ref|file)\s+)*(?:class|struct|interface|enum|record|delegate)\b")]
-    private static partial Regex PublicTypeDeclaration();
+    [GeneratedRegex(@"\bpublic\s+(?:(?:static|sealed|abstract|readonly|unsafe|partial|ref|file)\s+)*(?:class|struct|interface|enum|record(?:\s+(?:struct|class))?|delegate)\s+(?<name>\w+)")]
+    private static partial Regex PublicTypeDeclarationName();
 
     [GeneratedRegex(@"\bunsafe\b|delegate\s*\*|\bfixed\b|\bstackalloc\b|\bNativeLibrary\b|\bMarshal\.|\bUnsafe\.")]
     private static partial Regex UnsafeConstruct();
@@ -269,8 +352,14 @@ public sealed partial class ArchitectureTests
     [GeneratedRegex(@"\bFree\s*\(|NativeLibrary\s*\.\s*Free")]
     private static partial Regex NativeLibraryFree();
 
-    [GeneratedRegex(@"~\s*\w+\s*\(|\bSafeHandle\b|\bCriticalFinalizerObject\b|\bIDisposable\b|\bIAsyncDisposable\b|\bDispose\s*\(|\bProcessExit\b|\bUnloading\b|\bFreeLibrary\b|\bdlclose\b")]
+    [GeneratedRegex(@"~\s*\w+\s*\(|\bSafeHandle\b|\bCriticalFinalizerObject\b|\bIAsyncDisposable\b|\bProcessExit\b|\bUnloading\b|\bFreeLibrary\b|\bdlclose\b")]
     private static partial Regex FinalizerOrRelease();
+
+    [GeneratedRegex(@"\bIDisposable\b|\bDispose\s*\(|\bSuppressFinalize\b")]
+    private static partial Regex Disposal();
+
+    [GeneratedRegex(@"\bpublic void Dispose\(\)")]
+    private static partial Regex DisposeDeclaration();
 
     [GeneratedRegex(@"\[\s*(?:DllImport|LibraryImport)\b|\bextern\s+\w|\bSetDllImportResolver\b|\bResolvingUnmanagedDll\b|\bDllImportSearchPath\b|\bGetMainProgramHandle\b|\bDefaultDllImportSearchPaths\b")]
     private static partial Regex DefaultResolution();
@@ -281,18 +370,18 @@ public sealed partial class ArchitectureTests
     [GeneratedRegex(@"System\.Security\.Cryptography|\b(?:SHA\d+|HMAC\w*|Hkdf|HKDF|Aes\w*|ChaCha20\w*|ECDiffieHellman\w*|ECDsa|RSA\w*|RandomNumberGenerator|IncrementalHash|CryptographicOperations|X25519|Curve25519|Ed25519)\b")]
     private static partial Regex Cryptography();
 
-    [GeneratedRegex(@"System\.Buffers\.Binary|\bBinaryPrimitives\b|\bBitConverter\b|\bEncoding\s*\.|\b(?:class|struct|record|interface)\s+\w*(?:Frame|Parser|Codec|Transcript|Mac|Sas|Deadline|Opportunit)\w*|\bDateTime\w*\b|\bStopwatch\b|\bTimeProvider\b|\bTickCount\w*\b|\bRandom\b")]
+    [GeneratedRegex(@"System\.Buffers\.Binary|\bBinaryPrimitives\b|\bBitConverter\b|\bEncoding\s*\.|\b(?:class|struct|record|interface)\s+\w*(?:Frame|Parser|Codec|Transcript|Mac|Sas(?!Pairing)|Deadline|Opportunit)\w*|\bDateTime\w*\b|\bStopwatch\b|\bTimeProvider\b|\bTickCount\w*\b|\bRandom\b")]
     private static partial Regex ProtocolCode();
 
     [GeneratedRegex(@"System\.Net\b|\bSocket\w*\b|\bTcp\w+\b|\bUdp\w+\b|\bIPEndPoint\b|\bIPAddress\b|\bDns\b|\bNetworkStream\b|\bWinsock\b|\bws2_32\b")]
     private static partial Regex Networking();
 
-    [GeneratedRegex(@"\bnew\s+Thread\b|\bThread\s*\.|\bThreadPool\b|\bTask\s*\.\s*(?:Run|Factory|Delay)|\bParallel\s*\.|\bTimer\b|\bPeriodicTimer\b|\bBackgroundService\b|\basync\s|\bawait\s|\bChannel<")]
+    [GeneratedRegex(@"\bnew\s+Thread\b|\bThread\s*\.|\bThreadPool\b|\bTask\s*\.\s*(?:Run|Factory|Delay)|\bParallel\s*\.|\bTimer\b|\bPeriodicTimer\b|\bBackgroundService\b|\basync\s|\bawait\s|\bChannel<|\b(?:Value)?Task\b")]
     private static partial Regex Threading();
 
-    [GeneratedRegex(@"\b(?:class|struct|record|interface|enum)\s+SasPairing\w*|\b(?:class|struct|record|interface)\s+(?!sas_pairing_)\w*(?:Runtime|Authority|Host|Connection|Run|Ceremony|Result|Bootstrap|Listener|Presentation|Drive)\b")]
-    private static partial Regex HighLevelWrapper();
+    [GeneratedRegex(@"\b(?:class|struct|record|interface|enum)\s+(?!sas_pairing_)\w*(?:Connection|Run|Ceremony|Result|Bootstrap|Listener|Presentation|Drive|Driver|Network|Event|Socket)\b")]
+    private static partial Regex LaterIncrementWrapper();
 
-    [GeneratedRegex(@"^(?:SasPairing\w*|\w*(?:Runtime|Authority|Host|Connection|Ceremony|Result|Bootstrap|Listener|Presentation|Network|Driver))$")]
-    private static partial Regex HighLevelTypeName();
+    [GeneratedRegex(@"^\w*(?:Connection|Run|Ceremony|Result|Bootstrap|Listener|Presentation|Network|Driver|Event|Socket)$")]
+    private static partial Regex LaterIncrementTypeName();
 }
