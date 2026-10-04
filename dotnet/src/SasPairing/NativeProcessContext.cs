@@ -3,8 +3,9 @@ using SasPairing.Interop;
 namespace SasPairing;
 
 /// <summary>
-/// The native state of this process as the wrapper sees it (P9-D-002, P9-D-003, P9-D-004): the one verified ABI v1
-/// binding, the lifecycle-native, network-native, and ceremony-native services over it, and two process latches that never reset, the observed native
+/// The native state of this process as the wrapper sees it (P9-D-002 to P9-D-005): the one verified ABI v1 binding,
+/// the lifecycle-native, network-native, ceremony-native, and result-native services over it, and two process
+/// latches that never reset, the observed native
 /// <c>SAS_PAIRING_FATAL</c> and the observed wrapper contract violation (an impossible success output).
 /// Shared below every runtime: disposing a runtime and creating another reuses it, latches included.
 /// </summary>
@@ -12,9 +13,11 @@ namespace SasPairing;
 /// Normal operations (runtime create, authority register, authority status, host create, listener attach,
 /// drive, resume recheck, Initiator start, and the eight run ceremony operations) are admitted by
 /// <see cref="AdmitNormal"/>, which checks, in order, the contract latch and then the fatal latch, and makes no
-/// native call when either is set; the object-local disposed check comes before it in each wrapper. Cleanup
-/// operations (runtime destroy, authority release, host destroy, listener detach, connection close) are never
-/// admission-checked: they always make their one native call. Production obtains the one context from
+/// native call when either is set; the object-local disposed check comes before it in each wrapper. Reading an
+/// existing result is data access (P9-D-005), admitted by <see cref="AdmitData"/>, which checks only the contract
+/// latch: native fatal never blocks it. Cleanup operations (runtime destroy, authority release, host destroy,
+/// listener detach, connection close, result destroy) are never admission-checked: they always make their one
+/// native call. Production obtains the one context from
 /// <see cref="NativeProcessContextSource.Process"/>; tests construct their own over a fake service.
 /// </remarks>
 internal sealed class NativeProcessContext
@@ -25,11 +28,12 @@ internal sealed class NativeProcessContext
     private int _fatal;
     private string? _contractViolation;
 
-    internal NativeProcessContext(INativeLifecycleApi lifecycle, INativeNetworkApi network, INativeCeremonyApi ceremony, NativeAbiV1? binding = null)
+    internal NativeProcessContext(INativeLifecycleApi lifecycle, INativeNetworkApi network, INativeCeremonyApi ceremony, INativeResultApi results, NativeAbiV1? binding = null)
     {
         Lifecycle = lifecycle;
         Network = network;
         Ceremony = ceremony;
+        Results = results;
         Binding = binding;
     }
 
@@ -44,6 +48,9 @@ internal sealed class NativeProcessContext
 
     /// <summary>The ceremony-native service, over the same binding as <see cref="Lifecycle"/>.</summary>
     internal INativeCeremonyApi Ceremony { get; }
+
+    /// <summary>The result-native service, over the same binding as <see cref="Lifecycle"/>.</summary>
+    internal INativeResultApi Results { get; }
 
     /// <summary>Whether <c>SAS_PAIRING_FATAL</c> was observed in this process. Never cleared.</summary>
     internal bool IsFatal => Volatile.Read(ref _fatal) != 0;
@@ -70,6 +77,22 @@ internal sealed class NativeProcessContext
                 operation,
                 (int)SasPairingStatus.Fatal,
                 $"{operation} was refused without entering the native library: native status {SasPairingNativeException.Name((int)SasPairingStatus.Fatal)} was observed earlier in this process. The native state is permanently fatal; only an OS process restart recovers.");
+        }
+    }
+
+    /// <summary>
+    /// Admits data access to an existing result (P9-D-005), or throws <see cref="SasPairingContractException"/>
+    /// without any native call after a contract violation: the wrapper no longer trusts successful native output.
+    /// Native fatal does NOT refuse it: reading ABI-owned result data never enters the pairing core, and the
+    /// frozen ABI allows it after fatal. This recovers nothing; normal operations stay refused.
+    /// </summary>
+    internal void AdmitData(string operation)
+    {
+        if (Volatile.Read(ref _contractViolation) is { } violation)
+        {
+            throw new SasPairingContractException(
+                operation,
+                $"{operation} was refused without entering the native library: a native ABI v1 contract violation was observed earlier in this process ({violation}), so its output is no longer trusted. Results can still be disposed. Restart the OS process.");
         }
     }
 
@@ -154,6 +177,7 @@ internal sealed class NativeProcessContextSource
     private readonly Func<NativeAbiV1, INativeLifecycleApi> _lifecycle;
     private readonly Func<NativeAbiV1, INativeNetworkApi> _network;
     private readonly Func<NativeAbiV1, INativeCeremonyApi> _ceremony;
+    private readonly Func<NativeAbiV1, INativeResultApi> _results;
     private readonly Lock _gate = new();
     private NativeProcessContext? _context;
 
@@ -161,20 +185,27 @@ internal sealed class NativeProcessContextSource
         NativeAbiV1Loader loader,
         Func<NativeAbiV1, INativeLifecycleApi> lifecycle,
         Func<NativeAbiV1, INativeNetworkApi> network,
-        Func<NativeAbiV1, INativeCeremonyApi> ceremony)
+        Func<NativeAbiV1, INativeCeremonyApi> ceremony,
+        Func<NativeAbiV1, INativeResultApi> results)
     {
         _loader = loader;
         _lifecycle = lifecycle;
         _network = network;
         _ceremony = ceremony;
+        _results = results;
     }
 
     /// <summary>
-    /// The source of this process: the P9.1 process loader and the real lifecycle, network, and ceremony
+    /// The source of this process: the P9.1 process loader and the real lifecycle, network, ceremony, and result
     /// exports, all over the one function table of the one image.
     /// </summary>
     internal static NativeProcessContextSource Process { get; } =
-        new(NativeAbiV1Loader.Process, abi => new FfiNativeLifecycleApi(abi.Functions), abi => new FfiNativeNetworkApi(abi.Functions), abi => new FfiNativeCeremonyApi(abi.Functions));
+        new(
+            NativeAbiV1Loader.Process,
+            abi => new FfiNativeLifecycleApi(abi.Functions),
+            abi => new FfiNativeNetworkApi(abi.Functions),
+            abi => new FfiNativeCeremonyApi(abi.Functions),
+            abi => new FfiNativeResultApi(abi.Functions));
 
     /// <summary>
     /// Initializes the loader once (later calls return its one binding without loading anything) and returns
@@ -195,7 +226,7 @@ internal sealed class NativeProcessContextSource
 
         lock (_gate)
         {
-            return _context ??= new NativeProcessContext(_lifecycle(binding), _network(binding), _ceremony(binding), binding);
+            return _context ??= new NativeProcessContext(_lifecycle(binding), _network(binding), _ceremony(binding), _results(binding), binding);
         }
     }
 

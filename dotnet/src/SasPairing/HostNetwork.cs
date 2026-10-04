@@ -162,7 +162,8 @@ internal sealed class HostNetwork
     /// <summary>
     /// Maps every record in native order, then lets a non-zero <c>out_failure</c> take effect: the fatal latch
     /// (without throwing), every connection disposed, and the host failed closed. A contract violation stops
-    /// the mapping; results already retained stay with the runtime, and the failure still takes effect.
+    /// the mapping; results already retained stay open with the runtime (never destroyed here), and the failure
+    /// still takes effect.
     /// </summary>
     private SasPairingDriveBatch Map(string operation, NativeDriveOutcome outcome)
     {
@@ -263,7 +264,7 @@ internal sealed class HostNetwork
         byte[] requestId = record.RequestId[..length];
         SasPairingConnection? connection = null;
         SasPairingRun? run = null;
-        NativeResultRef? result = null;
+        SasPairingResult? result = null;
         switch (kind)
         {
             case SasPairingEventKind.ConnectionAccepted:
@@ -314,7 +315,7 @@ internal sealed class HostNetwork
     }
 
     /// <summary>The frozen run-reference rules (ABI contract §18.6) and runtime result retention of one step.</summary>
-    private (SasPairingRun? Run, NativeResultRef? Result) Track(
+    private (SasPairingRun? Run, SasPairingResult? Result) Track(
         string operation,
         SasPairingConnection connection,
         NativeEventRecord record,
@@ -325,16 +326,17 @@ internal sealed class HostNetwork
     {
         if (record.Result != 0)
         {
-            // A local verified completion: the run is terminal, and the result belongs to the runtime. Native
-            // delivers each result once and never reuses a handle. Nothing of it is read here.
-            NativeResultStore results = Runtime.Results;
+            // A local verified completion: the run is terminal, and the result belongs to the runtime, retained
+            // before the rest of the batch is mapped. Native delivers each result once and never reuses a handle,
+            // also after the earlier result was disposed. Nothing of it is read here.
+            NativeResultStore results = Runtime.ResultStore;
             if (results.WasDelivered(record.Result))
             {
                 throw Context.ViolateContract(operation, "returned a drive event with a result handle that was already delivered");
             }
 
             connection.Retire(requestId);
-            return (null, results.Retain(record.Result));
+            return (null, results.Retain(Runtime, record.Result));
         }
 
         if (record.Run != 0)

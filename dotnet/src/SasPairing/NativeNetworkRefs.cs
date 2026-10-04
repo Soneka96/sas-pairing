@@ -60,7 +60,10 @@ internal sealed class NativeRunRef
     internal void Invalidate() => IsValid = false;
 }
 
-/// <summary>One exact native result handle, owned by the runtime (P9-D-003 R), package-internal until P9.5.</summary>
+/// <summary>
+/// One exact native result handle, owned by the runtime (P9-D-003 R, P9-D-005): the reference behind exactly one
+/// public <see cref="SasPairingResult"/>. Valid until the result is disposed or its runtime is disposed.
+/// </summary>
 internal sealed class NativeResultRef
 {
     internal NativeResultRef(ulong handle)
@@ -71,45 +74,58 @@ internal sealed class NativeResultRef
     /// <summary>The exact native result handle.</summary>
     internal ulong Handle { get; }
 
-    /// <summary>Whether the runtime still holds the result (false once the runtime was disposed).</summary>
+    /// <summary>Whether the result is still open (false once it or its runtime was disposed).</summary>
     internal bool IsValid { get; private set; } = true;
 
     internal void Invalidate() => IsValid = false;
 }
 
 /// <summary>
-/// The runtime-owned store of every native result handle a drive delivered (P9-D-003 R). A result belongs to
-/// the runtime, never to a connection, host, or authority, so it survives all of them; only the runtime's
-/// disposal invalidates it. The handle history is kept for the runtime's lifetime, so a handle delivered twice
-/// is detected. Nothing is read or destroyed here (P9.5). Accessed only under the runtime lock.
+/// The runtime-owned results (P9-D-003 R, P9-D-005): the one public <see cref="SasPairingResult"/> of every open
+/// native result handle a drive delivered, and every result handle ever delivered under the runtime. A result
+/// belongs to the runtime, never to a connection, host, or authority, so it survives all of them; only its own
+/// disposal or the runtime's ends it. The handle history outlives a result's disposal, so a handle delivered twice
+/// is detected even after the first result was disposed (native never reuses a handle). Not enumerable outside
+/// the package: a consumer obtains each result only from the event that delivered it. Accessed only under the
+/// runtime lock.
 /// </summary>
 internal sealed class NativeResultStore
 {
-    private readonly Dictionary<ulong, NativeResultRef> _delivered = [];
+    private readonly HashSet<ulong> _delivered = [];
+    private readonly Dictionary<ulong, SasPairingResult> _live = [];
 
-    /// <summary>The number of results delivered to this runtime.</summary>
-    internal int Count => _delivered.Count;
+    /// <summary>The number of result handles delivered to this runtime (open or not).</summary>
+    internal int DeliveredCount => _delivered.Count;
 
-    /// <summary>Whether <paramref name="handle"/> was delivered before (live or invalidated).</summary>
-    internal bool WasDelivered(ulong handle) => _delivered.ContainsKey(handle);
+    /// <summary>The open results, which the runtime's disposal ends (tests).</summary>
+    internal IReadOnlyCollection<SasPairingResult> Live => _live.Values;
 
-    /// <summary>The reference of a delivered handle, or null.</summary>
-    internal NativeResultRef? Find(ulong handle) => _delivered.GetValueOrDefault(handle);
+    /// <summary>Whether <paramref name="handle"/> was ever delivered before (open or disposed).</summary>
+    internal bool WasDelivered(ulong handle) => _delivered.Contains(handle);
 
-    /// <summary>Retains a newly delivered <paramref name="handle"/>; the caller checked that it is new.</summary>
-    internal NativeResultRef Retain(ulong handle)
+    /// <summary>The open result of <paramref name="handle"/>, or null (tests).</summary>
+    internal SasPairingResult? Find(ulong handle) => _live.GetValueOrDefault(handle);
+
+    /// <summary>Wraps a newly delivered <paramref name="handle"/> in its one public result; the caller checked that it is new.</summary>
+    internal SasPairingResult Retain(SasPairingRuntime runtime, ulong handle)
     {
-        NativeResultRef result = new(handle);
-        _delivered.Add(handle, result);
+        SasPairingResult result = new(runtime, new NativeResultRef(handle));
+        _delivered.Add(handle);
+        _live.Add(handle, result);
         return result;
     }
 
-    /// <summary>The runtime was disposed: native runtime destroy dropped every result.</summary>
+    /// <summary>Forgets an open result disposed on its own (its handle stays in the history).</summary>
+    internal void Forget(SasPairingResult result) => _live.Remove(result.Ref.Handle);
+
+    /// <summary>The runtime was disposed: native runtime destroy dropped every result, so each is disposed locally, with no native call.</summary>
     internal void InvalidateAll()
     {
-        foreach (NativeResultRef result in _delivered.Values)
+        foreach (SasPairingResult result in _live.Values)
         {
-            result.Invalidate();
+            result.Ref.Invalidate();
         }
+
+        _live.Clear();
     }
 }

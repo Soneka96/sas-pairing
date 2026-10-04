@@ -21,7 +21,7 @@ public sealed class SasPairingEvent
         bool runUntracked,
         byte[] requestId,
         SasPairingRun? run,
-        NativeResultRef? result)
+        SasPairingResult? result)
     {
         Kind = kind;
         Connection = connection;
@@ -96,9 +96,15 @@ public sealed class SasPairingEvent
     public bool HasTrackedRun => Run is not null;
 
     /// <summary>
-    /// Whether the event delivered a new local verified result, which the runtime now holds. It means only that
-    /// this endpoint completed locally: not that the peer succeeded, not a bilateral commit, and not trust.
+    /// The new local verified result this event delivered, or null. The runtime owns it (not the connection, run,
+    /// host, or authority), and this event is the only place it is ever returned: keep it, read it with
+    /// <see cref="SasPairingResult.Read"/>, and dispose it when it is no longer wanted. It means only that THIS
+    /// endpoint completed its ceremony locally: not that the peer completed or received the final message, not
+    /// a bilateral commit, and not trust.
     /// </summary>
+    public SasPairingResult? Result { get; }
+
+    /// <summary>Whether the event delivered a new local verified result: exactly <c>Result is not null</c>.</summary>
     public bool HasResult => Result is not null;
 
     /// <summary>
@@ -107,7 +113,4 @@ public sealed class SasPairingEvent
     /// action can target the untracked run. The drive never disposes the connection itself.
     /// </summary>
     public bool ShouldDisposeConnection => RunUntracked && Connection is not null;
-
-    /// <summary>The runtime-owned result reference the event delivered (package-internal until P9.5).</summary>
-    internal NativeResultRef? Result { get; }
 }
