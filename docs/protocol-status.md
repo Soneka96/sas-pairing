@@ -42,7 +42,7 @@ The P2 historical research phase concluded with Candidate B selected as an abstr
 
 - production-security approval and release readiness (not granted by experimental selection)
 - Candidate B's concrete commitment/hash instantiation justified for its random-oracle assumptions, if Candidate B is reconsidered
-- P7 native ABI around the frozen experimental candidate: complete, ABI v1 frozen ([P7 final closure](p7-native-abi/final-closure.md)); the experimental Dart wrapper (P8) is complete ([P8 final closure](p8-dart-package/final-closure.md)); the .NET wrapper (P9) is in progress ([P9 package](p9-dotnet-package/README.md))
+- P7 native ABI around the frozen experimental candidate: complete, ABI v1 frozen ([P7 final closure](p7-native-abi/final-closure.md)); the experimental Dart wrapper (P8) is complete ([P8 final closure](p8-dart-package/final-closure.md)); the .NET wrapper (P9) is in progress, with its lifecycle (P9.2) and Windows listener and network driver (P9.3) complete and no ceremony or result API yet ([P9 package](p9-dotnet-package/README.md))
 - formal verification of the complete conditional per-pair argument is not claimed; residual cryptographic assumptions remain accepted for experimental development
 - remote Candidate B canonical wire format and state machine, if Candidate B is reconsidered
 - deterministic vectors and conformance cases are now recorded for the candidate drafts; they remain subject to whole-profile review and do not close production-profile gates
