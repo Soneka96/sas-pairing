@@ -3,17 +3,18 @@ using SasPairing.Interop;
 namespace SasPairing;
 
 /// <summary>
-/// The native state of this process as the wrapper sees it (P9-D-002): the one verified ABI v1 binding, the
-/// lifecycle-native service over it, and two process latches that never reset, the observed native
+/// The native state of this process as the wrapper sees it (P9-D-002, P9-D-003): the one verified ABI v1
+/// binding, the lifecycle-native and network-native services over it, and two process latches that never reset, the observed native
 /// <c>SAS_PAIRING_FATAL</c> and the observed wrapper contract violation (an impossible success output).
 /// Shared below every runtime: disposing a runtime and creating another reuses it, latches included.
 /// </summary>
 /// <remarks>
-/// Normal operations (runtime create, authority register, authority status, host create) are admitted by
+/// Normal operations (runtime create, authority register, authority status, host create, listener attach,
+/// drive, resume recheck) are admitted by
 /// <see cref="AdmitNormal"/>, which checks, in order, the contract latch and then the fatal latch, and makes no
 /// native call when either is set; the object-local disposed check comes before it in each wrapper. Cleanup
-/// operations (runtime destroy, authority release, host destroy) are never admission-checked: they always
-/// make their one native call. Production obtains the one context from
+/// operations (runtime destroy, authority release, host destroy, listener detach, connection close) are never
+/// admission-checked: they always make their one native call. Production obtains the one context from
 /// <see cref="NativeProcessContextSource.Process"/>; tests construct their own over a fake service.
 /// </remarks>
 internal sealed class NativeProcessContext
@@ -24,9 +25,10 @@ internal sealed class NativeProcessContext
     private int _fatal;
     private string? _contractViolation;
 
-    internal NativeProcessContext(INativeLifecycleApi lifecycle, NativeAbiV1? binding = null)
+    internal NativeProcessContext(INativeLifecycleApi lifecycle, INativeNetworkApi network, NativeAbiV1? binding = null)
     {
         Lifecycle = lifecycle;
+        Network = network;
         Binding = binding;
     }
 
@@ -35,6 +37,9 @@ internal sealed class NativeProcessContext
 
     /// <summary>The lifecycle-native service.</summary>
     internal INativeLifecycleApi Lifecycle { get; }
+
+    /// <summary>The network-native service, over the same binding as <see cref="Lifecycle"/>.</summary>
+    internal INativeNetworkApi Network { get; }
 
     /// <summary>Whether <c>SAS_PAIRING_FATAL</c> was observed in this process. Never cleared.</summary>
     internal bool IsFatal => Volatile.Read(ref _fatal) != 0;
@@ -89,16 +94,36 @@ internal sealed class NativeProcessContext
     }
 
     /// <summary>
+    /// Records a status without throwing: latches native fatal for status 900 and does nothing else. Used for
+    /// a drive's <c>out_failure</c>, whose batch must still be returned, and before a contract violation is
+    /// thrown over a status that was not otherwise processed.
+    /// </summary>
+    internal void Observe(int status)
+    {
+        if (status == AbiV1Constants.SAS_PAIRING_FATAL)
+        {
+            Volatile.Write(ref _fatal, 1);
+        }
+    }
+
+    /// <summary>
     /// Requires the non-zero handle that a successful native create must return; latches a contract violation
     /// and throws <see cref="SasPairingContractException"/> for zero.
     /// </summary>
     internal ulong RequireHandle(string operation, ulong handle) =>
         handle != 0 ? handle : throw ViolateContract(operation, "returned the invalid handle 0");
 
-    /// <summary>Latches a contract violation (the first description is kept) and returns the exception to throw.</summary>
-    internal SasPairingContractException ViolateContract(string operation, string violation)
+    /// <summary>Latches a contract violation of a successful call (the first description is kept) and returns the exception to throw.</summary>
+    internal SasPairingContractException ViolateContract(string operation, string violation) =>
+        BreakContract(operation, $"reported success but {violation}");
+
+    /// <summary>
+    /// Latches a contract violation whatever the call's status (the first description is kept) and returns the
+    /// exception to throw; <paramref name="violation"/> completes "the native library ...".
+    /// </summary>
+    internal SasPairingContractException BreakContract(string operation, string violation)
     {
-        string description = $"{operation}: the native library reported success but {violation}";
+        string description = $"{operation}: the native library {violation}";
         Interlocked.CompareExchange(ref _contractViolation, description, null);
         return new SasPairingContractException(
             operation,
@@ -110,24 +135,29 @@ internal sealed class NativeProcessContext
 /// Creates the one <see cref="NativeProcessContext"/> over a loader's one binding, translating the private
 /// loader failure into the public <see cref="SasPairingInitializationException"/>: the one place where it
 /// becomes public. Production uses <see cref="Process"/> over <see cref="NativeAbiV1Loader.Process"/>; tests
-/// construct their own over a fake platform and a fake lifecycle service. There is no reset.
+/// construct their own over a fake platform and fake native services. There is no reset.
 /// </summary>
 internal sealed class NativeProcessContextSource
 {
     private readonly NativeAbiV1Loader _loader;
     private readonly Func<NativeAbiV1, INativeLifecycleApi> _lifecycle;
+    private readonly Func<NativeAbiV1, INativeNetworkApi> _network;
     private readonly Lock _gate = new();
     private NativeProcessContext? _context;
 
-    internal NativeProcessContextSource(NativeAbiV1Loader loader, Func<NativeAbiV1, INativeLifecycleApi> lifecycle)
+    internal NativeProcessContextSource(NativeAbiV1Loader loader, Func<NativeAbiV1, INativeLifecycleApi> lifecycle, Func<NativeAbiV1, INativeNetworkApi> network)
     {
         _loader = loader;
         _lifecycle = lifecycle;
+        _network = network;
     }
 
-    /// <summary>The source of this process: the P9.1 process loader and the real lifecycle exports.</summary>
+    /// <summary>
+    /// The source of this process: the P9.1 process loader and the real lifecycle and network exports, both
+    /// over the one function table of the one image.
+    /// </summary>
     internal static NativeProcessContextSource Process { get; } =
-        new(NativeAbiV1Loader.Process, abi => new FfiNativeLifecycleApi(abi.Functions));
+        new(NativeAbiV1Loader.Process, abi => new FfiNativeLifecycleApi(abi.Functions), abi => new FfiNativeNetworkApi(abi.Functions));
 
     /// <summary>
     /// Initializes the loader once (later calls return its one binding without loading anything) and returns
@@ -148,7 +178,7 @@ internal sealed class NativeProcessContextSource
 
         lock (_gate)
         {
-            return _context ??= new NativeProcessContext(_lifecycle(binding), binding);
+            return _context ??= new NativeProcessContext(_lifecycle(binding), _network(binding), binding);
         }
     }
 

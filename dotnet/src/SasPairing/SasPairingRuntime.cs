@@ -62,6 +62,12 @@ public sealed class SasPairingRuntime : IDisposable
     internal ulong Handle { get; }
 
     /// <summary>
+    /// Every result a drive of this runtime delivered (P9-D-003 R): owned by the runtime, never by a connection,
+    /// host, or authority; invalidated only by the runtime's disposal.
+    /// </summary>
+    internal NativeResultStore Results { get; } = new();
+
+    /// <summary>
     /// Creates the native runtime of this process, loading the native library from the absolute
     /// <paramref name="nativeLibraryPath"/> the first time. The library is loaded once per process and never
     /// unloaded; once loaded, later calls ignore the path. Nothing is searched for or discovered.
@@ -124,8 +130,9 @@ public sealed class SasPairingRuntime : IDisposable
     }
 
     /// <summary>
-    /// Destroys the native runtime with exactly one native call, which also destroys every host and releases
-    /// every authority of it; their wrappers become disposed locally. The runtime is disposed even when the
+    /// Destroys the native runtime with exactly one native call, which also closes every listener and
+    /// connection, destroys every host, releases every authority, and drops every result of it; their wrappers
+    /// become disposed locally. The runtime is disposed even when the
     /// native call reports a failure, which is then thrown. Later calls do nothing. Allowed after
     /// <see cref="SasPairingStatus.Fatal"/> and after a contract violation.
     /// </summary>
@@ -153,6 +160,7 @@ public sealed class SasPairingRuntime : IDisposable
                 }
 
                 _authorities.Clear();
+                Results.InvalidateAll();
             }
         }
 
