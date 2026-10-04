@@ -16,7 +16,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for file in README.md SECURITY.md CONTRIBUTING.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE docs/architecture.md docs/threat-model.md docs/protocol-status.md docs/decisions/README.md ai/context/project.md core/README.md dart/README.md dotnet/README.md vectors/README.md tooling/README.md docs/p7-native-abi/README.md docs/p7-native-abi/decisions.md docs/p7-native-abi/abi-contract.md docs/p7-native-abi/abi-v1-manifest.md core/include/sas_pairing.h .github/pull_request_template.md .github/ISSUE_TEMPLATE/config.yml; do
+          for file in README.md SECURITY.md CONTRIBUTING.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE docs/architecture.md docs/threat-model.md docs/protocol-status.md docs/decisions/README.md ai/context/project.md core/README.md dart/README.md dotnet/README.md vectors/README.md tooling/README.md docs/p7-native-abi/README.md docs/p7-native-abi/decisions.md docs/p7-native-abi/abi-contract.md docs/p7-native-abi/abi-v1-manifest.md docs/p8-dart-package/README.md docs/p8-dart-package/decisions.md dart/CHANGELOG.md dart/LICENSE-MIT dart/LICENSE-APACHE tooling/package_dart_native.py core/include/sas_pairing.h .github/pull_request_template.md .github/ISSUE_TEMPLATE/config.yml; do
             test -s "$file"
           done
           grep -Fq 'MIT OR Apache-2.0' README.md
@@ -28,3 +28,7 @@ jobs:
       # Every internal Markdown link and anchor in the repository resolves (P7.7).
       - name: Check Markdown links and anchors
         run: python3 tooling/check_markdown_links.py
+      # P8-D-006: the packaging tool (synthetic PE fixtures; the real-DLL tests run in the
+      # Windows Dart job) and the P8 distribution, package, workflow, and documentation guards.
+      - name: Distribution contract and packaging tool tests
+        run: python3 -m unittest discover -s tooling/tests -v
