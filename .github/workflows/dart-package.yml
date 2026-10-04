@@ -2,11 +2,18 @@ name: Dart package
 
 # P8 Dart package (dart/): the raw bindings of the frozen native ABI v1, the
 # process-lifetime loader (P8-D-001), the runtime / authority / host lifecycle wrapper
-# (P8-D-002), and the Windows listener ownership transfer and cooperative network driver
-# (P8-D-003), checked against a real native artifact built from this commit. Windows is the
-# supported pairing platform; on Linux the same ABI v1 library loads and binds, but pairing
-# operations fail closed (no Linux pairing support is claimed), and the network wrapper is
-# verified there against the deterministic fake only.
+# (P8-D-002), the Windows listener ownership transfer and cooperative network driver
+# (P8-D-003), run and ceremony control (P8-D-004), and PairingResult (P8-D-005), checked
+# against a real native artifact built from this commit. Windows is the supported pairing
+# platform; on Linux the same ABI v1 library loads and binds, but pairing operations fail
+# closed (no Linux pairing support is claimed), and the network, ceremony, and result wrappers
+# are verified there against the deterministic fake only.
+#
+# P8-D-006 distribution: the Windows job stages the built DLL into the bundle
+# dist/sas-pairing-dart-windows-x64-abi1, runs EVERY Dart test against that staged copy,
+# verifies the bundle again, and (on push only) uploads it as the experimental CI artifact
+# sas-pairing-dart-windows-x64-abi1-<commit>. The Linux job distributes nothing. No tag,
+# GitHub Release, or pub.dev publication is ever created here.
 
 on:
   push:
@@ -18,6 +25,10 @@ on:
       - 'core/Cargo.lock'
       - 'docs/p7-native-abi/abi-v1-manifest.md'
       - 'tooling/check_abi_exports.py'
+      - 'tooling/package_dart_native.py'
+      - 'tooling/tests/**'
+      - 'LICENSE-MIT'
+      - 'LICENSE-APACHE'
       - '.github/workflows/dart-package.yml'
   pull_request:
     paths:
@@ -28,6 +39,10 @@ on:
       - 'core/Cargo.lock'
       - 'docs/p7-native-abi/abi-v1-manifest.md'
       - 'tooling/check_abi_exports.py'
+      - 'tooling/package_dart_native.py'
+      - 'tooling/tests/**'
+      - 'LICENSE-MIT'
+      - 'LICENSE-APACHE'
       - '.github/workflows/dart-package.yml'
 
 permissions:
@@ -41,16 +56,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Windows: every Dart test loads the STAGED distribution copy of the DLL (P8-D-006 K).
           - os: windows-latest
             artifact: sas_pairing_core.dll
+            tested_library: dist/sas-pairing-dart-windows-x64-abi1/sas_pairing_core.dll
             python: python
             lifecycle: Windows
+          # Linux: the job-local build output; never staged or uploaded (P8-D-006 B).
           - os: ubuntu-latest
             artifact: libsas_pairing_core.so
+            tested_library: core/target/release/libsas_pairing_core.so
             python: python3
             lifecycle: Linux
     env:
-      SAS_PAIRING_NATIVE_LIBRARY: ${{ github.workspace }}/core/target/release/${{ matrix.artifact }}
+      BUILD_LIBRARY: core/target/release/${{ matrix.artifact }}
+      SAS_PAIRING_NATIVE_LIBRARY: ${{ github.workspace }}/${{ matrix.tested_library }}
     defaults:
       run:
         shell: bash
@@ -86,7 +106,44 @@ jobs:
       - name: Build the native ABI v1 artifact
         run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
       - name: Native ABI export audit
-        run: ${{ matrix.python }} tooling/check_abi_exports.py --library "$SAS_PAIRING_NATIVE_LIBRARY" --expect manifest
+        run: ${{ matrix.python }} tooling/check_abi_exports.py --library "$BUILD_LIBRARY" --expect manifest
+      # P8-D-006: stage the Windows x64 bundle from the build output before any Dart test, so
+      # that every later test loads the staged copy. The Rust target comes from the toolchain,
+      # not the runner label; the tool also checks the PE machine (AMD64) and the 25 exports.
+      - name: Stage the Windows x64 distribution bundle
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          target="$(rustc -vV | tr -d '\r' | sed -n 's/^host: //p')"
+          echo "rustc host target: $target"
+          python tooling/package_dart_native.py stage --library "$BUILD_LIBRARY" \
+            --output dist/sas-pairing-dart-windows-x64-abi1 --git-sha "$GITHUB_SHA" \
+            --rust-target "$target"
+      - name: Verify the staged bundle (hash identity, PE machine, exports)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          case "$SAS_PAIRING_NATIVE_LIBRARY" in
+            */dist/sas-pairing-dart-windows-x64-abi1/sas_pairing_core.dll) ;;
+            *) echo "::error::the Dart tests must load the staged DLL"; exit 1 ;;
+          esac
+          python tooling/package_dart_native.py verify \
+            --bundle dist/sas-pairing-dart-windows-x64-abi1 --git-sha "$GITHUB_SHA" \
+            --source-library "$BUILD_LIBRARY"
+          python tooling/check_abi_exports.py --library "$SAS_PAIRING_NATIVE_LIBRARY" --expect manifest
+          sha256sum "$BUILD_LIBRARY" "$SAS_PAIRING_NATIVE_LIBRARY"
+          (cd dist/sas-pairing-dart-windows-x64-abi1 && sha256sum -c SHA256SUMS.txt)
+          ls -la dist/sas-pairing-dart-windows-x64-abi1
+      # The packaging tool's own tests, including the real-DLL tests against the staged copy.
+      - name: Packaging tool tests (real staged DLL)
+        if: runner.os == 'Windows'
+        env:
+          SAS_PAIRING_REQUIRE_REAL_DLL: '1'
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tooling/tests -v 2>&1 | tee packaging-tests.log
+          if grep -E 'RealWindowsDll.* skipped' packaging-tests.log; then exit 1; fi
+          grep -E '^OK' packaging-tests.log
       # Every Dart test, with the real artifact supplied explicitly (CI=true makes a missing
       # artifact a failure, never a skip).
       - name: dart test
@@ -199,3 +256,29 @@ jobs:
           cargo test --manifest-path core/Cargo.toml --features native-abi --lib \
             abi::tests::freeze | tee freeze.log
           grep -E 'test result: ok\. [1-9][0-9]* passed' freeze.log
+      # P8-D-006 K: after every test, the bundle is verified again and its DLL must still be
+      # byte-identical to the build output, so the uploaded copy is the tested copy.
+      - name: Re-verify the tested bundle before upload
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          python tooling/package_dart_native.py verify \
+            --bundle dist/sas-pairing-dart-windows-x64-abi1 --git-sha "$GITHUB_SHA" \
+            --source-library "$BUILD_LIBRARY"
+          python tooling/check_abi_exports.py \
+            --library dist/sas-pairing-dart-windows-x64-abi1/sas_pairing_core.dll --expect manifest
+      # The experimental CI artifact of this exact commit (push runs only: a pull-request run
+      # builds a temporary merge commit). Never a release, tag, or publication.
+      - name: Upload the tested Windows x64 bundle (experimental CI artifact)
+        id: upload
+        if: runner.os == 'Windows' && github.event_name == 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: sas-pairing-dart-windows-x64-abi1-${{ github.sha }}
+          path: dist/sas-pairing-dart-windows-x64-abi1/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Report the uploaded artifact
+        if: runner.os == 'Windows' && github.event_name == 'push'
+        run: |
+          echo "::notice title=P8 distribution artifact::sas-pairing-dart-windows-x64-abi1-$GITHUB_SHA id=${{ steps.upload.outputs.artifact-id }} digest=${{ steps.upload.outputs.artifact-digest }}"

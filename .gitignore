@@ -7,3 +7,6 @@
 Thumbs.db
 .idea/
 .vscode/
+
+# P8-D-006 staged distribution bundle (CI output; never committed)
+/dist/
