@@ -2,13 +2,15 @@ name: .NET package
 
 # P9 .NET package (dotnet/): the private exact native ABI v1 interop of the SasPairing library and
 # its explicit-path, process-lifetime loader (P9-D-001), the public Runtime / Authority / Host
-# lifecycle wrapper (P9-D-002), and the Windows listener handoff, cooperative drive, events, and
-# connections (P9-D-003), checked against a real native artifact built from this commit.
-# Windows is the only pairing-networking platform: there the lifecycle and the listener, accept,
-# close, replacement, and recheck run through the public API; on Linux the same ABI v1 library
-# loads, a runtime is created, authority registration fails closed with UnsupportedPlatform, the
-# listener token is refused with PlatformNotSupportedException, and every fake and FFI network test
-# runs (no Linux pairing support is claimed, and no ceremony operation is made on any platform).
+# lifecycle wrapper (P9-D-002), the Windows listener handoff, cooperative drive, events, and
+# connections (P9-D-003), and runs with explicit trusted-local ceremony control and SAS
+# presentation (P9-D-004), checked against a real native artifact built from this commit.
+# Windows is the only pairing-networking platform: there the lifecycle, the listener, accept,
+# close, replacement, and recheck, and a full two-endpoint ceremony run through the public API;
+# on Linux the same ABI v1 library loads, a runtime is created, authority registration fails closed
+# with UnsupportedPlatform, the listener token is refused with PlatformNotSupportedException, and
+# every fake, FFI, surface, and scope test (network and ceremony) runs (no Linux pairing support is
+# claimed, and no real ceremony is made there).
 # Nothing is packed, uploaded, or published: no NuGet package, artifact, tag, or release.
 
 on:
@@ -139,6 +141,22 @@ jobs:
           grep -F 'passed SasPairing.Tests.NativeNetworkArtifactTests.OneRecheckAfterResumeIsOneNativeSweep' native-network.log
           grep -E '^\s*succeeded: 5$' native-network.log
           grep -E '^\s*skipped: 0$' native-network.log
+      # The P9.4 native success criterion as its own step: the trusted-local ceremony through the
+      # PUBLIC API against the real artifact (Windows: two endpoints of one runtime joined by a
+      # test-only byte-transparent relay; explicit start, authorize, expose, SAS presentation, MATCH,
+      # BOOTSTRAP_MAC, the Responder's NotInitiator, the Initiator's finish, one local result signal
+      # per side, exact run identity, and a native identity mismatch and explicit MISMATCH; Linux: the
+      # token is refused and no host exists).
+      - name: Real native ceremony (public API)
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet test --no-build --output Detailed --no-ansi --no-progress \
+            --filter-class SasPairing.Tests.NativeCeremonyArtifactTests | tee native-ceremony.log
+          grep -F 'passed SasPairing.Tests.NativeCeremonyArtifactTests.TheTwoSidedCeremonyRunsThroughThePublicApiWithEveryStepExplicit' native-ceremony.log
+          grep -F 'passed SasPairing.Tests.NativeCeremonyArtifactTests.AnUnpresentedIdentityIsRefusedNativelyAndAnExplicitMismatchEndsTheRun' native-ceremony.log
+          grep -E '^\s*succeeded: 2$' native-ceremony.log
+          grep -E '^\s*skipped: 0$' native-ceremony.log
       # P9 must not change the frozen core: the ABI v1 freeze consistency tests stay green.
       - name: Native ABI v1 freeze consistency
         run: |

@@ -167,26 +167,26 @@ public sealed class ConnectionOwnershipTests
         SasPairingEvent keyed = Assert.Single(tree.Host.Drive().Events);
 
         Assert.True(started.HasTrackedRun);
-        NativeRunRef first = started.Run!;
-        Assert.Same(first, keyed.Run);
+        NativeRunRef first = started.Run!.Ref;
+        Assert.Same(first, keyed.Run!.Ref);
         Assert.Equal(500ul, first.Handle);
         Assert.Equal(RequestA, first.RequestId.ToArray());
 
         // A new exact run under the reused request ID gets its own reference; the old one is retired, never retargeted.
         tree.Network.Next(Ok, Ok, Records.Inbound(100, AbiV1Constants.SAS_PAIRING_PROTOCOL_EVENT_START_ACCEPTED, RequestA, run: 501));
-        NativeRunRef second = Assert.Single(tree.Host.Drive().Events).Run!;
+        NativeRunRef second = Assert.Single(tree.Host.Drive().Events).Run!.Ref;
         Assert.NotSame(first, second);
         Assert.Equal(500ul, first.Handle);
         Assert.False(first.IsValid);
         Assert.True(second.IsValid);
-        Assert.Same(second, Assert.Single(connection.Runs));
+        Assert.Same(second, Assert.Single(connection.Runs).Ref);
 
         // A duplicate START names no run and ends nothing; a run under another request ID is independent.
         tree.Network.Next(Ok, Ok, Records.Inbound(100, AbiV1Constants.SAS_PAIRING_PROTOCOL_EVENT_START_DUPLICATE, RequestA), Records.Inbound(100, AbiV1Constants.SAS_PAIRING_PROTOCOL_EVENT_START_ACCEPTED, RequestB, run: 502));
         IReadOnlyList<SasPairingEvent> events = tree.Host.Drive().Events;
         Assert.False(events[0].HasTrackedRun);
         Assert.True(second.IsValid);
-        NativeRunRef third = events[1].Run!;
+        NativeRunRef third = events[1].Run!.Ref;
         Assert.Equal(2, connection.Runs.Count);
 
         // A visible ending (an inbound frame without a run) retires exactly the runs under its request ID.
@@ -216,7 +216,7 @@ public sealed class ConnectionOwnershipTests
             Records.Inbound(100, AbiV1Constants.SAS_PAIRING_PROTOCOL_EVENT_START_ACCEPTED, RequestA, run: 500),
             Records.Inbound(101, AbiV1Constants.SAS_PAIRING_PROTOCOL_EVENT_START_ACCEPTED, RequestA, run: 501),
             Records.Inbound(102, AbiV1Constants.SAS_PAIRING_PROTOCOL_EVENT_START_ACCEPTED, RequestA, run: 502));
-        NativeRunRef[] runs = [.. tree.Host.Drive().Events.Select(e => e.Run!)];
+        NativeRunRef[] runs = [.. tree.Host.Drive().Events.Select(e => e.Run!.Ref)];
 
         // The same request ID on another connection is another run.
         Assert.Equal(3, runs.Distinct().Count());
@@ -246,7 +246,7 @@ public sealed class ConnectionOwnershipTests
 
         IReadOnlyList<SasPairingEvent> events = tree.Host.Drive().Events;
 
-        NativeRunRef run = events[0].Run!;
+        NativeRunRef run = events[0].Run!.Ref;
         Assert.True(events[1].HasResult);
         Assert.False(events[1].HasTrackedRun);
         Assert.False(run.IsValid); // a result makes the run's end visible

@@ -69,7 +69,7 @@ internal static unsafe class FakeNetworkExports
         EventsOut.Clear();
     }
 
-    private static SeenBootstrap? Read(sas_pairing_bootstrap_view_t* view)
+    internal static SeenBootstrap? Read(sas_pairing_bootstrap_view_t* view)
     {
         if (view is null)
         {
