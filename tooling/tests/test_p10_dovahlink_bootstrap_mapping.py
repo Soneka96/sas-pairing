@@ -579,6 +579,19 @@ class Documents(Fixture):
         self.assertIn("## P10-D-002 — Canonical DovahLink Bootstrap v1 Mapping", text)
         self.assertIn("## P10-D-003 — DovahLink Authentication Disposition and PoP Boundary", text)
 
+    def test_sas_assurance_keeps_the_p3_probabilistic_boundary(self):
+        # P10.2.1: P3 section 7 bounds an exact full-SAS match conditionally; it never makes a
+        # mismatch deterministic. Only the known overclaim phrases are rejected.
+        for name in sorted(os.listdir(P10)):
+            if name.endswith(".md"):
+                text = read(os.path.join(P10, name))
+                for phrase in ("makes the two SAS values differ", "show different SAS values",
+                               "will not match what the Host shows"):
+                    self.assertNotIn(phrase, text, name)
+        mapping = read(MAPPING_DOC)
+        for bound in ("2^-39 + δ", "19 × 2^-39 + ε", "not claimed impossible"):
+            self.assertIn(bound, mapping)
+
     def test_vector_file_is_labelled_consumer_mapping(self):
         metadata = self.doc["metadata"]
         self.assertEqual(metadata["kind"], "DovahLink consumer mapping vectors")
