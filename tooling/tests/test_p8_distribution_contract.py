@@ -83,9 +83,13 @@ class Workflows(unittest.TestCase):
         return names.index(name)
 
     def test_exactly_one_upload_and_it_is_the_windows_bundle_of_the_exact_commit(self):
+        # P9-D-006 adds the two .NET artifacts in dotnet-package.yml (guarded by test_p9_distribution_contract.py);
+        # the Dart workflow still uploads exactly its one bundle, and no other workflow uploads anything.
         uploads = self.uploads()
-        self.assertEqual([path for path, _ in uploads], ["dart-package.yml"], uploads)
-        block = uploads[0][1]
+        self.assertEqual(sorted({path for path, _ in uploads}), ["dart-package.yml", "dotnet-package.yml"], uploads)
+        dart = [block for path, block in uploads if path == "dart-package.yml"]
+        self.assertEqual(len(dart), 1)
+        block = dart[0]
         self.assertIn("uses: actions/upload-artifact@v7", block)
         condition = step_if(block)
         self.assertIn("runner.os == 'Windows'", condition)
@@ -245,6 +249,8 @@ STALE_PHRASES = (
     "exposes no result contents yet",
     "until the first release process is defined",
     "P9 🟡",
+    "P9 (.NET PACKAGE) NEXT",
+    "it does not exist yet",
 )
 
 
@@ -261,8 +267,9 @@ class CurrentDocuments(unittest.TestCase):
     def test_the_status_documents_record_p8_complete_and_p9_next(self):
         readme = read(os.path.join(ROOT, "README.md"))
         self.assertIn("P8 (Dart package) is complete", readme)
-        self.assertIn("P9 (.NET package) is next", readme)
-        self.assertIn("**.NET / C#:** planned for P9; it does not exist yet.", readme)
+        # P9 has completed since P8 closed (test_p9_distribution_contract.py guards it); P8 stays complete.
+        self.assertIn("P9 (.NET package) is complete", readme)
+        self.assertIn("**.NET / C#:** implemented experimentally in P9", readme)
         for required in (
             "no qualified professional audit or formal verification is claimed",
             "This selection does not establish production security or approve production use.",
@@ -272,9 +279,9 @@ class CurrentDocuments(unittest.TestCase):
             self.assertIn(required, readme)
         roadmap = read(os.path.join(ROOT, "roadmap", "README.md"))
         self.assertIn("P8 ✅ Dart Package", roadmap)
-        self.assertIn("P9 🔵 .NET Package", roadmap)
+        self.assertIn("P9 ✅ .NET Package", roadmap)
         self.assertIn("✅ **P8 COMPLETE", read(os.path.join(ROOT, "roadmap", "P8-dart-package.md")))
-        self.assertIn("🔵 Next.", read(os.path.join(ROOT, "roadmap", "P9-dotnet-package.md")))
+        self.assertIn("✅ **P9 COMPLETE", read(os.path.join(ROOT, "roadmap", "P9-dotnet-package.md")))
         self.assertIn("**P8 COMPLETE — DART PACKAGE + WINDOWS X64 NATIVE DISTRIBUTION**", read(os.path.join(ROOT, "docs", "protocol-status.md")))
         changelog = read(os.path.join(ROOT, "CHANGELOG.md"))
         self.assertIn("No production release has been made", changelog)

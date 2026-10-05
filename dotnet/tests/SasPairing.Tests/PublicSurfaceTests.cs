@@ -1,0 +1,274 @@
+using System.Reflection;
+using System.Text.RegularExpressions;
+using SasPairing.Interop;
+
+namespace SasPairing.Tests;
+
+/// <summary>
+/// The exact P9.5 public surface (P9-D-002 to P9-D-005) by reflection: the 48 public statuses and the 12 local
+/// events equal the frozen constants, every public member is listed, and no public member exposes a native
+/// handle, socket value, <c>SafeSocketHandle</c>, pointer, function pointer, native record (event, action,
+/// presentation, or result info), raw flags or SAS bytes, a writable byte array, the binding, the loader, a native
+/// service, a run or result reference, or the result store, or is a trust verdict, a final-ACK confirmation, an
+/// automatic SAS decision, a trust or enrollment step, or a result poll or lookup.
+/// </summary>
+public sealed partial class PublicSurfaceTests
+{
+    private static readonly Assembly Library = typeof(SasPairingRuntime).Assembly;
+
+    private const BindingFlags PublicMembers = BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+
+    private static string Describe(MemberInfo member) => member switch
+    {
+        ConstructorInfo c => $".ctor({string.Join(", ", c.GetParameters().Select(p => p.ParameterType.Name))})",
+        MethodInfo m => $"{(m.IsStatic ? "static " : "")}{m.ReturnType.Name} {m.Name}({string.Join(", ", m.GetParameters().Select(p => p.ParameterType.Name))})",
+        PropertyInfo p => $"{p.PropertyType.Name} {p.Name}",
+        FieldInfo f => $"{f.FieldType.Name} {f.Name}",
+        _ => member.ToString()!,
+    };
+
+    [Fact]
+    public void TheFortyEightPublicStatusesEqualTheFrozenConstantsExactly()
+    {
+        Dictionary<string, int> frozen = typeof(AbiV1Constants)
+            .GetFields(BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(f => f.FieldType == typeof(int) && f.Name.StartsWith("SAS_PAIRING_", StringComparison.Ordinal))
+            .ToDictionary(f => f.Name, f => (int)f.GetRawConstantValue()!);
+        Assert.Equal(48, frozen.Count);
+
+        SasPairingStatus[] statuses = Enum.GetValues<SasPairingStatus>();
+        Assert.Equal(48, statuses.Length);
+        Assert.Equal(48, statuses.Select(s => (int)s).Distinct().Count());
+        Assert.Equal(typeof(int), Enum.GetUnderlyingType(typeof(SasPairingStatus)));
+        foreach (SasPairingStatus status in statuses)
+        {
+            string native = "SAS_PAIRING_" + PascalBoundary().Replace(status.ToString(), "_$1").ToUpperInvariant();
+            Assert.True(frozen.TryGetValue(native, out int value), $"{status} has no frozen constant {native}");
+            Assert.Equal(value, (int)status);
+        }
+
+        Assert.Equal(frozen.Values.Order(), statuses.Select(s => (int)s).Order());
+        Assert.Equal(0, (int)SasPairingStatus.Ok);
+        Assert.Equal(405, (int)SasPairingStatus.ConnectionEnded);
+        Assert.Equal(900, (int)SasPairingStatus.Fatal);
+    }
+
+    [Fact]
+    public void AnExceptionKeepsEveryStatusCodeAndOnlyNineHundredIsFatal()
+    {
+        foreach (SasPairingStatus status in Enum.GetValues<SasPairingStatus>().Where(s => s != SasPairingStatus.Ok))
+        {
+            SasPairingNativeException known = new("op", (int)status, "m");
+            Assert.Equal((int)status, known.StatusCode);
+            Assert.Equal(status, known.KnownStatus);
+            Assert.Equal(status == SasPairingStatus.Fatal, known.ProcessRestartRequired);
+        }
+
+        foreach (int unknown in new[] { -1, 5, 99, 108, 227, 301, 406, 777, 899, 901, int.MaxValue, int.MinValue })
+        {
+            SasPairingNativeException failure = new("op", unknown, "m");
+            Assert.Equal(unknown, failure.StatusCode);
+            Assert.Null(failure.KnownStatus);
+            Assert.False(failure.ProcessRestartRequired);
+        }
+    }
+
+    [Fact]
+    public void TheAuthorityStateModelHasExactlyReadyBusyAndExhausted()
+    {
+        Assert.Equal(["Ready", "Busy", "Exhausted"], Enum.GetNames<SasPairingAuthorityState>());
+        Assert.True(typeof(SasPairingAuthorityStatus).IsValueType);
+        Assert.True(typeof(SasPairingAuthorityStatus).IsDefined(typeof(System.Runtime.CompilerServices.IsReadOnlyAttribute)));
+        Assert.Equal(new SasPairingAuthorityStatus(SasPairingAuthorityState.Ready, 3), new SasPairingAuthorityStatus(SasPairingAuthorityState.Ready, 3));
+    }
+
+    [Fact]
+    public void EveryPublicMemberIsExactlyTheIntendedP95Surface()
+    {
+        static string[] Property(string type, string name) => [$"{type} {name}", $"{type} get_{name}()"];
+        Dictionary<string, string[]> expected = new()
+        {
+            ["SasPairingRuntime"] = ["Boolean IsDisposed", "Boolean get_IsDisposed()", "static SasPairingRuntime Create(String)", "SasPairingAuthority RegisterAuthority(ReadOnlySpan`1)", "Void Dispose()"],
+            ["SasPairingAuthority"] = ["Boolean IsDisposed", "Boolean get_IsDisposed()", "SasPairingAuthorityStatus GetStatus()", "SasPairingHost CreateHost()", "Void Dispose()"],
+            ["SasPairingHost"] =
+            [
+                "Boolean IsDisposed", "Boolean get_IsDisposed()", "SasPairingHostNetworkState NetworkState", "SasPairingHostNetworkState get_NetworkState()",
+                "Void AttachWindowsListener(SasPairingWindowsListenerSocket, SasPairingBootstrap, SasPairingBootstrap)", "Void DetachListener()",
+                "SasPairingDriveBatch Drive()", "SasPairingDriveBatch RecheckAfterResume()", "Void Dispose()",
+            ],
+            ["SasPairingBootstrap"] =
+            [
+                ".ctor(ReadOnlySpan`1, ReadOnlySpan`1, ReadOnlySpan`1, ReadOnlySpan`1)",
+                .. Property("ReadOnlySpan`1", "ApplicationIdentity"), .. Property("ReadOnlySpan`1", "KeyAlgorithm"),
+                .. Property("ReadOnlySpan`1", "PublicKey"), .. Property("ReadOnlySpan`1", "SharedContext"),
+            ],
+            ["SasPairingWindowsListenerSocket"] = ["static SasPairingWindowsListenerSocket FromSocket(Socket)", .. Property("Boolean", "IsTransferred"), "Void Dispose()"],
+            ["SasPairingConnection"] = [.. Property("Boolean", "IsDisposed"), "SasPairingLocalAction StartInitiator(SasPairingBootstrap, SasPairingBootstrap)", "Void Dispose()"],
+            ["SasPairingRun"] =
+            [
+                .. Property("Boolean", "IsEnded"), "SasPairingLocalAction AuthorizeExposure()", "SasPairingLocalAction ExposeKey()",
+                "SasPairingSasPresentation Presentation()", "SasPairingLocalAction ApproveSas(SasPairingCeremonyIdentity)", "SasPairingLocalAction EmitBootstrapMac()",
+                "SasPairingLocalAction RejectSas(SasPairingCeremonyIdentity)", "SasPairingLocalAction CancelSas(SasPairingCeremonyIdentity)", "SasPairingLocalAction EmitInitiatorFinish()",
+            ],
+            ["SasPairingLocalAction"] =
+            [
+                .. Property("SasPairingLocalEvent", "Event"), .. Property("SasPairingRun", "Run"), .. Property("SasPairingDeadlineKind", "DeadlineKind"),
+                .. Property("Boolean", "WritePending"),
+            ],
+            ["SasPairingSasPresentation"] = [.. Property("SasPairingCeremonyIdentity", "CeremonyIdentity"), .. Property("String", "DecimalDisplay")],
+            ["SasPairingCeremonyIdentity"] =
+            [
+                .. Property("ReadOnlySpan`1", "Bytes"), "Boolean Equals(SasPairingCeremonyIdentity)", "Boolean Equals(Object)", "Int32 GetHashCode()",
+                "static Boolean op_Equality(SasPairingCeremonyIdentity, SasPairingCeremonyIdentity)", "static Boolean op_Inequality(SasPairingCeremonyIdentity, SasPairingCeremonyIdentity)",
+            ],
+            ["SasPairingRunEndedException"] = ["String Operation", "String get_Operation()"],
+            ["SasPairingResult"] = [.. Property("Boolean", "IsDisposed"), "SasPairingResultData Read()", "Void Dispose()"],
+            ["SasPairingResultData"] =
+            [
+                .. Property("SasPairingCeremonyIdentity", "CeremonyIdentity"), .. Property("SasPairingPeerRole", "PeerRole"), .. Property("UInt32", "ProfileVersion"),
+                .. Property("ReadOnlySpan`1", "RequestId"), .. Property("ReadOnlySpan`1", "AuthenticatedPeerBootstrap"),
+                .. Property("ReadOnlySpan`1", "AuthenticatedSharedContext"), .. Property("ReadOnlySpan`1", "ProfileIdentifier"),
+            ],
+            ["SasPairingDriveBatch"] = [.. Property("IReadOnlyList`1", "Events"), .. Property("SasPairingDriveFailure", "Failure")],
+            ["SasPairingDriveFailure"] = [.. Property("Int32", "StatusCode"), .. Property("Nullable`1", "KnownStatus"), .. Property("Boolean", "ProcessRestartRequired")],
+            ["SasPairingEvent"] =
+            [
+                .. Property("SasPairingEventKind", "Kind"), .. Property("SasPairingConnection", "Connection"), .. Property("SasPairingStepKind", "StepKind"),
+                .. Property("SasPairingProtocolEvent", "ProtocolEvent"), .. Property("SasPairingEventReason", "Reason"), .. Property("SasPairingDeadlineKind", "DeadlineKind"),
+                .. Property("SasPairingCancelState", "CancelState"), .. Property("SasPairingCancelReason", "CancelReason"), .. Property("Boolean", "WritePending"),
+                .. Property("Boolean", "RunUntracked"), .. Property("ReadOnlySpan`1", "RequestId"), .. Property("SasPairingRun", "Run"), .. Property("Boolean", "HasTrackedRun"),
+                .. Property("SasPairingResult", "Result"), .. Property("Boolean", "HasResult"), .. Property("Boolean", "ShouldDisposeConnection"),
+            ],
+            ["SasPairingInitializationException"] = ["SasPairingInitializationFailure Failure", "SasPairingInitializationFailure get_Failure()", "Boolean ProcessRestartRequired", "Boolean get_ProcessRestartRequired()"],
+            ["SasPairingNativeException"] =
+            [
+                "String Operation", "String get_Operation()", "Int32 StatusCode", "Int32 get_StatusCode()", "Nullable`1 KnownStatus", "Nullable`1 get_KnownStatus()",
+                "Boolean ProcessRestartRequired", "Boolean get_ProcessRestartRequired()",
+            ],
+            ["SasPairingContractException"] = ["String Operation", "String get_Operation()", "Boolean ProcessRestartRequired", "Boolean get_ProcessRestartRequired()"],
+            ["SasPairingAuthorityStatus"] =
+            [
+                ".ctor(SasPairingAuthorityState, UInt32)", "SasPairingAuthorityState State", "SasPairingAuthorityState get_State()", "Void set_State(SasPairingAuthorityState)",
+                "UInt32 RemainingOpportunities", "UInt32 get_RemainingOpportunities()", "Void set_RemainingOpportunities(UInt32)", "String ToString()",
+                "static Boolean op_Inequality(SasPairingAuthorityStatus, SasPairingAuthorityStatus)", "static Boolean op_Equality(SasPairingAuthorityStatus, SasPairingAuthorityStatus)",
+                "Int32 GetHashCode()", "Boolean Equals(Object)", "Boolean Equals(SasPairingAuthorityStatus)", "Void Deconstruct(SasPairingAuthorityState&, UInt32&)",
+            ],
+        };
+
+        foreach (Type type in Library.GetExportedTypes().Where(t => !t.IsEnum))
+        {
+            string[] actual = [.. type.GetMembers(PublicMembers).Select(Describe).Order(StringComparer.Ordinal)];
+            Assert.True(expected.TryGetValue(type.Name, out string[]? members), $"unexpected public type {type}");
+            Assert.Equal(members!.Order(StringComparer.Ordinal), actual);
+        }
+
+        Assert.Equal(expected.Keys.Order(StringComparer.Ordinal), Library.GetExportedTypes().Where(t => !t.IsEnum).Select(t => t.Name).Order(StringComparer.Ordinal));
+
+        // No public constructor on the wrappers, the exceptions, or the network and ceremony outputs: only the
+        // library creates them (the Bootstrap is the one input with a public constructor; the token has a factory).
+        // In particular no caller can construct a ceremony identity from arbitrary bytes (P9-D-004), or a result or
+        // its data snapshot (P9-D-005).
+        foreach (Type type in new[]
+        {
+            typeof(SasPairingRuntime), typeof(SasPairingAuthority), typeof(SasPairingHost), typeof(SasPairingInitializationException), typeof(SasPairingNativeException),
+            typeof(SasPairingContractException), typeof(SasPairingWindowsListenerSocket), typeof(SasPairingConnection), typeof(SasPairingDriveBatch),
+            typeof(SasPairingDriveFailure), typeof(SasPairingEvent), typeof(SasPairingRun), typeof(SasPairingLocalAction), typeof(SasPairingSasPresentation),
+            typeof(SasPairingCeremonyIdentity), typeof(SasPairingRunEndedException), typeof(SasPairingResult), typeof(SasPairingResultData),
+        })
+        {
+            Assert.Empty(type.GetConstructors());
+        }
+    }
+
+    [Fact]
+    public void NoPublicMemberExposesARawInteropConceptOrATrustVerdict()
+    {
+        Type[] forbiddenTypes =
+        [
+            typeof(ulong), typeof(long), typeof(nint), typeof(nuint), typeof(NativeAbiV1), typeof(AbiV1FunctionTable), typeof(NativeAbiV1Loader), typeof(INativeLifecycleApi),
+            typeof(INativeNetworkApi), typeof(NativeProcessContext), typeof(NativeInitializationException), typeof(System.Runtime.InteropServices.SafeHandle),
+            typeof(System.Net.Sockets.SafeSocketHandle), typeof(NativeRunRef), typeof(NativeResultRef), typeof(NativeResultStore), typeof(NativeEventRecord),
+            typeof(NativeBootstrapBytes), typeof(HostNetwork), typeof(IListenerSocketResource), typeof(byte[]), typeof(Memory<byte>), typeof(ArraySegment<byte>),
+            typeof(INativeCeremonyApi), typeof(NativeActionRecord), typeof(NativeActionOutcome), typeof(NativePresentationRecord), typeof(NativePresentationOutcome),
+            typeof(CeremonyTarget), typeof(CeremonyOutcome), typeof(sas_pairing_action_t), typeof(sas_pairing_sas_presentation_t),
+            typeof(INativeResultApi), typeof(NativeResultInfoRecord), typeof(NativeResultInfoOutcome), typeof(NativeResultCopyOutcome), typeof(sas_pairing_result_info_t),
+            typeof(ReadOnlyMemory<byte>), typeof(List<byte>), typeof(IList<byte>), typeof(ICollection<byte>), typeof(IEnumerable<SasPairingResult>),
+            typeof(IReadOnlyCollection<SasPairingResult>), typeof(IReadOnlyList<SasPairingResult>),
+        ];
+        foreach (Type type in Library.GetExportedTypes())
+        {
+            if (type.IsEnum)
+            {
+                // Enum members are values (the mandated UnsupportedPointerWidth names a pointer width, not a
+                // pointer); none may still be a trust verdict.
+                Assert.All(Enum.GetNames(type), name => Assert.DoesNotMatch(TrustVerdictName(), name));
+                continue;
+            }
+
+            foreach (MemberInfo member in type.GetMembers(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static))
+            {
+                Assert.DoesNotMatch(ForbiddenMemberName(), member.Name);
+                IEnumerable<Type> types = member switch
+                {
+                    MethodBase m => m.GetParameters().Select(p => p.ParameterType).Concat(m is MethodInfo mi ? [mi.ReturnType] : []),
+                    PropertyInfo p => [p.PropertyType],
+                    FieldInfo f => [f.FieldType],
+                    EventInfo e => [e.EventHandlerType!],
+                    _ => [],
+                };
+                foreach (Type used in types.Select(t => t.HasElementType ? t.GetElementType()! : t))
+                {
+                    string where = $"{type.Name}.{member.Name}: {used}";
+                    Assert.False(used.IsPointer || used.IsFunctionPointer || used.IsUnmanagedFunctionPointer, where);
+                    Assert.DoesNotContain(used, forbiddenTypes);
+                    Assert.NotEqual("SasPairing.Interop", used.Namespace);
+                    Assert.False(used.Name.StartsWith("sas_pairing_", StringComparison.Ordinal), where);
+                    Assert.False(used.IsGenericType && used.GetGenericArguments().Any(a => forbiddenTypes.Contains(a)), where);
+
+                    // The caller's Socket is accepted by the token factory only; it is never returned or stored publicly.
+                    Assert.True(used != typeof(System.Net.Sockets.Socket) || (type == typeof(SasPairingWindowsListenerSocket) && member.Name == "FromSocket" && member is MethodInfo { ReturnType: var r } && r != used), where);
+                }
+            }
+        }
+
+        Assert.All(Library.GetExportedTypes(), t => Assert.False(t.IsDefined(typeof(System.Runtime.CompilerServices.UnsafeValueTypeAttribute))));
+    }
+
+    [Fact]
+    public void TheForbiddenNameDetectorMatchesWhatItForbids()
+    {
+        foreach (string name in new[]
+        {
+            "Handle", "NativeHandle", "RawHandle", "get_NativeHandle", "Pointer", "IsAttack", "IsMaliciousPeer", "PeerTrusted", "AuthenticationCompromised", "ShouldTrust", "Reset",
+            "ResetForTesting", "ClearFatal", "Recover", "Reload", "Reinitialize", "LoadAnotherLibrary", "Close",
+            "ConfirmFinalAck", "ConfirmSent", "AckSent", "FinishAck", "ConfirmFinish", "MarkFinalWritten", "MarkWritten", "CompleteFinish", "SendAck", "Ack",
+            "IsMatch", "MatchesPeer", "Approved", "IsApproved", "Trusted", "AutoApprove", "Flags", "RawFlags", "Reserved", "SasBytes", "RawSas",
+            "IsTrusted", "TrustPeer", "ShouldEnroll", "Enroll", "BilateralSuccess", "PeerCompleted", "IsAuthenticatedForApplication", "Commit", "Persist",
+            "GetResults", "PollResults", "FindResult", "ResultFromRequestId", "Results", "NativeResultHandle",
+        })
+        {
+            Assert.Matches(ForbiddenMemberName(), name);
+        }
+
+        Assert.DoesNotMatch(ForbiddenMemberName(), "Dispose");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "ProcessRestartRequired");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "ApproveSas");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "EmitInitiatorFinish");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "DecimalDisplay");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "CeremonyIdentity");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "Read");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "Result");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "HasResult");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "AuthenticatedPeerBootstrap");
+        Assert.DoesNotMatch(ForbiddenMemberName(), "PeerRole");
+    }
+
+    [GeneratedRegex(@"(?<=[a-z0-9])([A-Z])")]
+    private static partial Regex PascalBoundary();
+
+    [GeneratedRegex(@"Handle|Pointer|Attack|Malicious|Trust|Compromis|Confirm|Ack(?![a-z])|MarkWritten|MarkFinal|CompleteFinish|Match|Approved$|AutoApprove|Flags|Reserved|SasBytes|RawSas|Enroll|Bilateral|PeerCompleted|AuthenticatedFor|Commit|Persist|Poll|Results|FindResult|ResultFrom|^(?:Reset\w*|ClearFatal|Recover|Reload|Reinitialize|LoadAnotherLibrary|Close)$")]
+    private static partial Regex ForbiddenMemberName();
+
+    [GeneratedRegex(@"Attack|Malicious|Trust|Compromis|Verdict")]
+    private static partial Regex TrustVerdictName();
+}

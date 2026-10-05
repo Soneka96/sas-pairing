@@ -2,7 +2,7 @@
 
 ## Status
 
-🟡 Planned; gated on usable native and language-wrapper packages.
+🔵 Next (not started). Its package prerequisite is met: the experimental Dart package (P8, [final closure](../docs/p8-dart-package/final-closure.md)) and .NET package (P9, [final closure](../docs/p9-dotnet-package/final-closure.md)) wrap the frozen native ABI v1, with Windows x64 as the only pairing platform. P10 is planned in depth only when it starts.
 
 ## Goal
 

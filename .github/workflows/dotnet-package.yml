@@ -1,0 +1,359 @@
+name: .NET package
+
+# P9 .NET package (dotnet/): the private exact native ABI v1 interop of the SasPairing library and
+# its explicit-path, process-lifetime loader (P9-D-001), the public Runtime / Authority / Host
+# lifecycle wrapper (P9-D-002), the Windows listener handoff, cooperative drive, events, and
+# connections (P9-D-003), runs with explicit trusted-local ceremony control and SAS
+# presentation (P9-D-004), and runtime-owned PairingResults with explicit reads and destruction
+# (P9-D-005), checked against a real native artifact built from this commit. Windows is the only
+# pairing-networking platform: there the lifecycle, the listener, accept, close, replacement, and
+# recheck, a full two-endpoint ceremony, and both local results (read, compared with the frozen P3
+# vector fixture, outliving every lower parent, disposed explicitly or by the runtime cascade) run
+# through the public API; on Linux the same ABI v1 library loads, a runtime is created, authority
+# registration fails closed with UnsupportedPlatform, the listener token is refused with
+# PlatformNotSupportedException, and every fake, FFI, surface, and scope test (network, ceremony,
+# and result) runs (no Linux pairing support is claimed, and no real ceremony or result exists
+# there). Everything is built and tested in the Release configuration.
+#
+# P9-D-006 distribution: the Windows job stages the built DLL into the native bundle
+# dist/sas-pairing-dotnet-windows-x64-abi1 before any .NET test, so that EVERY .NET test loads that
+# staged copy; it packs the tested Release assembly into SasPairing.<version>.nupkg (no native
+# library inside), stages it into dist/sas-pairing-dotnet-nuget, proves the packed assembly is
+# byte-identical to the built and tested one, restores and runs an external consumer from that
+# local feed against the staged DLL, verifies both bundles again, and (on push only) uploads them
+# as the two experimental CI artifacts sas-pairing-dotnet-nuget-<commit> and
+# sas-pairing-dotnet-windows-x64-abi1-<commit>. The Linux job distributes nothing. Nothing is
+# pushed to nuget.org or any feed, and no tag or GitHub Release is ever created here.
+
+on:
+  push:
+    paths:
+      - 'dotnet/**'
+      - 'core/include/sas_pairing.h'
+      - 'core/src/**'
+      - 'core/Cargo.toml'
+      - 'core/Cargo.lock'
+      - 'docs/p7-native-abi/abi-v1-manifest.md'
+      - 'docs/p9-dotnet-package/**'
+      - 'roadmap/P9-dotnet-package.md'
+      - 'tooling/check_abi_exports.py'
+      - 'tooling/package_dart_native.py'
+      - 'tooling/package_dotnet_native.py'
+      - 'tooling/package_dotnet_nuget.py'
+      - 'tooling/tests/**'
+      - 'LICENSE-MIT'
+      - 'LICENSE-APACHE'
+      - 'vectors/p3-remote-vodozemac-draft-01.json'
+      - '.github/workflows/dotnet-package.yml'
+  pull_request:
+    paths:
+      - 'dotnet/**'
+      - 'core/include/sas_pairing.h'
+      - 'core/src/**'
+      - 'core/Cargo.toml'
+      - 'core/Cargo.lock'
+      - 'docs/p7-native-abi/abi-v1-manifest.md'
+      - 'docs/p9-dotnet-package/**'
+      - 'roadmap/P9-dotnet-package.md'
+      - 'tooling/check_abi_exports.py'
+      - 'tooling/package_dart_native.py'
+      - 'tooling/package_dotnet_native.py'
+      - 'tooling/package_dotnet_nuget.py'
+      - 'tooling/tests/**'
+      - 'LICENSE-MIT'
+      - 'LICENSE-APACHE'
+      - 'vectors/p3-remote-vodozemac-draft-01.json'
+      - '.github/workflows/dotnet-package.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  dotnet-package:
+    name: dotnet-package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows: every .NET test loads the STAGED distribution copy of the DLL (P9-D-006).
+          - os: windows-latest
+            artifact: sas_pairing_core.dll
+            tested_library: dist/sas-pairing-dotnet-windows-x64-abi1/sas_pairing_core.dll
+            python: python
+          # Linux: the job-local build output; never staged, packed, or uploaded (P9-D-006).
+          - os: ubuntu-latest
+            artifact: libsas_pairing_core.so
+            tested_library: core/target/release/libsas_pairing_core.so
+            python: python3
+    env:
+      DOTNET_NOLOGO: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      BUILD_LIBRARY: core/target/release/${{ matrix.artifact }}
+      # The real artifact, by absolute path, for the native tests (CI=true makes a missing artifact a
+      # failure, never a skip). On Windows it is the staged distribution copy.
+      SAS_PAIRING_NATIVE_LIBRARY: ${{ github.workspace }}/${{ matrix.tested_library }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # The exact SDK pinned by dotnet/global.json (rollForward latestPatch within its feature band).
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: dotnet/global.json
+      - name: dotnet --info
+        working-directory: dotnet
+        run: dotnet --info
+      - name: Build the native ABI v1 artifact
+        run: cargo build --manifest-path core/Cargo.toml --release --features native-abi
+      - name: Native ABI export audit
+        run: ${{ matrix.python }} tooling/check_abi_exports.py --library "$BUILD_LIBRARY" --expect manifest
+      # P9-D-006: stage the Windows x64 native bundle from the build output before any .NET test, so
+      # that every later test loads the staged copy. The Rust target comes from the toolchain, not
+      # the runner label; the tool also checks the PE machine (AMD64) and the 25 exports.
+      - name: Stage the Windows x64 native bundle
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          target="$(rustc -vV | tr -d '\r' | sed -n 's/^host: //p')"
+          echo "rustc host target: $target"
+          python tooling/package_dotnet_native.py stage --library "$BUILD_LIBRARY" \
+            --output dist/sas-pairing-dotnet-windows-x64-abi1 --git-sha "$GITHUB_SHA" \
+            --rust-target "$target"
+      - name: Verify the staged native bundle (hash identity, PE machine, exports)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          case "$SAS_PAIRING_NATIVE_LIBRARY" in
+            */dist/sas-pairing-dotnet-windows-x64-abi1/sas_pairing_core.dll) ;;
+            *) echo "::error::the .NET tests must load the staged DLL"; exit 1 ;;
+          esac
+          python tooling/package_dotnet_native.py verify \
+            --bundle dist/sas-pairing-dotnet-windows-x64-abi1 --git-sha "$GITHUB_SHA" \
+            --source-library "$BUILD_LIBRARY"
+          python tooling/check_abi_exports.py --library "$SAS_PAIRING_NATIVE_LIBRARY" --expect manifest
+          sha256sum "$BUILD_LIBRARY" "$SAS_PAIRING_NATIVE_LIBRARY"
+          (cd dist/sas-pairing-dotnet-windows-x64-abi1 && sha256sum -c SHA256SUMS.txt)
+          ls -la dist/sas-pairing-dotnet-windows-x64-abi1
+      - name: dotnet restore
+        working-directory: dotnet
+        run: dotnet restore --locked-mode
+      - name: dotnet format
+        working-directory: dotnet
+        run: dotnet format --verify-no-changes --no-restore --verbosity diagnostic
+      # The distributable implementation is built once, in Release, and that build is what every
+      # test runs and what the package contains.
+      - name: dotnet build
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet build -c Release --no-restore -warnaserror | tee build.log
+          grep -E '^\s*0 Warning\(s\)' build.log
+          grep -E '^\s*0 Error\(s\)' build.log
+      # Every test (Microsoft.Testing.Platform runner, selected by dotnet/global.json), with the
+      # real artifact supplied explicitly: nothing may be skipped under CI.
+      - name: dotnet test
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet test -c Release --no-build --output Detailed --no-ansi --no-progress | tee test.log
+          grep -F 'Test run summary: Passed!' test.log
+          grep -E '^\s*failed: 0$' test.log
+          grep -E '^\s*skipped: 0$' test.log
+          if grep -E '^skipped ' test.log; then exit 1; fi
+      # The P9.1 native success criterion as its own step: the real artifact loads through the
+      # production loader, all 25 frozen exports resolve by exact name, and the ABI version is 1.
+      - name: Real native ABI v1 smoke (exports and version)
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet test -c Release --no-build --output Detailed --no-ansi --no-progress \
+            --filter-class SasPairing.Tests.NativeArtifactTests | tee native-smoke.log
+          grep -F 'passed SasPairing.Tests.NativeArtifactTests.TheRealArtifactLoadsThroughTheProcessLoaderWithAbiVersionOne' native-smoke.log
+          grep -F 'passed SasPairing.Tests.NativeArtifactTests.TheRealArtifactExportsAllTwentyFiveFrozenSymbolsByExactName' native-smoke.log
+          grep -E '^\s*succeeded: 6$' native-smoke.log
+          grep -E '^\s*skipped: 0$' native-smoke.log
+      # The P9.2 native success criterion as its own step: the lifecycle through the PUBLIC API against
+      # the real artifact (Windows: runtime, binary-scope authority, hosts, status, disposal cascade;
+      # Linux: runtime and the UnsupportedPlatform authority registration).
+      - name: Real native lifecycle (public API)
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet test -c Release --no-build --output Detailed --no-ansi --no-progress \
+            --filter-class SasPairing.Tests.NativeLifecycleArtifactTests | tee native-lifecycle.log
+          grep -F 'passed SasPairing.Tests.NativeLifecycleArtifactTests.ThePublicLifecycleRunsAgainstTheRealLibraryAsThePlatformDefines' native-lifecycle.log
+          grep -F 'passed SasPairing.Tests.NativeLifecycleArtifactTests.ASecondLiveRuntimeIsRefusedNativelyAndRecreationReusesTheImageAndTheProcessContext' native-lifecycle.log
+          grep -E '^\s*succeeded: 4$' native-lifecycle.log
+          grep -E '^\s*skipped: 0$' native-lifecycle.log
+      # The P9.3 native success criterion as its own step: the network wrapper through the PUBLIC API
+      # against the real artifact (Windows: socket transfer surviving the caller's Socket and every
+      # finalizer, accept and peer close with one connection object, manual connection disposal,
+      # listener replacement, one resume recheck; Linux: the token is refused and no host exists).
+      - name: Real native network (public API)
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet test -c Release --no-build --output Detailed --no-ansi --no-progress \
+            --filter-class SasPairing.Tests.NativeNetworkArtifactTests | tee native-network.log
+          grep -F 'passed SasPairing.Tests.NativeNetworkArtifactTests.TheSocketIsTransferredAndTheNativeListenerOutlivesTheCallersSocketAndEveryFinalizer' native-network.log
+          grep -F 'passed SasPairing.Tests.NativeNetworkArtifactTests.AnAcceptedConnectionIsOneObjectUntilThePeerClosesIt' native-network.log
+          grep -F 'passed SasPairing.Tests.NativeNetworkArtifactTests.AManuallyDisposedConnectionIsClosedDeterministically' native-network.log
+          grep -F 'passed SasPairing.Tests.NativeNetworkArtifactTests.AListenerIsReplacedByDetachThenAttach' native-network.log
+          grep -F 'passed SasPairing.Tests.NativeNetworkArtifactTests.OneRecheckAfterResumeIsOneNativeSweep' native-network.log
+          grep -E '^\s*succeeded: 5$' native-network.log
+          grep -E '^\s*skipped: 0$' native-network.log
+      # The P9.4 native success criterion as its own step: the trusted-local ceremony through the
+      # PUBLIC API against the real artifact (Windows: two endpoints of one runtime joined by a
+      # test-only byte-transparent relay; explicit start, authorize, expose, SAS presentation, MATCH,
+      # BOOTSTRAP_MAC, the Responder's NotInitiator, the Initiator's finish, one local result signal
+      # per side, exact run identity, and a native identity mismatch and explicit MISMATCH; Linux: the
+      # token is refused and no host exists).
+      - name: Real native ceremony (public API)
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet test -c Release --no-build --output Detailed --no-ansi --no-progress \
+            --filter-class SasPairing.Tests.NativeCeremonyArtifactTests | tee native-ceremony.log
+          grep -F 'passed SasPairing.Tests.NativeCeremonyArtifactTests.TheTwoSidedCeremonyRunsThroughThePublicApiWithEveryStepExplicit' native-ceremony.log
+          grep -F 'passed SasPairing.Tests.NativeCeremonyArtifactTests.AnUnpresentedIdentityIsRefusedNativelyAndAnExplicitMismatchEndsTheRun' native-ceremony.log
+          grep -E '^\s*succeeded: 2$' native-ceremony.log
+          grep -E '^\s*skipped: 0$' native-ceremony.log
+      # The P9.5 native success criterion as its own step: the PairingResult API through the PUBLIC API
+      # against the real artifact (Windows: the healthy ceremony with the frozen P3 vector Bootstrap
+      # inputs, each side's event result read through Result.Read (peer role, ceremony identity,
+      # request ID, profile version and identifier, shared context, and the peer's exact canonical
+      # Bootstrap frame from vectors/p3-remote-vodozemac-draft-01.json), reads after connections,
+      # listeners, hosts, and authorities are gone, one explicit Dispose, and the runtime cascade of
+      # another result with detached snapshots; Linux: the token is refused and no host exists).
+      - name: Real native result (public API)
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet test -c Release --no-build --output Detailed --no-ansi --no-progress \
+            --filter-class SasPairing.Tests.NativeResultArtifactTests | tee native-result.log
+          grep -F 'passed SasPairing.Tests.NativeResultArtifactTests.BothLocalResultsAreReadThroughThePublicApiAndOutliveEveryLowerParent' native-result.log
+          grep -F 'passed SasPairing.Tests.NativeResultArtifactTests.TheRuntimeCascadeEndsAnOpenResultWithoutAChildDestroyAndItsSnapshotStaysUsable' native-result.log
+          grep -E '^\s*succeeded: 2$' native-result.log
+          grep -E '^\s*skipped: 0$' native-result.log
+      # P9-D-006: pack the tested Release build (no rebuild) with this exact commit as the package's
+      # repository commit. Exactly one package and no symbols package.
+      - name: Pack the managed package (tested Release build)
+        if: runner.os == 'Windows'
+        working-directory: dotnet
+        run: |
+          set -euo pipefail
+          dotnet pack src/SasPairing/SasPairing.csproj -c Release --no-build --no-restore \
+            -p:RepositoryCommit="$GITHUB_SHA" -o "$RUNNER_TEMP/sas-pairing-pack"
+          ls -la "$RUNNER_TEMP/sas-pairing-pack"
+          test "$(ls "$RUNNER_TEMP/sas-pairing-pack")" = "SasPairing.0.1.0-dev.1.nupkg"
+      # The package is checked as a ZIP and its .nuspec as XML: id, version, net10.0, license, README,
+      # repository URL and this exact commit, no dependency, no native binary or runtimes/ asset, no
+      # test assembly, and its SasPairing.dll byte-identical to the built and to the tested assembly.
+      - name: Stage and verify the managed NuGet bundle (assembly identity)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          python tooling/package_dotnet_nuget.py stage \
+            --nupkg "$RUNNER_TEMP/sas-pairing-pack/SasPairing.0.1.0-dev.1.nupkg" \
+            --output dist/sas-pairing-dotnet-nuget --git-sha "$GITHUB_SHA" \
+            --assembly dotnet/src/SasPairing/bin/Release/net10.0/SasPairing.dll \
+            --assembly dotnet/tests/SasPairing.Tests/bin/Release/net10.0/SasPairing.dll
+          sha256sum dotnet/src/SasPairing/bin/Release/net10.0/SasPairing.dll \
+            dotnet/tests/SasPairing.Tests/bin/Release/net10.0/SasPairing.dll
+          (cd dist/sas-pairing-dotnet-nuget && sha256sum -c SHA256SUMS.txt)
+          ls -la dist/sas-pairing-dotnet-nuget
+      # An external consumer restores SasPairing 0.1.0-dev.1 from the staged bundle as its only local
+      # feed (a PackageReference, never a ProjectReference), into a fresh project-local package
+      # folder, and runs Runtime, Authority, Host, and deterministic Dispose through the public API
+      # against the staged DLL by absolute path. The restored and the loaded assembly must be the
+      # built one.
+      - name: Local NuGet consumer smoke (packed assembly + staged DLL)
+        if: runner.os == 'Windows'
+        working-directory: dotnet/tests/SasPairing.PackageSmoke
+        run: |
+          set -euo pipefail
+          if grep -F 'ProjectReference' SasPairing.PackageSmoke.csproj; then exit 1; fi
+          grep -F '<PackageReference Include="SasPairing" Version="0.1.0-dev.1" />' SasPairing.PackageSmoke.csproj
+          rm -rf bin obj
+          dotnet restore | tee restore.log
+          dotnet format SasPairing.PackageSmoke.csproj --verify-no-changes --no-restore
+          dotnet build -c Release --no-restore -warnaserror
+          dotnet run -c Release --no-build -- "$SAS_PAIRING_NATIVE_LIBRARY" | tee smoke.log
+          grep -F 'package version: 0.1.0-dev.1+' smoke.log
+          grep -F 'authority: Ready 10' smoke.log
+          grep -F 'package consumer smoke: OK' smoke.log
+          built="$(sha256sum ../../src/SasPairing/bin/Release/net10.0/SasPairing.dll | cut -d' ' -f1)"
+          restored="$(sha256sum obj/local-packages/saspairing/0.1.0-dev.1/lib/net10.0/SasPairing.dll | cut -d' ' -f1)"
+          loaded="$(sha256sum bin/Release/net10.0/SasPairing.dll | cut -d' ' -f1)"
+          echo "built=$built restored=$restored loaded=$loaded"
+          test "$built" = "$restored"
+          test "$built" = "$loaded"
+      # The packaging tools' own tests, including the real staged DLL and the real staged package.
+      - name: Packaging tool tests (real staged DLL and package)
+        if: runner.os == 'Windows'
+        env:
+          SAS_PAIRING_REQUIRE_REAL_DLL: '1'
+          SAS_PAIRING_REQUIRE_REAL_NUPKG: '1'
+          SAS_PAIRING_NUGET_BUNDLE: ${{ github.workspace }}/dist/sas-pairing-dotnet-nuget
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tooling/tests -v 2>&1 | tee packaging-tests.log
+          if grep -E 'Real(WindowsDll|Nupkg).* skipped' packaging-tests.log; then exit 1; fi
+          grep -E '^OK' packaging-tests.log
+      # P9 must not change the frozen core: the ABI v1 freeze consistency tests stay green.
+      - name: Native ABI v1 freeze consistency
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/Cargo.toml --features native-abi --lib \
+            abi::tests::freeze | tee freeze.log
+          grep -E 'test result: ok\. [1-9][0-9]* passed' freeze.log
+      # P9-D-006: after every test, both bundles are verified again: the native DLL must still be
+      # byte-identical to the build output and the packed assembly to the tested assembly, so the
+      # uploaded copies are the tested copies.
+      - name: Re-verify both tested bundles before upload
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          python tooling/package_dotnet_native.py verify \
+            --bundle dist/sas-pairing-dotnet-windows-x64-abi1 --git-sha "$GITHUB_SHA" \
+            --source-library "$BUILD_LIBRARY"
+          python tooling/check_abi_exports.py \
+            --library dist/sas-pairing-dotnet-windows-x64-abi1/sas_pairing_core.dll --expect manifest
+          python tooling/package_dotnet_nuget.py verify \
+            --bundle dist/sas-pairing-dotnet-nuget --git-sha "$GITHUB_SHA" \
+            --assembly dotnet/src/SasPairing/bin/Release/net10.0/SasPairing.dll \
+            --assembly dotnet/tests/SasPairing.Tests/bin/Release/net10.0/SasPairing.dll
+      # The two experimental CI artifacts of this exact commit (push runs only: a pull-request run
+      # builds a temporary merge commit). Never a release, tag, or feed publication.
+      - name: Upload the managed NuGet package (experimental CI artifact)
+        id: upload-nuget
+        if: runner.os == 'Windows' && github.event_name == 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: sas-pairing-dotnet-nuget-${{ github.sha }}
+          path: dist/sas-pairing-dotnet-nuget/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload the tested Windows x64 native bundle (experimental CI artifact)
+        id: upload-native
+        if: runner.os == 'Windows' && github.event_name == 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: sas-pairing-dotnet-windows-x64-abi1-${{ github.sha }}
+          path: dist/sas-pairing-dotnet-windows-x64-abi1/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Report the uploaded artifacts
+        if: runner.os == 'Windows' && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          build="$(sha256sum "$BUILD_LIBRARY" | cut -d' ' -f1)"
+          staged="$(sha256sum dist/sas-pairing-dotnet-windows-x64-abi1/sas_pairing_core.dll | cut -d' ' -f1)"
+          test "$build" = "$staged"
+          assembly="$(sha256sum dotnet/src/SasPairing/bin/Release/net10.0/SasPairing.dll | cut -d' ' -f1)"
+          nupkg="$(sha256sum dist/sas-pairing-dotnet-nuget/SasPairing.0.1.0-dev.1.nupkg | cut -d' ' -f1)"
+          echo "::notice title=P9 managed artifact::sas-pairing-dotnet-nuget-$GITHUB_SHA id=${{ steps.upload-nuget.outputs.artifact-id }} digest=${{ steps.upload-nuget.outputs.artifact-digest }} nupkg_sha256=$nupkg assembly_sha256=$assembly"
+          echo "::notice title=P9 native artifact::sas-pairing-dotnet-windows-x64-abi1-$GITHUB_SHA id=${{ steps.upload-native.outputs.artifact-id }} digest=${{ steps.upload-native.outputs.artifact-digest }} build_dll_sha256=$build staged_dll_sha256=$staged"
