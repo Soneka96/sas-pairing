@@ -6,12 +6,18 @@
     <PackageId>SasPairing</PackageId>
     <VersionPrefix>0.1.0</VersionPrefix>
     <VersionSuffix>dev.1</VersionSuffix>
-    <!-- P9.1: no NuGet package is produced or published; P9.6 decides distribution. -->
-    <IsPackable>false</IsPackable>
-    <Description>Experimental, pre-alpha .NET wrapper over the sas-pairing native core (native ABI v1). Not production-ready.</Description>
+    <!-- P9-D-006: `dotnet pack` builds the experimental NuGet-format package SasPairing.0.1.0-dev.1.nupkg, distributed
+         only as a GitHub Actions artifact of one exact commit. It is not published to nuget.org or any feed, and it
+         contains no native library: the Windows x64 native bundle is a separate artifact, loaded from an explicit
+         absolute path. -->
+    <IsPackable>true</IsPackable>
+    <Description>Experimental, pre-alpha .NET wrapper over the sas-pairing native core (native ABI v1). Not production-ready, not audited, and not production-security approved. The native library is not included: obtain the matching Windows x64 native bundle from the same commit and pass its absolute path to SasPairingRuntime.Create.</Description>
     <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/Soneka96/sas-pairing</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Soneka96/sas-pairing</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <!-- The raw ABI v1 interop under Interop/ needs pointers, fixed buffers, and function pointers. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -19,6 +25,11 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="SasPairing.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The package README is dotnet/README.md itself, never a second copy. -->
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 
 </Project>

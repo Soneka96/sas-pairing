@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- P9-D-006: an external consumer of the GENERATED package. It references SasPairing only as a package from the
+       local feed of the staged managed bundle (nuget.config), never as a project, and is not part of SasPairing.sln:
+       it can be restored only after `dotnet pack` and staging. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <!-- Every commit packs a different SasPairing.0.1.0-dev.1.nupkg (its nuspec names the commit), so no lock
+         file can pin its content hash; the feed and the package folder are local and isolated instead. -->
+    <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SasPairing" Version="0.1.0-dev.1" />
+  </ItemGroup>
+
+</Project>
