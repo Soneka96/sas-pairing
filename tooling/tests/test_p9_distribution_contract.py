@@ -268,7 +268,8 @@ class CurrentDocuments(unittest.TestCase):
         readme = read(os.path.join(ROOT, "README.md"))
         self.assertIn("P9 experimental .NET package complete", readme)
         self.assertIn("P9 (.NET package) is complete", readme)
-        self.assertIn("P10 (consumer integration / DovahLink example) is next", readme)
+        # P10 has started since P9 closed (P10.1 complete, P10-D-001); P9 stays complete.
+        self.assertIn("P10 (consumer integration / DovahLink example) is in progress", readme)
         self.assertIn("**.NET / C#:** implemented experimentally in P9", readme)
         for required in (
             "no qualified professional audit or formal verification is claimed",
@@ -281,10 +282,10 @@ class CurrentDocuments(unittest.TestCase):
         self.assertIn("P9 ✅ .NET Package", roadmap)
         self.assertIn("P10 🔵 Consumer Integration / DovahLink Example", roadmap)
         self.assertIn("✅ **P9 COMPLETE — .NET PACKAGE + WINDOWS X64 NATIVE DISTRIBUTION.**", read(os.path.join(ROOT, "roadmap", "P9-dotnet-package.md")))
-        self.assertIn("🔵 Next (not started).", read(os.path.join(ROOT, "roadmap", "P10-consumer-integration.md")))
+        self.assertIn("🔵 **In progress — P10.1 complete.**", read(os.path.join(ROOT, "roadmap", "P10-consumer-integration.md")))
         status = read(os.path.join(ROOT, "docs", "protocol-status.md"))
         self.assertIn("**P9 COMPLETE — .NET PACKAGE + WINDOWS X64 NATIVE DISTRIBUTION**", status)
-        self.assertIn("**P10 (consumer integration / DovahLink example) is next**", status)
+        self.assertIn("**P10 (consumer integration / DovahLink example) is in progress**", status)
         self.assertIn("**Status: P9 COMPLETE — .NET PACKAGE + WINDOWS X64 NATIVE DISTRIBUTION.**", current_text("docs/p9-dotnet-package/README.md"))
         self.assertIn("## Current state (P9 complete)", read(os.path.join(ROOT, "dotnet", "README.md")))
         self.assertIn("P9 COMPLETE — .NET PACKAGE + WINDOWS X64 NATIVE DISTRIBUTION", read(os.path.join(ROOT, "ai", "context", "project.md")))
