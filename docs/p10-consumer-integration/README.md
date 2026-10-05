@@ -21,13 +21,13 @@ The roadmap and the increment plan are in [roadmap/P10-consumer-integration.md](
 | Phase | [P10 — Consumer Integration](../../roadmap/P10-consumer-integration.md) |
 | Branch | `feature/p10-consumer-integration`, the one long-lived P10 branch; no per-increment branches; one P10 pull request only after P10 closes |
 | `main` baseline | `b938016d1de53d3e269fe0840485fbd3dc715fd7`, the merge of pull request #15 (P9: complete .NET package and Windows x64 native distribution) |
-| DovahLink (read only) | `Soneka96/DovahLink` `main` `4a69ee5057029878200b6e16614f67a136e3e032` (merge of DovahLink pull request #117, 2026-10-04), read from a clean local clone whose `main` equals its `origin/main`; P10.1 did not create a branch, commit, or change there |
+| DovahLink (read only) | `Soneka96/DovahLink` `main` `9f4e925cc8dcba0db37d1bd7d38b39f0927b9387` (merge of DovahLink pull request #118, "Feature/world context foundation", 2026-10-05), fetched directly from GitHub by P10.1.1. P10.1 read `main` `4a69ee5057029878200b6e16614f67a136e3e032` (merge of pull request #117, 2026-10-04) from a local clone; the delta between the two changes no pairing, authentication, or trust fact ([P10.1.1 evidence](#p1011-evidence)). Neither increment created a branch, commit, or change in DovahLink |
 
 ## Increments
 
 | Increment | Scope | Decision | State |
 |---|---|---|---|
-| P10.1 | Consumer boundary, platform boundary, ABI-v1 sufficiency, PN / WE / AB classification, Android blocker register, P10 plan | P10-D-001 | Complete; awaiting independent review |
+| P10.1 | Consumer boundary, platform boundary, ABI-v1 sufficiency, PN / WE / AB classification, Android blocker register, P10 plan | P10-D-001 | Complete; P10.1.1 reconciled the DovahLink baseline and the experiment wording; awaiting independent review |
 | P10.2 | DovahLink authentication / trust audit with a required verdict; canonical Bootstrap mapping; proof-of-possession boundary | — | Next |
 | P10.3 | Host integration (.NET, Windows) | — | Planned |
 | P10.4 | Dart / Flutter client integration (Windows) | — | Planned |
@@ -39,7 +39,7 @@ The roadmap and the increment plan are in [roadmap/P10-consumer-integration.md](
 ## P10.1 results
 
 - **Boundary.** `sas-pairing` owns the protocol, cryptography, SAS, transcript, `ceremony_identity`, authenticated Bootstrap and result data, accounting, result lifetime, and failure semantics; DovahLink owns identities and keys, proof of possession, pending authorization, Pair / Reject / Block, KnownHost / KnownDevice, reconnect, sessions, discovery, and UX ([P10-D-001](decisions.md#p10-d-001--consumer-boundary-platform-boundary-and-portability-discipline)). DovahLink's own architecture already draws the same line.
-- **ABI-v1 verdict: ABI-V1-P10-B.** ABI v1 appears sufficient for the P10 Windows integration, but named assumptions need P10 experiments before major integration ([portability §9](portability-assessment.md#9-abi-v1-p10-assessment)). The main finding: ABI v1 is listen-only (connections come only from a caller-bound listener's accept), while the DovahLink client connects out to the Host; the proposed answer is an in-process byte-transparent loopback relay in the client adapter (experiment E-02), with a STOP-and-report rule if no safe adapter exists. Second finding: the result returns the peer Bootstrap only as its canonical frame (E-13, P10-OD-13).
+- **ABI-v1 verdict: ABI-V1-P10-B.** ABI v1 appears sufficient for the P10 Windows integration, but named assumptions need P10 experiments before major integration ([portability §9](portability-assessment.md#9-abi-v1-p10-assessment)). The main finding: ABI v1 is listen-only (connections come only from a caller-bound listener's accept), while the DovahLink client connects out to the Host; an in-process byte-transparent loopback relay in the client adapter is a plausible public-API adapter path, requiring experiment E-02 and unproven until it passes, with a STOP-and-report rule if no safe adapter exists. Second finding: the result returns the peer Bootstrap only as its canonical frame; a consumer-side decode or exact re-encode-and-compare is a plausible public-API adapter path, requiring experiment E-13 and unproven until it passes (P10-OD-13).
 - **Portability.** Consumer concepts (identities, Bootstrap bytes, shared context, `ceremony_identity`, the result's meaning, the SAS string, authorization, trust, proof of possession, reconnect) are PN; the listener tokens, WinSock handles, `DuplicateAndClose`, the `WSAPoll` owner loop, the Windows lock-file authority lease, and DLL packaging are WE and can stay below adapters; concrete Android blockers are the non-Windows authority lease and carrier (both fail closed today), the Windows-only carrier entry of the ABI, the Windows listener tokens, and the missing Android artifact ([portability §14](portability-assessment.md#14-concrete-android-blocker-register)).
 - **DovahLink facts that shape P10** (not a verdict): pairing today is a Host-generated six-digit code that issues a bearer credential; no Host or Client long-term key exists in DovahLink code; reconnect uses that bearer credential; the public transport is loopback-only; DovahLink has selected, but not implemented, "evidence → pending approval for the exact attempt → Pair / Reject / Block → trust" ([consumer boundary §12](consumer-boundary.md#12-dovahlink-current-state-evidence)).
 - **No STOP condition hit** ([portability §17](portability-assessment.md#17-stop-conditions-review)).
@@ -65,3 +65,34 @@ Checks run for P10.1:
 | GitHub Actions on the P10.1 head `05373ad` (the change to `tooling/tests/**` triggers every workflow) | Green in all seven jobs: `consistency`, `windows-core`, `unsupported-platform-fails-closed`, `dart-package (windows-latest)`, `dart-package (ubuntu-latest)`, `dotnet-package (windows-latest)`, `dotnet-package (ubuntu-latest)` |
 
 The only non-documentation change is the P9 status guard `tooling/tests/test_p9_distribution_contract.py`, whose three P10 assertions now pin "in progress" instead of "next", as P9.1 did for the P8 guard.
+
+### P10.1.1 evidence
+
+P10.1.1 (baseline reconciliation and evidence closure) corrects the P10.1 DovahLink baseline and the wording of two experiments. It changes no P10.1 conclusion, no decision, and no production code.
+
+**Live DovahLink `main`.** Fetched directly from `https://github.com/Soneka96/DovahLink.git` (a fresh clone, outside both repositories): `main` = `9f4e925cc8dcba0db37d1bd7d38b39f0927b9387`, the merge of DovahLink pull request #118 ("Feature/world context foundation", 2026-10-05), whose first parent is the P10.1 baseline `4a69ee5057029878200b6e16614f67a136e3e032`.
+
+**Delta `4a69ee5..9f4e925`.** Five commits (`2d3aa08` adapter log-noise reduction, `24bd640` world-context research notes, `3119b13` removal of temporary diagnostics, `73b334b` `player_location` state slice, `efbf632` location and game-time snapshots) and 64 changed files. They add two Snapshot state areas (`player_location`, `game_time`): Adapter capture code (`adapter/capture/`, `adapter/runtime/` character-capture and capture-router), two Host `ILiveCaptureHandler` classes (`GameTimeCaptureHandler.cs`, `PlayerLocationCaptureHandler.cs` under `host/DovahLink.Host/Adapter/Ipc/`), Host state records, catalog tokens 6 and 7 and DI registrations, SDK state modules and `DovahLinkCurrentHost` streams, protocol fixtures and the schema README rows, a world-context research deviation note, and rate-limited Adapter warnings with routine logs lowered to debug. Every changed file was inspected by name and the full diff searched for pairing, authentication, trust, credential, identity, transport, and key terms.
+
+**Pairing / authentication impact: none.** No file changed under `host/DovahLink.Host/{Pairing,Trust,Identity,Client}/`, `adapter/ipc/`, `sdk/dart/dovahlink_client/lib/src/{dovahlink_pairing.dart,persistence/,internal/session/}`, `lib/dovahlink_client_windows.dart`, `app/`, `Program.cs`, `ARCHITECTURE.md`, `AGENTS.md`, `ROADMAP.md`, `ai/context/` (including `security/identity-and-transport.md` and `protocol/security.md`), `roadmap/deviations/{initial-pairing-security/,current-execution-flow.md}`, or `roadmap/05a-android-wifi-development-path.md`, which is every DovahLink source P10.1 cited. The two new `Adapter/Ipc/` files are live-state capture handlers, not IPC message types, so the "no pairing decision message" fact holds. The repository-wide search for asymmetric key, X.509, `SslStream`, ECDSA, or SPKI use under `host/`, `sdk/`, and `app/lib` is still empty at `9f4e925`. Pairing, `clientId` / `hostId`, KnownHost / KnownDevice, credentials, reconnect, revoke / block, Pair / Reject / Block, security-gate documentation, pairing UI, transport security, and long-term keys are unchanged. The current-state table ([consumer boundary §12](consumer-boundary.md#12-dovahlink-current-state-evidence)) and its links are re-pinned to `9f4e925`; the P10.1 evidence above stays as read at `4a69ee5`.
+
+**ABI-v1 verdict: ABI-V1-P10-B, unchanged.** It is not promoted to A, because E-02 (client relay), E-13 (peer Bootstrap decode or exact compare), E-03, and E-04 remain unproven. It is not demoted to C, because no concrete P10 Windows requirement has been shown to be inexpressible through ABI v1.
+
+**Experiment wording.** Statements about the client loopback relay and consumer-side peer-Bootstrap access now describe a plausible public-API adapter path that requires E-02 or E-13 and is unproven until that experiment passes, in this README, [P10-OD-09 and P10-OD-13](decisions.md#pending-owner-decisions), [portability §4, §9, and §17](portability-assessment.md#9-abi-v1-p10-assessment), and the P10.4 scope in the [roadmap](../../roadmap/P10-consumer-integration.md). No ABI change, ABI-v2 proposal, or relay implementation is made.
+
+**P10-D-001 revalidated, unchanged:** Windows-only P10 implementation with a platform-neutral consumer and domain boundary; PN / WE / AB classification; `PairingResult` as local completion only; `CeremonyIdentity` binding to the exact attempt; proof of possession, Pair / Reject / Block, and durable trust owned by DovahLink; normal reconnect separate from SAS; no speculative ABI v2; P10.8 owns the final Android classification.
+
+**Working tree.** The untracked `examples/` directory noted after P10.1 contained only 361 empty directories left by a local .NET consumer restore (no files, never tracked); it was removed, and `git status --short` is empty.
+
+Diff gates against `b938016`: `git diff b938016 -- core`, `-- dart/lib`, and `-- dotnet/src` are empty. DovahLink: no branch, commit, or change; its live `main` was read from a separate scratch clone.
+
+Checks run for P10.1.1:
+
+| Check | Result |
+|---|---|
+| Required files and public status (the `consistency.yml` script, run locally) | Pass: 45 files present and non-empty; every required README and license phrase present |
+| `python tooling/check_markdown_links.py` | Pass: 1,509 internal links in 83 Markdown files, 0 broken |
+| `python -m unittest discover -s tooling/tests` | Pass: 111 tests (7 skipped locally because they need the staged CI artifacts; they run in the Windows Dart and .NET jobs) |
+| `git diff --check` | Pass |
+
+GitHub Actions on the P10.1.1 head are reported with the increment, because a commit cannot name its own SHA. The change touches only Markdown, so only the repository-consistency and Rust-core workflows trigger (`consistency`, `windows-core`, `unsupported-platform-fails-closed`).

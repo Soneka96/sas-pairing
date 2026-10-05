@@ -25,7 +25,7 @@ The library is meant to be reused without making one application's policy part o
 
 ## Inputs / prerequisites
 
-The frozen native ABI v1 ([P7](P7-native-abi.md)), the Dart package ([P8](P8-dart-package.md)) and the .NET package ([P9](P9-dotnet-package.md)), with Windows x64 as the only pairing platform; DovahLink's current Host, SDK, and app, read at `main` `4a69ee5057029878200b6e16614f67a136e3e032` for P10.1.
+The frozen native ABI v1 ([P7](P7-native-abi.md)), the Dart package ([P8](P8-dart-package.md)) and the .NET package ([P9](P9-dotnet-package.md)), with Windows x64 as the only pairing platform; DovahLink's current Host, SDK, and app, read at `main` `9f4e925cc8dcba0db37d1bd7d38b39f0927b9387` (P10.1 read `4a69ee5`; P10.1.1 reconciled the baseline with no change to any P10.1 conclusion).
 
 ## Phase rules (P10-D-001)
 
@@ -80,7 +80,7 @@ The frozen native ABI v1 ([P7](P7-native-abi.md)), the Dart package ([P8](P8-dar
 
 1. **Goal.** Integrate the Dart `sas_pairing` package into the DovahLink client (Windows desktop) with one integration owner (runtime, authority, host, drive, runs, presentation, results) that translates into SDK and Flutter state; UI gets domain pairing state, never FFI resources.
 2. **Why it exists.** The client is the other endpoint; its owner-isolate and connection-topology questions have no evidence yet.
-3. **Scope.** Experiment E-02 first (the in-process loopback relay for outbound reachability, P10-OD-09); the WinSock listener creation in the Windows adapter; the owner isolate and message façade (P10-OD-03, E-04); placement in the SDK (P10-OD-01); E-08 architecture tests.
+3. **Scope.** Experiment E-02 first (the in-process loopback relay for outbound reachability, a plausible but unproven public-API adapter path, P10-OD-09); the WinSock listener creation in the Windows adapter; the owner isolate and message façade (P10-OD-03, E-04); placement in the SDK (P10-OD-01); E-08 architecture tests.
 4. **Out of scope.** Android; the final comparison UX (P10.5); Pair and trust (P10.6).
 5. **Security invariants.** No `SasPairing*`, socket, handle, pointer, or DLL path above the SDK adapter; one native image, initialized by one isolate; the relay never parses, builds, or alters a frame; no frame parsing except the P10.2-approved Bootstrap access.
 6. **Main areas / files.** DovahLink `sdk/dart/dovahlink_client` (its Windows entry library and platform ports), `app/lib/features/pairing` (state mapping only), `app/windows` packaging.
