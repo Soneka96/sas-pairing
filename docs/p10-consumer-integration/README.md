@@ -110,3 +110,48 @@ Checks run for P10.1.1:
 | `git diff --check` | Pass |
 
 GitHub Actions on the P10.1.1 head are reported with the increment, because a commit cannot name its own SHA. The change touches only Markdown, so only the repository-consistency and Rust-core workflows trigger (`consistency`, `windows-core`, `unsupported-platform-fails-closed`).
+
+### P10.2 evidence
+
+**Starting state.** `feature/p10-consumer-integration` at `2869089da16655efe26b25ce713ba36161787f96`, `main` `b938016d1de53d3e269fe0840485fbd3dc715fd7`, 3 ahead and 0 behind, no P10 pull request (the public GitHub API lists none for the branch). P10.1 accepted.
+
+**Live DovahLink.** A fresh clone of `https://github.com/Soneka96/DovahLink.git`, outside both repositories, gave `main` = `9f4e925cc8dcba0db37d1bd7d38b39f0927b9387`, the P10.1.1 baseline, so no reconciliation was needed. Nothing was branched, committed, or changed in DovahLink. Sources reviewed: [authentication audit §3](authentication-audit.md#3-sources-reviewed).
+
+**Owner decisions (2026-10-05, taken during P10.2):** ECDSA P-256 for the Host key as well as the Client key (P10-OD-05); the authentication replacement accepted into P10, with authenticated transport as a separate increment (P10.5A); the binary RFC 9562 UUID form of `applicationIdentity` (P10-OD-04).
+
+**Cross-language evidence.** A scratch .NET 10 program (SDK 10.0.401, not committed) imported and re-exported the SPKI of each of the three test keys byte for byte, verified a signature made with each published test scalar, and printed `Guid.ToByteArray()` versus `TryWriteBytes(bigEndian: true)` for both vector UUIDs; vector V04 records the output.
+
+**Vector verifier.** `tooling/tests/test_p10_dovahlink_bootstrap_mapping.py`: 35 tests, green. Its Bootstrap frame encoder first reproduces the core-generated Initiator and Responder frames of `vectors/p3-remote-vodozemac-draft-01.json`.
+
+**Mutations.** Each was applied in place, run against the verifier, and restored (the baseline was green before and after):
+
+| Mutation | Result | Failing tests |
+|---|---|---|
+| A — `.NET Guid.ToByteArray()` bytes in `applicationIdentity` | Killed | host / client vectors, byte-order trap, role separation, E-13 comparison, binary-form guard |
+| B — role byte removed | Killed | same six |
+| C — JSON serialization of `applicationIdentity` | Killed | same six plus the one-binary-form test |
+| D — SHA-256 fingerprint in place of the SPKI | Killed | `test_every_bootstrap_public_key_is_the_full_canonical_spki`, host vector |
+| E — bearer-shaped credential in a Bootstrap field | Killed | `test_bootstrap_fields_carry_no_secret_material`, client vector |
+| F — peer-copied `sharedContext` | Killed | `test_a_received_peer_value_never_becomes_the_local_context` |
+| G — `request_id` as pending-authorization key | Killed | `test_request_id_is_never_the_authorization_key`, stale-approval test |
+| H — local result → `Paired` transition | Killed | `test_local_result_never_becomes_trust_directly` |
+| I — bearer labelled as proof of possession | Killed | `test_bearer_material_is_never_proof_of_possession` |
+| J — target ECDSA PoP marked implemented | Killed | `test_target_design_is_not_current_implementation` |
+| K — endpoint in the durable KnownDevice identity | Killed | `test_durable_identity_never_includes_an_endpoint` |
+| L — Bootstrap accepted on `applicationIdentity` only | Killed | `test_every_one_field_change_is_rejected`, `test_one_byte_anywhere_in_the_frame_is_rejected` |
+| M — pending authorization keyed by `clientId` | Killed | `test_a_stale_approval_cannot_authorize_a_replacement_ceremony`, request-ID test |
+| N — SAS inserted into normal reconnect | Killed | `test_initial_pairing_and_normal_reconnect_are_separate` |
+
+**Diff gates** against `b938016`: `git diff b938016 -- core`, `-- dart/lib`, and `-- dotnet/src` are empty; the header and the ABI v1 manifest are unchanged. P10.2 adds no export, result field, wrapper decoder, or ABI version.
+
+Checks run for P10.2:
+
+| Check | Result |
+|---|---|
+| Required files and public status (the `consistency.yml` script, run locally; the two new documents and the vector file added to its required list) | Pass: 48 files present and non-empty; every required README and license phrase present |
+| `python tooling/check_markdown_links.py` | Pass: 1,599 internal links in 85 Markdown files, 0 broken |
+| `python -m unittest discover -s tooling/tests` | Pass: 146 tests (7 skipped locally because they need the staged CI artifacts) |
+| `git diff --check` | Pass |
+| GitHub Actions on the analysis head `25ee176` (the change to `tooling/tests/**` triggers every workflow) | Green in all seven jobs: `consistency`, `windows-core`, `unsupported-platform-fails-closed`, `dart-package (windows-latest)`, `dart-package (ubuntu-latest)`, `dotnet-package (windows-latest)`, `dotnet-package (ubuntu-latest)` |
+
+Commits: `2f16681` (`docs: audit dovahlink authentication and map bootstrap`), `25ee176` (`test: freeze dovahlink bootstrap mapping vectors`). GitHub Actions on this evidence commit are reported with the increment, because a commit cannot name its own SHA.
