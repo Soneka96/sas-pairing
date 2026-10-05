@@ -377,7 +377,26 @@ public sealed partial class ArchitectureTests
         Assert.Equal("SasPairing", Property(project, "AssemblyName"));
         Assert.Equal("0.1.0", Property(project, "VersionPrefix"));
         Assert.Equal("dev.1", Property(project, "VersionSuffix"));
-        Assert.Equal("false", Property(project, "IsPackable"));
+        // P9-D-006: packable as the experimental NuGet-format package (never published), with the package README
+        // being dotnet/README.md itself, the dual license expression, and the repository metadata.
+        Assert.Equal("true", Property(project, "IsPackable"));
+        Assert.Equal("README.md", Property(project, "PackageReadmeFile"));
+        Assert.Equal("MIT OR Apache-2.0", Property(project, "PackageLicenseExpression"));
+        Assert.Equal("https://github.com/Soneka96/sas-pairing", Property(project, "RepositoryUrl"));
+        Assert.Equal("https://github.com/Soneka96/sas-pairing", Property(project, "PackageProjectUrl"));
+        Assert.Equal("git", Property(project, "RepositoryType"));
+        Assert.Equal("true", Property(project, "PublishRepositoryUrl"));
+        XElement readme = Assert.Single(project.Descendants("None"));
+        Assert.Equal(@"..\..\README.md", readme.Attribute("Include")?.Value);
+        Assert.Equal("true", readme.Attribute("Pack")?.Value);
+        Assert.Equal(@"\", readme.Attribute("PackagePath")?.Value);
+        Assert.Empty(project.Descendants("RepositoryCommit")); // supplied per commit by CI, never hard-coded
+        Assert.Empty(project.Descendants("IncludeSymbols"));
+        Assert.Empty(project.Descendants("RuntimeIdentifier"));
+        Assert.Empty(project.Descendants("RuntimeIdentifiers"));
+        Assert.Empty(project.Descendants("TargetFrameworks"));
+        XElement tests = XElement.Load(FrozenAbi.PathOf("dotnet", "tests", "SasPairing.Tests", "SasPairing.Tests.csproj"));
+        Assert.Equal("false", Property(tests, "IsPackable"));
         Assert.Equal("true", Property(project, "AllowUnsafeBlocks"));
         Assert.Equal("true", Property(project, "GenerateDocumentationFile"));
         Assert.Empty(project.Descendants("PackageReference"));
@@ -416,13 +435,23 @@ public sealed partial class ArchitectureTests
     {
         string workflow = File.ReadAllText(FrozenAbi.PathOf(".github", "workflows", "dotnet-package.yml"));
         int build = workflow.IndexOf("cargo build --manifest-path core/Cargo.toml --release --features native-abi", StringComparison.Ordinal);
-        int test = workflow.IndexOf("dotnet test --no-build", StringComparison.Ordinal);
-        Assert.True(build > 0 && test > build, "the native artifact must be built before the tests");
+        int stage = workflow.IndexOf("python tooling/package_dotnet_native.py stage", StringComparison.Ordinal);
+        int test = workflow.IndexOf("dotnet test -c Release --no-build", StringComparison.Ordinal);
+        int pack = workflow.IndexOf("dotnet pack", StringComparison.Ordinal);
+        int upload = workflow.IndexOf("uses: actions/upload-artifact@v7", StringComparison.Ordinal);
+        Assert.True(build > 0 && stage > build && test > stage, "the native artifact must be built and staged before the tests");
+        Assert.True(pack > workflow.LastIndexOf("--filter-class", StringComparison.Ordinal) && upload > pack, "the tested build is packed, then uploaded");
+        Assert.DoesNotContain("dotnet test --no-build", workflow, StringComparison.Ordinal); // every test runs in Release
         foreach (string required in new[]
         {
             "windows-latest", "ubuntu-latest", "actions/setup-dotnet@v6", "global-json-file: dotnet/global.json",
-            "dotnet restore --locked-mode", "dotnet build --no-restore -warnaserror", "dotnet format --verify-no-changes",
-            "SAS_PAIRING_NATIVE_LIBRARY: ${{ github.workspace }}/core/target/release/${{ matrix.artifact }}",
+            "dotnet restore --locked-mode", "dotnet format --verify-no-changes",
+            "SAS_PAIRING_NATIVE_LIBRARY: ${{ github.workspace }}/${{ matrix.tested_library }}",
+            "tested_library: dist/sas-pairing-dotnet-windows-x64-abi1/sas_pairing_core.dll",
+            "dotnet build -c Release --no-restore -warnaserror", "dotnet test -c Release --no-build",
+            "dotnet pack src/SasPairing/SasPairing.csproj -c Release --no-build --no-restore",
+            "-p:RepositoryCommit=\"$GITHUB_SHA\"", "tooling/package_dotnet_native.py", "tooling/package_dotnet_nuget.py",
+            "name: sas-pairing-dotnet-nuget-${{ github.sha }}", "name: sas-pairing-dotnet-windows-x64-abi1-${{ github.sha }}",
             "sas_pairing_core.dll", "libsas_pairing_core.so", "tooling/check_abi_exports.py",
             "--filter-class SasPairing.Tests.NativeArtifactTests", "--filter-class SasPairing.Tests.NativeLifecycleArtifactTests",
             "--filter-class SasPairing.Tests.NativeNetworkArtifactTests", "--filter-class SasPairing.Tests.NativeCeremonyArtifactTests",
@@ -432,8 +461,12 @@ public sealed partial class ArchitectureTests
             Assert.Contains(required, workflow, StringComparison.Ordinal);
         }
 
-        Assert.DoesNotContain("upload-artifact", workflow, StringComparison.Ordinal);
-        Assert.DoesNotMatch(new Regex(@"dotnet (nuget )?push|dotnet pack"), workflow);
+        // P9-D-006: exactly the two exact-commit CI artifacts, uploaded from Windows push runs only; never a feed
+        // publication, release, or tag.
+        Assert.Equal(2, Regex.Count(workflow, @"uses: actions/upload-artifact@v7"));
+        Assert.Equal(3, Regex.Count(workflow, @"if: runner\.os == 'Windows' && github\.event_name == 'push'"));
+        Assert.Single(Regex.Matches(workflow, @"\bdotnet pack\b"));
+        Assert.DoesNotMatch(new Regex(@"(?i)\bnuget\s+push\b|NUGET_API_KEY|NUGET_AUTH_TOKEN|nuget\.pkg\.github\.com|\bgh\s+release\b|\bgit\s+tag\b|action-gh-release|contents:\s*write|packages:\s*write"), workflow);
         Assert.Matches(new Regex(@"(?m)^permissions:\n  contents: read$"), workflow.Replace("\r\n", "\n", StringComparison.Ordinal));
     }
 

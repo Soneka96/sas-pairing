@@ -83,9 +83,13 @@ class Workflows(unittest.TestCase):
         return names.index(name)
 
     def test_exactly_one_upload_and_it_is_the_windows_bundle_of_the_exact_commit(self):
+        # P9-D-006 adds the two .NET artifacts in dotnet-package.yml (guarded by test_p9_distribution_contract.py);
+        # the Dart workflow still uploads exactly its one bundle, and no other workflow uploads anything.
         uploads = self.uploads()
-        self.assertEqual([path for path, _ in uploads], ["dart-package.yml"], uploads)
-        block = uploads[0][1]
+        self.assertEqual(sorted({path for path, _ in uploads}), ["dart-package.yml", "dotnet-package.yml"], uploads)
+        dart = [block for path, block in uploads if path == "dart-package.yml"]
+        self.assertEqual(len(dart), 1)
+        block = dart[0]
         self.assertIn("uses: actions/upload-artifact@v7", block)
         condition = step_if(block)
         self.assertIn("runner.os == 'Windows'", condition)
