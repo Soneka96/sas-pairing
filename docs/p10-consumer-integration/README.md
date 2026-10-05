@@ -54,4 +54,14 @@ Sources reviewed in DovahLink at `4a69ee5` (read only): `ARCHITECTURE.md`, `AGEN
 
 Diff gates against the baseline `b938016`: `git diff b938016 -- core`, `-- dart/lib`, and `-- dotnet/src` are empty (no production change); `core/include/sas_pairing.h` and the ABI v1 manifest are unchanged. DovahLink: no branch, commit, or file change.
 
-Checks run for P10.1 are recorded in the P10.1 report and summarized here once the pushed head's CI is green: repository consistency (required files, `tooling/check_markdown_links.py`, `python -m unittest discover -s tooling/tests`), and the triggered Rust core, Dart, and .NET workflows on the pushed head (their path filters include `tooling/tests/**`).
+Checks run for P10.1:
+
+| Check | Result |
+|---|---|
+| Required files and public status (the `consistency.yml` script, run locally; the four P10 documents added to its required list) | Pass: 45 files present and non-empty; every required README and license phrase present |
+| `python tooling/check_markdown_links.py` | Pass: 1,502 internal links in 83 Markdown files, 0 broken |
+| `python -m unittest discover -s tooling/tests` | Pass: 111 tests (7 skipped locally because they need the staged CI artifacts; they run in the Windows Dart and .NET jobs) |
+| `git diff --check` | Pass |
+| GitHub Actions on the P10.1 head `05373ad` (the change to `tooling/tests/**` triggers every workflow) | Green in all seven jobs: `consistency`, `windows-core`, `unsupported-platform-fails-closed`, `dart-package (windows-latest)`, `dart-package (ubuntu-latest)`, `dotnet-package (windows-latest)`, `dotnet-package (ubuntu-latest)` |
+
+The only non-documentation change is the P9 status guard `tooling/tests/test_p9_distribution_contract.py`, whose three P10 assertions now pin "in progress" instead of "next", as P9.1 did for the P8 guard.
