@@ -14,7 +14,7 @@ The experimental Dart package ([`dart/`](../dart/README.md), complete in P8) pro
 
 ## .NET wrapper
 
-The experimental .NET package ([`dotnet/`](../dotnet/README.md), in progress in P9) will provide an idiomatic C# API over the same native core through the frozen native ABI v1. It does not implement an independent production cryptographic protocol. Its private ABI v1 interop loads one native library from an explicit absolute path and keeps it loaded for the process lifetime ([P9-D-001](p9-dotnet-package/decisions.md#p9-d-001--net-abi-v1-binding-and-loader-architecture)); no public pairing API exists yet.
+The experimental .NET package ([`dotnet/`](../dotnet/README.md), complete in P9) provides an idiomatic C# API over the same native core through the frozen native ABI v1. It does not implement an independent production cryptographic protocol. Its private ABI v1 interop loads one native library from an explicit absolute path and keeps it loaded for the process lifetime ([P9-D-001](p9-dotnet-package/decisions.md#p9-d-001--net-abi-v1-binding-and-loader-architecture)). Its managed NuGet-format package contains no native library; the Windows x64 native library is distributed separately as an experimental CI artifact of the same commit and loaded from an explicit absolute path ([P9 final closure](p9-dotnet-package/final-closure.md)).
 
 ## Consumer application
 

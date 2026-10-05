@@ -267,9 +267,9 @@ class CurrentDocuments(unittest.TestCase):
     def test_the_status_documents_record_p8_complete_and_p9_next(self):
         readme = read(os.path.join(ROOT, "README.md"))
         self.assertIn("P8 (Dart package) is complete", readme)
-        # P9 has started since P8 closed (P9.1); P8 stays complete.
-        self.assertIn("P9 (.NET package) is in progress", readme)
-        self.assertIn("**.NET / C#:** in progress in P9", readme)
+        # P9 has completed since P8 closed (test_p9_distribution_contract.py guards it); P8 stays complete.
+        self.assertIn("P9 (.NET package) is complete", readme)
+        self.assertIn("**.NET / C#:** implemented experimentally in P9", readme)
         for required in (
             "no qualified professional audit or formal verification is claimed",
             "This selection does not establish production security or approve production use.",
@@ -279,9 +279,9 @@ class CurrentDocuments(unittest.TestCase):
             self.assertIn(required, readme)
         roadmap = read(os.path.join(ROOT, "roadmap", "README.md"))
         self.assertIn("P8 ✅ Dart Package", roadmap)
-        self.assertIn("P9 🔵 .NET Package", roadmap)
+        self.assertIn("P9 ✅ .NET Package", roadmap)
         self.assertIn("✅ **P8 COMPLETE", read(os.path.join(ROOT, "roadmap", "P8-dart-package.md")))
-        self.assertIn("🔵 In progress", read(os.path.join(ROOT, "roadmap", "P9-dotnet-package.md")))
+        self.assertIn("✅ **P9 COMPLETE", read(os.path.join(ROOT, "roadmap", "P9-dotnet-package.md")))
         self.assertIn("**P8 COMPLETE — DART PACKAGE + WINDOWS X64 NATIVE DISTRIBUTION**", read(os.path.join(ROOT, "docs", "protocol-status.md")))
         changelog = read(os.path.join(ROOT, "CHANGELOG.md"))
         self.assertIn("No production release has been made", changelog)

@@ -2,16 +2,18 @@
 
 > **Experimental, pre-alpha, not production-ready.** Not production-security approved, not audited, and not formally verified. Do not use it to protect production systems.
 
-`SasPairing` (package ID, namespace, and assembly; version `0.1.0-dev.1`, `net10.0`) is the planned idiomatic .NET wrapper over the shared native security core, built in P9 ([P9 package](../docs/p9-dotnet-package/README.md), [decisions](../docs/p9-dotnet-package/decisions.md)). It binds the frozen [native ABI v1](../docs/p7-native-abi/abi-v1-manifest.md) and implements no protocol or cryptography itself: the Rust core is the only protocol implementation.
+`SasPairing` (package ID, namespace, and assembly; version `0.1.0-dev.1`, `net10.0`) is the implemented experimental .NET wrapper over the shared native security core, built in P9 ([P9 final closure](../docs/p9-dotnet-package/final-closure.md), [P9 package](../docs/p9-dotnet-package/README.md), [decisions](../docs/p9-dotnet-package/decisions.md), [changelog](CHANGELOG.md)). It binds the frozen [native ABI v1](../docs/p7-native-abi/abi-v1-manifest.md) and implements no protocol or cryptography itself: the Rust core is the only protocol implementation.
 
-## Current state (P9.5)
+## Current state (P9 complete)
+
+**P9 is complete** (P9.1–P9.6): the wrapper below exists, and it is distributed as two experimental GitHub Actions artifacts of one exact commit ([installation](#installation-experimental-ci-artifacts)): the NuGet-format package `SasPairing.0.1.0-dev.1.nupkg`, which contains **no native library**, and the separate Windows x64 native bundle. Nothing is published to nuget.org or any other feed; there is no GitHub Release or tag.
 
 - The P9.1 foundation exists: the solution [`SasPairing.sln`](SasPairing.sln), the library [`src/SasPairing`](src/SasPairing/SasPairing.csproj), and its tests [`tests/SasPairing.Tests`](tests/SasPairing.Tests/SasPairing.Tests.csproj). The ABI v1 binding and its loader stay **internal**: the exact constants, records, and 25-export function table, and a loader that opens one native library from an explicit absolute path, requires 64-bit pointers, all 25 exports, and ABI version 1, and keeps the library loaded until the process exits ([P9-D-001](../docs/p9-dotnet-package/decisions.md#p9-d-001--net-abi-v1-binding-and-loader-architecture)).
 - **P9.2: the runtime, authority, and host lifecycle** and its status and error model ([P9-D-002](../docs/p9-dotnet-package/decisions.md#p9-d-002--net-lifecycle-ownership-public-errors-and-fail-closed-state)).
 - **P9.3: the Windows listener handoff and the cooperative network driver** ([P9-D-003](../docs/p9-dotnet-package/decisions.md#p9-d-003--net-windows-listener-cooperative-drive-event-and-connection-ownership)): the binary `SasPairingBootstrap`, the one-use listener token, attach and detach, one bounded `Drive()` and one `RecheckAfterResume()`, drive events, and `IDisposable` connections. Nothing native is public: no handle, socket value, pointer, native record, or loader.
 - **P9.4: runs, the trusted-local ceremony, and SAS presentation** ([P9-D-004](../docs/p9-dotnet-package/decisions.md#p9-d-004--net-run-identity-explicit-ceremony-control-and-sas-binding)): one `SasPairingRun` per exact native run, `StartInitiator`, the explicit exposure, SAS, BOOTSTRAP_MAC, and INITIATOR_FINISH steps, read-only SAS presentation, and decisions bound to the exact ceremony identity. A full ceremony can be completed through .NET on Windows.
 - **P9.5: the PairingResult API** ([P9-D-005](../docs/p9-dotnet-package/decisions.md#p9-d-005--net-pairingresult-ownership-reads-and-immutable-snapshots)): each local result arrives as `SasPairingEvent.Result`, owned by the runtime, read with `Read()` into an immutable detached `SasPairingResultData`, and closed with `Dispose()`. A result is **local completion only**.
-- **No NuGet package exists.** The project is not packable and nothing is published; P9.6 decides distribution. No native binary is committed or bundled.
+- **P9.6: distribution** ([P9-D-006](../docs/p9-dotnet-package/decisions.md#p9-d-006--net-managed-package-native-artifact-distribution-and-p9-closure)): the project is packable (`dotnet pack`) into the experimental package `SasPairing.0.1.0-dev.1.nupkg` (`net10.0`, license `MIT OR Apache-2.0`, this README, the exact repository commit, no package dependency, no native binary), and CI distributes it with the separately staged Windows x64 native bundle. No native binary is committed or embedded in the package, and nothing is published.
 
 ## API
 
@@ -256,24 +258,49 @@ Disposing a runtime and creating another reuses the same loaded native library a
 - **Windows (x64):** the lifecycle, the listener and network path, the trusted-local ceremony, and the result API work through the public API (the Windows TCP carrier the native core defines).
 - **Linux (x64):** the package builds, the ABI v1 library loads, and a runtime can be created, but authority registration fails closed with `UnsupportedPlatform` and `SasPairingWindowsListenerSocket.FromSocket` throws `PlatformNotSupportedException`. The network, ceremony, and result wrappers' fake and FFI tests run there; no result can be produced, and Linux pairing is not supported.
 
+## Installation (experimental CI artifacts)
+
+> **Nothing is published to nuget.org** or any other package feed, and there is no GitHub Release or tag. These are experimental, pre-alpha, unsigned CI artifacts with finite retention (90 days); they are not a production release.
+
+Each push of a commit that the `.NET package` workflow builds and tests on Windows uploads two GitHub Actions artifacts, named with the full 40-hex-digit commit SHA ([P9-D-006](../docs/p9-dotnet-package/decisions.md#p9-d-006--net-managed-package-native-artifact-distribution-and-p9-closure)):
+
+| Artifact | Contents |
+|---|---|
+| `sas-pairing-dotnet-nuget-<commit>` | `SasPairing.0.1.0-dev.1.nupkg` (the managed `net10.0` assembly, its XML documentation, and this README; **no native library**), `ARTIFACT-MANIFEST.json`, `SHA256SUMS.txt`, `README.md` |
+| `sas-pairing-dotnet-windows-x64-abi1-<commit>` | `sas_pairing_core.dll` (Windows x64, native ABI v1, 25 exports, **unsigned**), `ARTIFACT-MANIFEST.json`, `SHA256SUMS.txt`, `README.md`, `LICENSE-MIT`, `LICENSE-APACHE`, `THIRD-PARTY-NOTICES.md`, `sas_pairing.h`, `abi-v1-manifest.md` |
+
+1. Download `sas-pairing-dotnet-nuget-<commit>` from the repository's Actions run of that commit (a GitHub sign-in is required).
+2. Download `sas-pairing-dotnet-windows-x64-abi1-<same commit>` from the **same** run. Use both artifacts of the **same exact commit**; never mix a package and a native library of different commits.
+3. Verify both: each `ARTIFACT-MANIFEST.json` names that commit, and `sha256sum -c SHA256SUMS.txt` (or PowerShell `Get-FileHash -Algorithm SHA256`) matches. From a checkout of that commit, `python tooling/package_dotnet_nuget.py verify --bundle <dir> --git-sha <commit>` and `python tooling/package_dotnet_native.py verify --bundle <dir> --git-sha <commit>` check everything. **A checksum is integrity metadata, not a signature**: it does not prove who built the files, and the package and the DLL are not signed.
+4. Reference the local package: add the extracted `sas-pairing-dotnet-nuget-<commit>` directory as a local package source (for example in a `nuget.config`), then `<PackageReference Include="SasPairing" Version="0.1.0-dev.1" />`. Every commit packs a different file under the same version, and NuGet caches a restored version: clear the cached `saspairing/0.1.0-dev.1` (or use a project-local `globalPackagesFolder`) when you switch commits.
+5. Extract the native bundle once, to a location your application controls.
+6. Pass the **absolute path** of its `sas_pairing_core.dll` to `SasPairingRuntime.Create(nativeLibraryPath)`. The package never searches `PATH`, the application, current, or package directory, or `runtimes/`, and never downloads anything.
+7. Keep that one image resident: one native image per process, never replaced or reloaded while the process runs; `SasPairingStatus.Fatal` requires an OS process restart.
+
+Windows x64 is the only pairing distribution target. The package can be referenced on other platforms, but no Linux, macOS, mobile, ARM64, or 32-bit native artifact is distributed and pairing there is not supported.
+
 ## Build and test
 
-Requires the .NET 10 SDK pinned in [`global.json`](global.json) (`10.0.401`, later 10.0.4xx patches accepted). From `dotnet/`:
+Requires the .NET 10 SDK pinned in [`global.json`](global.json) (`10.0.401`, later 10.0.4xx patches accepted). CI builds, tests, and packs the **Release** configuration. From `dotnet/`:
 
 ```bash
 dotnet restore --locked-mode
 ```
 
 ```bash
-dotnet build --no-restore -warnaserror
+dotnet build -c Release --no-restore -warnaserror
 ```
 
 ```bash
-dotnet test --no-build
+dotnet test -c Release --no-build
 ```
 
 ```bash
 dotnet format --verify-no-changes
 ```
 
-The real-native tests need the native library built from the same commit (`cargo build --manifest-path core/Cargo.toml --release --features native-abi` from the repository root) and its **absolute** path in `SAS_PAIRING_NATIVE_LIBRARY` (`core/target/release/sas_pairing_core.dll` on Windows, `libsas_pairing_core.so` on Linux). Without it they are skipped locally; under CI (`CI=true`) a missing library fails the run.
+```bash
+dotnet pack src/SasPairing/SasPairing.csproj -c Release --no-build --no-restore -o ../dist/pack
+```
+
+The real-native tests need the native library built from the same commit (`cargo build --manifest-path core/Cargo.toml --release --features native-abi` from the repository root) and its **absolute** path in `SAS_PAIRING_NATIVE_LIBRARY` (`core/target/release/sas_pairing_core.dll` on Windows, `libsas_pairing_core.so` on Linux; in Windows CI, the staged distribution copy). Without it they are skipped locally; under CI (`CI=true`) a missing library fails the run. The package-consumer smoke [`tests/SasPairing.PackageSmoke`](tests/SasPairing.PackageSmoke/Program.cs) is not part of the solution: it restores the staged package from `dist/sas-pairing-dotnet-nuget` only (see the `.NET package` workflow).
