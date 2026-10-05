@@ -2,6 +2,8 @@
 
 > **Pre-alpha. Analysis and design only.** This document is P10.1 evidence for [P10-D-001](decisions.md#p10-d-001--consumer-boundary-platform-boundary-and-portability-discipline). It changes no implementation, freezes no Bootstrap encoding, and issues no verdict on DovahLink's current authentication: that verdict belongs to P10.2 ([§14](#14-p102-authentication-audit-contract)). Nothing here is production-security approval.
 
+> **P10.2 update.** The audit this document asked for is [authentication-audit.md](authentication-audit.md) (verdict 🔴 REPLACEMENT REQUIRED, [P10-D-003](decisions.md#p10-d-003--dovahlink-authentication-disposition-and-pop-boundary)); the Bootstrap encoding is frozen in [bootstrap-mapping.md](bootstrap-mapping.md) ([P10-D-002](decisions.md#p10-d-002--canonical-dovahlink-bootstrap-v1-mapping)). The P10.1 text below is kept as recorded.
+
 Sources: this repository at `main` `b938016d1de53d3e269fe0840485fbd3dc715fd7`, and the DovahLink repository read only at `main` `9f4e925cc8dcba0db37d1bd7d38b39f0927b9387` (links to DovahLink below are pinned to that commit). P10.1 read `main` `4a69ee5057029878200b6e16614f67a136e3e032`; P10.1.1 reconciled the baseline to the live `main` above, and no DovahLink file cited here changed between the two commits ([README, P10.1.1 evidence](README.md#p1011-evidence)). DovahLink is a separate repository with its own workflow; P10.1 and P10.1.1 changed nothing in it.
 
 ## 1. Purpose
@@ -116,7 +118,7 @@ Note for P10.2: DovahLink's current public listener admits loopback peers only a
 
 ## 11. Bootstrap pre-assessment (not frozen)
 
-P10.1 does not freeze any encoding; P10.2 chooses deterministic canonical bytes ([P10-OD-04](decisions.md#pending-owner-decisions)). JSON is not chosen for convenience, and no protobuf, CBOR, or MessagePack is assumed. What each field must carry, with the DovahLink data that exists today:
+P10.1 does not freeze any encoding; P10.2 chooses deterministic canonical bytes ([P10-OD-04](decisions.md#pending-owner-decisions)). *Superseded by P10.2: the frozen bytes are in [bootstrap-mapping.md](bootstrap-mapping.md); this table is the P10.1 pre-assessment.* JSON is not chosen for convenience, and no protobuf, CBOR, or MessagePack is assumed. What each field must carry, with the DovahLink data that exists today:
 
 | Field (bound) | Must carry | Candidate DovahLink data (source) | Open points for P10.2 |
 |---|---|---|---|
@@ -218,3 +220,5 @@ Added by P10.1 from this assessment:
 - 🔴 **DOES NOT PROVIDE ADEQUATE AUTHENTICATION — REPLACEMENT REQUIRED**
 
 P10.1 chooses none of them. The facts in [§12](#12-dovahlink-current-state-evidence) (bearer credential, no long-term keys in code, six-digit code) are inputs to that audit, not its conclusion. No P10 integration implementation starts before the verdict is recorded.
+
+**Answered by P10.2:** every question A–AB, plus AC–AF, is answered in [authentication audit §13–§14](authentication-audit.md#13-audit-questions-aab); the verdict is 🔴 **DOES NOT PROVIDE ADEQUATE AUTHENTICATION — REPLACEMENT REQUIRED** ([audit §16](authentication-audit.md#16-verdict)).

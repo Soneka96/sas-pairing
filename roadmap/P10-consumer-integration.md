@@ -2,15 +2,16 @@
 
 ## Status
 
-🔵 **In progress — P10.1 complete.** P10 runs on the one branch `feature/p10-consumer-integration`, started from `main` `b938016` (the merge of the P9 pull request #15). P10.1 (consumer boundary and ABI-v1 / portability assessment, owner decision [P10-D-001](../docs/p10-consumer-integration/decisions.md#p10-d-001--consumer-boundary-platform-boundary-and-portability-discipline)) is complete and awaits independent review; **P10.2 starts only after that review accepts P10.1.** One P10 pull request is opened only after P10 closes. DovahLink changes, when they start, follow DovahLink's own branch and pull-request workflow in its own repository. The P10 package is [docs/p10-consumer-integration](../docs/p10-consumer-integration/README.md).
+🔵 **In progress — P10.2 complete.** P10 runs on the one branch `feature/p10-consumer-integration`, started from `main` `b938016` (the merge of the P9 pull request #15). P10.1 (consumer boundary and ABI-v1 / portability assessment, owner decision [P10-D-001](../docs/p10-consumer-integration/decisions.md#p10-d-001--consumer-boundary-platform-boundary-and-portability-discipline)) is complete and accepted. P10.2 (canonical DovahLink Bootstrap mapping and current authentication / trust audit, owner decisions [P10-D-002](../docs/p10-consumer-integration/decisions.md#p10-d-002--canonical-dovahlink-bootstrap-v1-mapping) and [P10-D-003](../docs/p10-consumer-integration/decisions.md#p10-d-003--dovahlink-authentication-disposition-and-pop-boundary)) is complete and awaits independent review; its verdict, 🔴 REPLACEMENT REQUIRED, refined P10.3–P10.8 below and added P10.5A. **P10.3 starts only after that review accepts P10.2.** One P10 pull request is opened only after P10 closes. DovahLink changes, when they start, follow DovahLink's own branch and pull-request workflow in its own repository. The P10 package is [docs/p10-consumer-integration](../docs/p10-consumer-integration/README.md).
 
 | Increment | Title | State |
 |---|---|---|
-| P10.1 | Consumer Boundary + ABI-v1 / Portability Assessment | ✅ Complete (awaiting independent review) |
-| P10.2 | Canonical DovahLink Bootstrap Mapping + Current Authentication / Trust Audit | 🔵 Next, after P10.1 is accepted |
-| P10.3 | Host Integration (.NET, Windows) | 🟡 Planned |
-| P10.4 | Dart / Flutter Client Integration (Windows) | 🟡 Planned |
+| P10.1 | Consumer Boundary + ABI-v1 / Portability Assessment | ✅ Complete (accepted) |
+| P10.2 | Canonical DovahLink Bootstrap Mapping + Current Authentication / Trust Audit | ✅ Complete (awaiting independent review) |
+| P10.3 | Host Integration (.NET, Windows) + Host Long-Term Key | 🔵 Next, after P10.2 is accepted |
+| P10.4 | Dart / Flutter Client Integration (Windows) + Client Long-Term Key | 🟡 Planned |
 | P10.5 | SAS Comparison + Ceremony-Bound Approval | 🟡 Planned |
+| P10.5A | Authenticated Transport (WSS / TLS 1.3, Host Key) | 🟡 Planned (added by P10.2) |
 | P10.6 | DovahLink Authorization + Durable Trust | 🟡 Planned |
 | P10.7 | Normal Trusted Reconnect | 🟡 Planned |
 | P10.8 | Integration Closure + Android Portability Report | 🟡 Planned |
@@ -33,7 +34,7 @@ The frozen native ABI v1 ([P7](P7-native-abi.md)), the Dart package ([P8](P8-dar
 - **Platform-neutral consumer boundary where practical.** DovahLink domain and trust services see consumer-level pairing concepts, never WinSock, `SafeSocketHandle`, listener tokens, native handles, FFI pointers, or DLL paths.
 - **Concrete Android blockers recorded; speculative portability work deferred.** No ABI v2, new export, or platform abstraction from speculation; an ABI change needs a concrete P10 gap and an owner decision.
 - **Library / consumer split.** `sas-pairing` owns the protocol, its cryptography, SAS, transcript, `ceremony_identity`, authenticated Bootstrap and result data, accounting, and failure semantics. DovahLink owns identities and keys, proof of possession, pending authorization, Pair / Reject / Block, KnownHost / KnownDevice, reconnect, sessions, discovery, and UX.
-- **Rolling horizon.** P10.1 and P10.2 are planned to execute; P10.3–P10.8 stay milestone-level enough for P10.2's findings to refine them. P11 is a milestone only ([roadmap](README.md#p11--android--cross-platform-native-support-milestone-only)); nothing beyond it is planned.
+- **Rolling horizon.** P10.1 and P10.2 executed; P10.2's verdict refined P10.3–P10.8 and added P10.5A (owner-approved 2026-10-05). DovahLink's part of each increment opens the named DovahLink security slice (S3–S7, S9, S10) as pre-alpha P10 work under DovahLink's own workflow; DovahLink's production gate stays closed. P11 is a milestone only ([roadmap](README.md#p11--android--cross-platform-native-support-milestone-only)); nothing beyond it is planned.
 
 ## Increments
 
@@ -59,28 +60,28 @@ The frozen native ABI v1 ([P7](P7-native-abi.md)), the Dart package ([P8](P8-dar
 5. **Security invariants.** No JSON or other convenience serializer chosen without analysis; exact bytes, never normalized; `sharedContext` independently supplied by each side and never copied from the peer; no secrets in Bootstrap fields; the verdict is not presumed.
 6. **Main areas / files.** `docs/p10-consumer-integration/` (an authentication audit, the Bootstrap mapping, new P10 decisions); DovahLink read only: `host/DovahLink.Host/{Pairing,Trust,Identity,Client/Authentication}`, `sdk/dart/dovahlink_client/lib/src/internal/{authentication,pairing,reconnect}`, `…/persistence`, `ai/context/security/`, `ai/context/protocol/security.md`.
 7. **Tests / evidence.** Every audit answer cited to source or tests; the encoding specified byte by byte with vectors; E-05, E-06, E-07, E-13 results; consistency checks.
-8. **Exit criteria.** The verdict recorded; the encoding and the proof-of-possession boundary frozen by owner decision; the listed owner decisions made or explicitly re-scheduled; P10.3–P10.8 refined from the findings.
+8. **Exit criteria.** The verdict recorded; the encoding and the proof-of-possession boundary frozen by owner decision; the listed owner decisions made or explicitly re-scheduled; P10.3–P10.8 refined from the findings. **Met:** verdict 🔴 REPLACEMENT REQUIRED ([audit](../docs/p10-consumer-integration/authentication-audit.md)); P10-D-002 and P10-D-003; OD-04, -05, -06 (model), -10, -13 resolved, OD-14 scope bytes decided (behaviour E-11 in P10.3); vectors and verifier; scope refined below.
 9. **STOP conditions.** DovahLink identity material cannot be represented within the Bootstrap bounds; proof of possession cannot be placed outside `sas-pairing`; the verdict is REPLACEMENT REQUIRED with a scope the owner has not accepted into P10; E-13 shows no safe way to read peer fields (then report an ABI-V1-P10-C candidate, design nothing).
 10. **Dependencies.** P10.1 accepted by independent review.
 
 ### P10.3 — Host Integration (.NET, Windows)
 
-1. **Goal.** Integrate the .NET `SasPairing` package into the DovahLink Host behind a Windows infrastructure adapter that owns native loading, runtime / authority / host lifetime, the pairing listener's creation and handoff, drive scheduling, event translation, and deterministic cleanup, and hands translated evidence to DovahLink services.
+1. **Goal.** Create the Host's long-term key (DovahLink S3) and integrate the .NET `SasPairing` package into the DovahLink Host behind a Windows infrastructure adapter that owns native loading, runtime / authority / host lifetime, the pairing listener's creation and handoff with the P10-D-002 Host Bootstrap, drive scheduling, event translation, and deterministic cleanup, and hands translated evidence to DovahLink services.
 2. **Why it exists.** The Host is the trust authority; its adapter is the first real consumer of the .NET package.
-3. **Scope.** The adapter and its owner service (P10-OD-01, -02); the pairing listener's exposure and endpoint (P10-OD-11); artifact consumption (P10-OD-12); authority scope behaviour (E-11); experiments E-03 and E-08.
+3. **Scope.** The Host long-term key: a persistent, non-exportable ECDSA P-256 key in Windows key storage, its 91-byte SPKI export, and identity-reset behaviour (S3, P10-D-002 item 3); the Host Bootstrap and the P10-D-002 frame encoder with its vectors in C#; the adapter and its owner service (P10-OD-01, -02); the pairing listener's exposure and endpoint (P10-OD-11); artifact consumption (P10-OD-12); the P10-D-002 authority scope and its runtime behaviour (E-11); experiments E-03 and E-08; the E-13 real-result regression (a real result's peer frame equals the expected frame).
 4. **Out of scope.** The comparison UX and Skyrim decision path (P10.5); Pair / Reject / Block and trust persistence (P10.6); the client.
 5. **Security invariants.** No Windows or native type in Host domain or trust services; one logical owner of the runtime tree; `FATAL` → supervised Host process restart, never a library reload; every result read once into evidence and disposed; statuses never become trust verdicts; no endpoint becomes identity.
 6. **Main areas / files.** DovahLink `host/DovahLink.Host` (a new infrastructure area chosen by P10-OD-01; `Composition/`; `Program.cs`), `host/DovahLink.Host.Tests`, DovahLink packaging tooling for the native DLL; `docs/p10-consumer-integration/` here for the record.
-7. **Tests / evidence.** Real-DLL Host tests: register, attach, drive, ceremony against a test peer, detach, shutdown while driving, `FATAL` path; lock-contention and cadence measurements (E-03); architecture tests (E-08); two Host processes with one scope (E-11).
+7. **Tests / evidence.** Real-DLL Host tests: register, attach, drive, ceremony against a test peer, detach, shutdown while driving, `FATAL` path; lock-contention and cadence measurements (E-03); architecture tests (E-08); two Host processes with one scope (E-11); the C# encoder against `dovahlink-bootstrap-v1.json` (including the `Guid` byte-order trap); key persistence across restart and non-exportability.
 8. **Exit criteria.** The adapter runs a real ceremony to a local result inside the Host and translates it into evidence; E-03, E-08, E-11 pass; owner decisions -01, -02, -11, -12 made.
 9. **STOP conditions.** The owner model cannot keep the Host responsive; any domain service needs a native or socket type; artifact consumption cannot meet DovahLink's repository rules.
 10. **Dependencies.** P10.2 verdict and mapping.
 
 ### P10.4 — Dart / Flutter Client Integration (Windows)
 
-1. **Goal.** Integrate the Dart `sas_pairing` package into the DovahLink client (Windows desktop) with one integration owner (runtime, authority, host, drive, runs, presentation, results) that translates into SDK and Flutter state; UI gets domain pairing state, never FFI resources.
+1. **Goal.** Create the Client's long-term key behind an SDK key-operations port (DovahLink S4) and integrate the Dart `sas_pairing` package into the DovahLink client (Windows desktop) with one integration owner (runtime, authority, host, drive, runs, presentation, results) that translates into SDK and Flutter state; UI gets domain pairing state, never FFI resources or keys.
 2. **Why it exists.** The client is the other endpoint; its owner-isolate and connection-topology questions have no evidence yet.
-3. **Scope.** Experiment E-02 first (the in-process loopback relay for outbound reachability, a plausible but unproven public-API adapter path, P10-OD-09); the WinSock listener creation in the Windows adapter; the owner isolate and message façade (P10-OD-03, E-04); placement in the SDK (P10-OD-01); E-08 architecture tests.
+3. **Scope.** Experiment E-02 first (the in-process loopback relay for outbound reachability, a plausible but unproven public-API adapter path, P10-OD-09); the Client long-term key: a persistent non-exportable ECDSA P-256 key behind an SDK key-operations port with a Windows implementation, SPKI export (S4); the Client Bootstrap and the P10-D-002 frame encoder with its vectors in Dart; the WinSock listener creation in the Windows adapter; the owner isolate and message façade (P10-OD-03, E-04); placement in the SDK (P10-OD-01); E-08 architecture tests; the E-13 real-result regression on the client.
 4. **Out of scope.** Android; the final comparison UX (P10.5); Pair and trust (P10.6).
 5. **Security invariants.** No `SasPairing*`, socket, handle, pointer, or DLL path above the SDK adapter; one native image, initialized by one isolate; the relay never parses, builds, or alters a frame; no frame parsing except the P10.2-approved Bootstrap access.
 6. **Main areas / files.** DovahLink `sdk/dart/dovahlink_client` (its Windows entry library and platform ports), `app/lib/features/pairing` (state mapping only), `app/windows` packaging.
@@ -102,31 +103,44 @@ The frozen native ABI v1 ([P7](P7-native-abi.md)), the Dart package ([P8](P8-dar
 9. **STOP conditions.** No safe Skyrim decision path; a UX that would let MATCH imply Pair.
 10. **Dependencies.** P10.3, P10.4.
 
+### P10.5A — Authenticated Transport (WSS / TLS 1.3, Host Key)
+
+1. **Goal.** Move the DovahLink public WebSocket to TLS 1.3 with a self-generated certificate on the Host's P10.3 key, so that one cryptographically bound session can carry Host verification and Client proofs: provisional acceptance during a user-started pairing, pinned verification for Known Hosts (DovahLink S6, with S5 pin plumbing).
+2. **Why it exists.** P10.2 found no Host authentication today; DovahLink's selected Host proof is TLS with the Host key, and its S6 guard makes that proof count only when the certificate SPKI equals the identity the pairing construction authenticated. The owner chose a separate increment so that P10.6 stays reviewable.
+3. **Scope.** Host: certificate generation and renewal around the persistent key, WSS on the loopback listener, TLS 1.3 only, no resumption or 0-RTT; client: TLS with SPKI extraction and comparison through the SDK, provisional mode only for user-started pairing, pinned mode for Known Hosts, typed Host-identity mismatch; the certificate SPKI exposed to the pairing flow as the Host `publicKey` candidate.
+4. **Out of scope.** Trust changes, PoP, pending authorization (P10.6); reconnect PoP (P10.7); LAN exposure (DovahLink's LAN gate).
+5. **Security invariants.** Provisional TLS establishes no trust and carries only restricted pairing traffic; a Known Host pin mismatch aborts before any Client proof or data; endpoints and names never identify; no reusable value substitutes for a fresh proof.
+6. **Main areas / files.** DovahLink `host/DovahLink.Host/Client/Transport`, Host key storage, SDK transport and platform ports, DovahLink protocol security documentation.
+7. **Tests / evidence.** A wrong pin fails before any application message; certificate renewal keeps the SPKI; provisional mode is unreachable outside user-started pairing; no resumption; the loopback restriction is unchanged.
+8. **Exit criteria.** Every public connection is TLS 1.3 with the Host key; pinned and provisional modes tested; DovahLink's current authentication still works over the new transport until the P10.7 cutover.
+9. **STOP conditions.** A platform TLS stack cannot expose or verify the exact certificate SPKI; provisional acceptance cannot be confined to pairing.
+10. **Dependencies.** P10.3 (Host key); P10.4 (SDK ports).
+
 ### P10.6 — DovahLink Authorization + Durable Trust
 
-1. **Goal.** After `sas-pairing` evidence: perform the proof of possession P10.2 requires, create a pending DovahLink authorization for the exact attempt, let Pair / Reject / Block decide it, and let Pair alone establish durable KnownHost / KnownDevice trust.
+1. **Goal.** After `sas-pairing` evidence: verify the exact peer frame, prove Host key possession (TLS SPKI equals the authenticated Host `publicKey`) and Client key possession (ceremony-bound pairing PoP), create a pending DovahLink authorization for the exact attempt, let Pair / Reject / Block decide it, and let Pair alone establish durable, key-bound KnownHost / KnownDevice trust ([P10-D-003](../docs/p10-consumer-integration/decisions.md#p10-d-003--dovahlink-authentication-disposition-and-pop-boundary)).
 2. **Why it exists.** A `PairingResult` is local evidence, never the trust verdict; DovahLink's selected architecture puts the trust decision here.
-3. **Scope.** Pending authorization model and storage; Pair / Reject / Block (including Block before completed trust, as DovahLink decides); KnownHost and KnownDevice bound to the authenticated key; asymmetric completion handling; administrative fences (revoke, block, reset during a pending attempt).
+3. **Scope.** The candidate exchange on the provisional session (Client SPKI before the ceremony); the exact peer-frame check; the Host TLS-key check; the Client pairing-PoP statement bytes, challenge rules, signature encoding, and C#↔Dart vectors; pending authorization keyed by `ceremony_identity` and fenced by the captured generation and incarnation; Pair / Reject / Block (including Block before completed trust, P10-OD-16); KnownDevice bound to the authenticated Client SPKI and Known Host pinned to the verified Host SPKI (S5); asymmetric completion and lost-outcome recovery; administrative fences (revoke, block, reset during a pending attempt).
 4. **Out of scope.** Normal reconnect (P10.7); `sas-pairing` changes.
 5. **Security invariants.** No trust from a result alone; either side may be the only result holder and DovahLink must tolerate it; trust binds the key the ceremony authenticated and the identity whose possession was proved; stale approvals rejected.
 6. **Main areas / files.** DovahLink `host/DovahLink.Host/{Pairing,Trust}`, SDK persistence and pairing services, app pairing state.
 7. **Tests / evidence.** Initiator-only and Responder-only completion; stale approval; Reject and Block; revoke or reset during pending; crash and restart between evidence and Pair; E-10.
 8. **Exit criteria.** Durable trust only after Pair and the required proof; every asymmetric case handled; E-10 passes.
 9. **STOP conditions.** Trust would need to be written before proof of possession or Pair; asymmetric completion cannot be handled without a bilateral-commit assumption.
-10. **Dependencies.** P10.2 verdict; P10.5.
+10. **Dependencies.** P10.2 verdict; P10.5; P10.5A.
 
 ### P10.7 — Normal Trusted Reconnect
 
-1. **Goal.** Prove that already-trusted peers reconnect without SAS, through DovahLink authentication with proof of possession, into a fresh runtime session, with revoke and block preserved and network location never used as identity.
+1. **Goal.** Replace bearer reconnect with DovahLink's selected S7 architecture (pinned Host over TLS 1.3, fresh Host challenge, Client ECDSA P-256 signature against the KnownDevice key, current trust state, fresh session) and remove the bearer credential atomically (S9, S10), proving that already-trusted peers reconnect without SAS, with revoke and block preserved and network location never used as identity.
 2. **Why it exists.** SAS establishes trust; it must not become the reconnect mechanism.
-3. **Scope.** The reconnect path P10.2 settled (unchanged, targeted change, or replacement); E-09.
+3. **Scope.** The reconnect replacement P10.2 settled (P10-D-003): the S7 statement bytes, challenge size, lifetime, and single use, signature encoding, replay behaviour, and C#↔Dart vectors; Host mapping of the proven key plus `clientId` to the current KnownDevice state; atomic removal of `trusted_device_credential`, its verifier, and the bearer recovery state, with no dual mode; E-09.
 4. **Out of scope.** New pairing behaviour; `sas-pairing` changes.
 5. **Security invariants.** No `sas-pairing` runtime, authority, or listener in reconnect; a fresh session per connection; revoked and blocked peers rejected with their typed outcomes; endpoint changes do not change identity.
 6. **Main areas / files.** DovahLink Host hello and authentication, SDK reconnect and authentication services.
 7. **Tests / evidence.** Reconnect with the pairing stack absent; endpoint and port change; revoked, blocked, stale credential; Host, client, and Skyrim restarts.
 8. **Exit criteria.** E-09 passes and every case above is evidenced.
 9. **STOP conditions.** Reconnect would require SAS or `sas-pairing` state; trust would depend on address or port.
-10. **Dependencies.** P10.6.
+10. **Dependencies.** P10.5A, P10.6.
 
 ### P10.8 — Integration Closure + Android Portability Report
 
@@ -139,7 +153,7 @@ The frozen native ABI v1 ([P7](P7-native-abi.md)), the Dart package ([P8](P8-dar
 7. **Tests / evidence.** Every experiment E-01–E-14 resolved; full CI on the final head; DovahLink evidence referenced by exact commit.
 8. **Exit criteria.** Classification selected with evidence; closure documents complete; CI green; branch ready for the owner's pull request.
 9. **STOP conditions.** An experiment unresolved; a contradiction between the integration and P10-D-001.
-10. **Dependencies.** P10.1–P10.7.
+10. **Dependencies.** P10.1–P10.7, including P10.5A.
 
 ## Out of scope (whole phase)
 

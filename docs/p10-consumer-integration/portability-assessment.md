@@ -149,6 +149,10 @@ No Android isolate, platform channel, or platform code is designed or created he
 - **Why not C:** no concrete DovahLink requirement has been shown to be inexpressible safely. The outbound gap has a plausible public-API adapter path: a byte-transparent relay over normal sockets, designed never to parse a frame or add trust, exercised against the real DLL only in test code; whether it is safe in the real consumer is what E-02 must establish. The result data is complete, only frame-encoded, in a frozen deterministic format; whether DovahLink can read it safely is what E-13 must establish. Neither is an Android-only concern, and neither needs private FFI.
 - **Escalation rule.** If E-02 or E-13 fails (no safe adapter exists), the affected P10 work STOPs and P10 reports an ABI-V1-P10-C candidate with the exact missing capability, the exact DovahLink requirement, why the public Dart and .NET APIs cannot express it, why it is not merely an Android concern, and why no adapter can solve it safely. No ABI v2 or new export is designed automatically; the owner decides on ABI version and compatibility (P7-D-013 item 14).
 
+### P10.2 re-evaluation
+
+**Still ABI-V1-P10-B (unchanged).** P10.2 resolved the assumptions in its scope: E-13 by exact expected-frame comparison over the bytes ABI v1 already returns, with no decoder, wrapper helper, or export ([bootstrap mapping §10](bootstrap-mapping.md#10-peer-bootstrap-consumption-e-13-p10-od-13)); E-05 and E-06 by the frozen mapping ([§19](bootstrap-mapping.md#19-e-05-and-e-06)); E-07 by keeping proof of possession in DovahLink ([§11](bootstrap-mapping.md#11-proof-of-possession-boundary-e-07)). It is not promoted to A, because E-02 (client relay), E-03, and E-04 (owner scheduling) are still unproven and E-13 still needs its real-result regression in P10.3 / P10.4. It is not demoted to C: needing a consumer-side frame encoder, needing DovahLink long-term keys, and replacing bearer authentication are consumer work, not ABI gaps; the 241-byte DovahLink Bootstrap is far inside the ABI bounds, and every value a pending authorization needs is in the result, locally known, or recoverable by exact comparison.
+
 ## 10. Cooperative drive assessment
 
 **Public orchestration concept (PN).** "Advance the pairing transport once, within a bound; receive every event it produced, in order; consume all of them (including results) even when the loop failed; then act." Dart `SasPairingHost.drive()` and .NET `SasPairingHost.Drive()` expose exactly that, and neither signature mentions a socket, WinSock, `DuplicateAndClose`, or a listener token. `recheckAfterResume()` is the same shape for a deadline sweep after an OS resume.
@@ -178,7 +182,7 @@ This is a statement about API shape, not Android compatibility: no Android build
 
 ## 12. Experimental assumptions
 
-None of these is proven yet.
+None of these is proven yet. *P10.2 status:* E-05, E-06, E-07, and E-13 are **resolved** by [P10-D-002](decisions.md#p10-d-002--canonical-dovahlink-bootstrap-v1-mapping) and [P10-D-003](decisions.md#p10-d-003--dovahlink-authentication-disposition-and-pop-boundary) (E-13 keeps a real-result regression test in P10.3 / P10.4); E-11's scope bytes are decided and its runtime check stays in P10.3; the others are unchanged.
 
 | ID | Assumption | Why it matters | Current evidence | P10 experiment | Decision deadline |
 |---|---|---|---|---|---|
@@ -228,7 +232,7 @@ P10.1 does not choose.
 
 ## 14. Concrete Android blocker register
 
-"YES" requires current implementation evidence; absence of an Android implementation alone is not a blocker.
+"YES" requires current implementation evidence; absence of an Android implementation alone is not a blocker. *P10.2 produced no new Android evidence and changes no row; its canonical Bootstrap bytes are platform-neutral.*
 
 | Potential Android issue | Current evidence | Concrete blocker? | P10 action | P11 question |
 |---|---|---|---|---|

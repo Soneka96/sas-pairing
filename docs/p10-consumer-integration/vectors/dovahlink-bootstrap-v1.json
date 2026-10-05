@@ -1,0 +1,729 @@
+{
+  "metadata": {
+    "artifact": "dovahlink-bootstrap-v1",
+    "kind": "DovahLink consumer mapping vectors",
+    "status": "DOVAHLINK CONSUMER MAPPING VECTORS - NOT sas-pairing PROTOCOL-CONFORMANCE VECTORS - NOT PRODUCTION APPROVAL",
+    "decision": "P10-D-002",
+    "owner": "DovahLink consumer mapping recorded in sas-pairing P10; the bytes are DovahLink-owned application data",
+    "sas_pairing_profile_identifier": "sas-pairing-vodozemac-profile-draft-01",
+    "bootstrap_frame_grammar": "P3 profile section 3.1 and section 4 (type 0x20); reproduced byte for byte against vectors/p3-remote-vodozemac-draft-01.json by the verifier",
+    "dovahlink_baseline_commit": "9f4e925cc8dcba0db37d1bd7d38b39f0927b9387",
+    "test_key_warning": "Every key in this file is a TEST VECTOR ONLY: its private scalar is published here. Never use one as a real DovahLink key.",
+    "encoding": "hex is lowercase base16 of the exact bytes; ascii fields are given only for readability"
+  },
+  "constants": {
+    "application_identity_domain": {
+      "ascii": "dovahlink.application-identity.v1",
+      "hex": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631",
+      "length": 33
+    },
+    "role_codes": {
+      "host": "01",
+      "client": "02"
+    },
+    "application_identity_length": 50,
+    "key_algorithm": {
+      "ascii": "dovahlink.ecdsa-p256.spki-der.v1",
+      "hex": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+      "length": 32
+    },
+    "p256_spki_prefix": {
+      "hex": "3059301306072a8648ce3d020106082a8648ce3d03010703420004",
+      "length": 27,
+      "meaning": "DER SEQUENCE { SEQUENCE { id-ecPublicKey 1.2.840.10045.2.1, secp256r1 1.2.840.10045.3.1.7 }, BIT STRING (0 unused bits) 0x04 || X || Y }"
+    },
+    "public_key_length": 91,
+    "shared_context": {
+      "ascii": "dovahlink.sas-pairing.bootstrap-v1.pairing",
+      "hex": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "length": 42
+    },
+    "authority_scope_domain": {
+      "ascii": "dovahlink.pairing-authority.v1",
+      "hex": "646f7661686c696e6b2e70616972696e672d617574686f726974792e7631",
+      "length": 30
+    },
+    "bootstrap_frame_header": {
+      "hex": "53415350414952000120",
+      "meaning": "ASCII SASPAIR, u16be version 1, type 0x20"
+    }
+  },
+  "uuids": [
+    {
+      "name": "host-uuid",
+      "text": "00112233-4455-6677-8899-aabbccddeeff",
+      "rfc9562_network_order_hex": "00112233445566778899aabbccddeeff"
+    },
+    {
+      "name": "client-uuid",
+      "text": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+      "rfc9562_network_order_hex": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    },
+    {
+      "name": "client-uuid-one-bit",
+      "text": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f1",
+      "rfc9562_network_order_hex": "0f1e2d3c4b5a69788796a5b4c3d2e1f1"
+    }
+  ],
+  "keys": [
+    {
+      "name": "host-test-key",
+      "warning": "TEST VECTOR ONLY - the private scalar is public - NEVER USE AS A REAL KEY",
+      "derivation": "d = int(SHA-256(ASCII('dovahlink-bootstrap-v1 test host key'))) mod (n - 1) + 1 on NIST P-256; public key = d*G",
+      "private_scalar_hex": "6bdc05bd1808d88d64f5a61f9f2f26100a0383032af513b39891195165cb0516",
+      "spki_der": {
+        "hex": "3059301306072a8648ce3d020106082a8648ce3d03010703420004f2422a662eb6e5065e3ea5587ed92dd959deff9b9e4115bb76dcb02abf07144a68e354b81cc01714608a8ecd61f8d9ac453cda8b0d20056623db09859432498a",
+        "length": 91
+      },
+      "spki_sha256_hex": "fe51247b600bd15d2022f4d83191de8de792eb4a3b3887f95fe9e330847d5fd4",
+      "fingerprint_base64url": "_lEke2AL0V0gIvTYMZHejeeS60o7OIf5X-njMIR9X9Q",
+      "fingerprint_role": "DovahLink display / storage index only (identity-and-transport.md section 5, 6); never a Bootstrap field and never a substitute for publicKey"
+    },
+    {
+      "name": "client-test-key",
+      "warning": "TEST VECTOR ONLY - the private scalar is public - NEVER USE AS A REAL KEY",
+      "derivation": "d = int(SHA-256(ASCII('dovahlink-bootstrap-v1 test client key'))) mod (n - 1) + 1 on NIST P-256; public key = d*G",
+      "private_scalar_hex": "db28314315a08442f75ff227c5bf2b51fbd70b1d580ccda9c6a2aac48903013c",
+      "spki_der": {
+        "hex": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+        "length": 91
+      },
+      "spki_sha256_hex": "3c31ef0499f7d8d36f02011b27d4fff27a746b0778cbf2c8a78d269b2334da4c",
+      "fingerprint_base64url": "PDHvBJn32NNvAgEbJ9T_8np0awd4y_LIp40mmyM02kw",
+      "fingerprint_role": "DovahLink display / storage index only (identity-and-transport.md section 5, 6); never a Bootstrap field and never a substitute for publicKey"
+    },
+    {
+      "name": "substitute-test-key",
+      "warning": "TEST VECTOR ONLY - the private scalar is public - NEVER USE AS A REAL KEY",
+      "derivation": "d = int(SHA-256(ASCII('dovahlink-bootstrap-v1 test substitute key'))) mod (n - 1) + 1 on NIST P-256; public key = d*G",
+      "private_scalar_hex": "6f5614c362cdd7f6a11b9eaa9371a45e02e876c5a356804067a17bca044a02d7",
+      "spki_der": {
+        "hex": "3059301306072a8648ce3d020106082a8648ce3d030107034200040bb2280b1872c24858a96435ba7cc34a9ec35f479bb1927225a82a9ae9a15fd90d083305f94466576611f5a3033370d93bbb3caaf7f73aec48c81b8898ddec2f",
+        "length": 91
+      },
+      "spki_sha256_hex": "0e0ae61c6c06447322cb05577a156859871c97d6a9aee447500bcce628522148",
+      "fingerprint_base64url": "DgrmHGwGRHMiywVXehVoWYccl9apruRHUAvM5ihSIUg",
+      "fingerprint_role": "DovahLink display / storage index only (identity-and-transport.md section 5, 6); never a Bootstrap field and never a substitute for publicKey"
+    }
+  ],
+  "vectors": [
+    {
+      "id": "V01",
+      "kind": "host_bootstrap",
+      "title": "Host Bootstrap (Responder; listener configuration)",
+      "inputs": {
+        "role": "host",
+        "uuid": "host-uuid",
+        "key": "host-test-key"
+      },
+      "fields": {
+        "application_identity": {
+          "hex": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e76310100112233445566778899aabbccddeeff",
+          "length": 50
+        },
+        "key_algorithm": {
+          "hex": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+          "length": 32
+        },
+        "public_key": {
+          "hex": "3059301306072a8648ce3d020106082a8648ce3d03010703420004f2422a662eb6e5065e3ea5587ed92dd959deff9b9e4115bb76dcb02abf07144a68e354b81cc01714608a8ecd61f8d9ac453cda8b0d20056623db09859432498a",
+          "length": 91
+        },
+        "shared_context": {
+          "hex": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+          "length": 42
+        }
+      },
+      "canonical_bootstrap_frame": {
+        "hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e76310100112233445566778899aabbccddeeff00000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004f2422a662eb6e5065e3ea5587ed92dd959deff9b9e4115bb76dcb02abf07144a68e354b81cc01714608a8ecd61f8d9ac453cda8b0d20056623db09859432498a0000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+        "length": 241,
+        "sha256": "232a56f2392a3dd83ee3847663af9b13ca4e4deeb9ea018746b4c681a0f2d4af"
+      }
+    },
+    {
+      "id": "V02",
+      "kind": "client_bootstrap",
+      "title": "Client Bootstrap (Initiator; per-run configuration)",
+      "inputs": {
+        "role": "client",
+        "uuid": "client-uuid",
+        "key": "client-test-key"
+      },
+      "fields": {
+        "application_identity": {
+          "hex": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f0",
+          "length": 50
+        },
+        "key_algorithm": {
+          "hex": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+          "length": 32
+        },
+        "public_key": {
+          "hex": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+          "length": 91
+        },
+        "shared_context": {
+          "hex": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+          "length": 42
+        }
+      },
+      "canonical_bootstrap_frame": {
+        "hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f000000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a074840000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+        "length": 241,
+        "sha256": "2391656c6384a54177d9442c4cd57667208ab6c045f2c916901e88094331fa6c"
+      }
+    },
+    {
+      "id": "V03",
+      "kind": "role_separation",
+      "title": "Same UUID in the Host and Client roles gives different applicationIdentity bytes",
+      "uuid": "00112233-4455-6677-8899-aabbccddeeff",
+      "host_application_identity_hex": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e76310100112233445566778899aabbccddeeff",
+      "client_application_identity_hex": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e76310200112233445566778899aabbccddeeff",
+      "expected_equal": false
+    },
+    {
+      "id": "V04",
+      "kind": "uuid_byte_order",
+      "title": "UUID byte-order trap: RFC 9562 network order, not .NET Guid.ToByteArray()",
+      "cases": [
+        {
+          "uuid": "00112233-4455-6677-8899-aabbccddeeff",
+          "rfc9562_network_order_hex": "00112233445566778899aabbccddeeff",
+          "dotnet_guid_to_byte_array_hex": "33221100554477668899aabbccddeeff",
+          "dotnet_correct_call": "Guid.TryWriteBytes(destination, bigEndian: true, out int written)",
+          "host_application_identity_hex": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e76310100112233445566778899aabbccddeeff",
+          "mixed_endian_application_identity_hex_must_not_match": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e76310133221100554477668899aabbccddeeff"
+        },
+        {
+          "uuid": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+          "rfc9562_network_order_hex": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+          "dotnet_guid_to_byte_array_hex": "3c2d1e0f5a4b78698796a5b4c3d2e1f0",
+          "dotnet_correct_call": "Guid.TryWriteBytes(destination, bigEndian: true, out int written)",
+          "host_application_identity_hex": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631010f1e2d3c4b5a69788796a5b4c3d2e1f0",
+          "mixed_endian_application_identity_hex_must_not_match": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631013c2d1e0f5a4b78698796a5b4c3d2e1f0"
+        }
+      ],
+      "dotnet_evidence": ".NET 10.0 (SDK 10.0.401): Guid.Parse(\"00112233-4455-6677-8899-aabbccddeeff\").ToByteArray() = 33221100554477668899aabbccddeeff; TryWriteBytes(bigEndian: true) = 00112233445566778899aabbccddeeff"
+    },
+    {
+      "id": "V05",
+      "kind": "distinct_keys",
+      "title": "Host and Client hold two different keys; their frames differ",
+      "host_public_key_hex": "3059301306072a8648ce3d020106082a8648ce3d03010703420004f2422a662eb6e5065e3ea5587ed92dd959deff9b9e4115bb76dcb02abf07144a68e354b81cc01714608a8ecd61f8d9ac453cda8b0d20056623db09859432498a",
+      "client_public_key_hex": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+      "expected_equal": false
+    },
+    {
+      "id": "V06",
+      "kind": "shared_context_independent_match",
+      "title": "Each side builds sharedContext from its own constant; the two are byte-equal",
+      "host_local_shared_context_hex": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "client_local_shared_context_hex": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "expected_equal": true
+    },
+    {
+      "id": "V07",
+      "kind": "negative_exact_frame_comparison",
+      "title": "sharedContext differs in one byte (last byte XOR 0x01)",
+      "authenticated_result_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f000000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a074840000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "candidate_expected_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f000000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a074840000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e66",
+      "authenticated_fields_hex": {
+        "application_identity": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "key_algorithm": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+        "public_key": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+        "shared_context": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67"
+      },
+      "candidate_fields_hex": {
+        "application_identity": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "key_algorithm": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+        "public_key": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+        "shared_context": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e66"
+      },
+      "differs_in": "shared_context",
+      "expected_equal": false
+    },
+    {
+      "id": "V08",
+      "kind": "negative_exact_frame_comparison",
+      "title": "Wrong keyAlgorithm (grammar-valid, different identifier)",
+      "authenticated_result_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f000000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a074840000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "candidate_expected_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f000000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76320000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a074840000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "authenticated_fields_hex": {
+        "application_identity": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "key_algorithm": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+        "public_key": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+        "shared_context": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67"
+      },
+      "candidate_fields_hex": {
+        "application_identity": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "key_algorithm": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7632",
+        "public_key": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+        "shared_context": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67"
+      },
+      "differs_in": "key_algorithm",
+      "expected_equal": false
+    },
+    {
+      "id": "V09",
+      "kind": "negative_exact_frame_comparison",
+      "title": "Changed publicKey (substitute P-256 key)",
+      "authenticated_result_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f000000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a074840000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "candidate_expected_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f000000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d030107034200040bb2280b1872c24858a96435ba7cc34a9ec35f479bb1927225a82a9ae9a15fd90d083305f94466576611f5a3033370d93bbb3caaf7f73aec48c81b8898ddec2f0000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "authenticated_fields_hex": {
+        "application_identity": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "key_algorithm": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+        "public_key": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+        "shared_context": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67"
+      },
+      "candidate_fields_hex": {
+        "application_identity": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "key_algorithm": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+        "public_key": "3059301306072a8648ce3d020106082a8648ce3d030107034200040bb2280b1872c24858a96435ba7cc34a9ec35f479bb1927225a82a9ae9a15fd90d083305f94466576611f5a3033370d93bbb3caaf7f73aec48c81b8898ddec2f",
+        "shared_context": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67"
+      },
+      "differs_in": "public_key",
+      "expected_equal": false
+    },
+    {
+      "id": "V10",
+      "kind": "negative_exact_frame_comparison",
+      "title": "Changed logical identity (client UUID last bit flipped)",
+      "authenticated_result_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f000000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a074840000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "candidate_expected_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f100000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a074840000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "authenticated_fields_hex": {
+        "application_identity": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "key_algorithm": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+        "public_key": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+        "shared_context": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67"
+      },
+      "candidate_fields_hex": {
+        "application_identity": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f1",
+        "key_algorithm": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+        "public_key": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+        "shared_context": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67"
+      },
+      "differs_in": "application_identity",
+      "expected_equal": false
+    },
+    {
+      "id": "V10b",
+      "kind": "negative_exact_frame_comparison",
+      "title": "Changed logical identity (role byte swapped to Host for the client UUID)",
+      "authenticated_result_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f000000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a074840000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "candidate_expected_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631010f1e2d3c4b5a69788796a5b4c3d2e1f000000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a074840000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "authenticated_fields_hex": {
+        "application_identity": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "key_algorithm": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+        "public_key": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+        "shared_context": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67"
+      },
+      "candidate_fields_hex": {
+        "application_identity": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631010f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "key_algorithm": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+        "public_key": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+        "shared_context": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67"
+      },
+      "differs_in": "application_identity",
+      "expected_equal": false
+    },
+    {
+      "id": "V11",
+      "kind": "attempt_context_not_applicable",
+      "title": "Changed attempt-context contribution",
+      "applicable": false,
+      "reason": "P10-D-002 selects no fresh per-attempt sharedContext contribution; ceremony_identity is the fresh attempt identity. A Bootstrap whose sharedContext carries any extra per-attempt bytes is not the frozen constant and fails exact comparison.",
+      "extra_contribution_frame_must_not_match": {
+        "id": "V11-neg",
+        "kind": "negative_exact_frame_comparison",
+        "title": "sharedContext with an appended 16-byte attempt contribution",
+        "authenticated_result_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f000000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a074840000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+        "candidate_expected_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f000000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a074840000003a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67000102030405060708090a0b0c0d0e0f",
+        "authenticated_fields_hex": {
+          "application_identity": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f0",
+          "key_algorithm": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+          "public_key": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+          "shared_context": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67"
+        },
+        "candidate_fields_hex": {
+          "application_identity": "646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f0",
+          "key_algorithm": "646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e7631",
+          "public_key": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+          "shared_context": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67000102030405060708090a0b0c0d0e0f"
+        },
+        "differs_in": "shared_context",
+        "expected_equal": false
+      }
+    },
+    {
+      "id": "V12",
+      "kind": "exact_frame_comparison",
+      "title": "E-13: Host-side check of the Client's authenticated peer Bootstrap",
+      "verifier_role": "host",
+      "candidate_values": {
+        "client_uuid": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+        "client_public_key_hex": "3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a07484",
+        "key_algorithm": "dovahlink.ecdsa-p256.spki-der.v1",
+        "own_local_shared_context_hex": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67"
+      },
+      "candidate_sources": {
+        "client_uuid": "DovahLink provisional pairing exchange (unauthenticated candidate)",
+        "client_public_key": "DovahLink provisional pairing exchange (unauthenticated candidate)",
+        "key_algorithm": "P10-D-002 constant",
+        "shared_context": "Host's own P10-D-002 constant"
+      },
+      "authenticated_result_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f000000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cbe8be70c2230db3aa58ac0bd5fd14dbb15e6c94a249aee685890665d145a074840000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "expected_equal": true
+    },
+    {
+      "id": "V13",
+      "kind": "exact_frame_comparison",
+      "title": "E-13: Client-side check of the Host's authenticated peer Bootstrap",
+      "verifier_role": "client",
+      "candidate_values": {
+        "host_uuid": "00112233-4455-6677-8899-aabbccddeeff",
+        "host_public_key_hex": "3059301306072a8648ce3d020106082a8648ce3d03010703420004f2422a662eb6e5065e3ea5587ed92dd959deff9b9e4115bb76dcb02abf07144a68e354b81cc01714608a8ecd61f8d9ac453cda8b0d20056623db09859432498a",
+        "key_algorithm": "dovahlink.ecdsa-p256.spki-der.v1",
+        "own_local_shared_context_hex": "646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67"
+      },
+      "candidate_sources": {
+        "host_uuid": "provisional session hello_ack hostId (unauthenticated candidate)",
+        "host_public_key": "provisional session Host certificate SPKI (P10.5A onward; unauthenticated candidate until compared)",
+        "key_algorithm": "P10-D-002 constant",
+        "shared_context": "Client's own P10-D-002 constant"
+      },
+      "authenticated_result_frame_hex": "5341535041495200012000000032646f7661686c696e6b2e6170706c69636174696f6e2d6964656e746974792e76310100112233445566778899aabbccddeeff00000020646f7661686c696e6b2e65636473612d703235362e73706b692d6465722e76310000005b3059301306072a8648ce3d020106082a8648ce3d03010703420004f2422a662eb6e5065e3ea5587ed92dd959deff9b9e4115bb76dcb02abf07144a68e354b81cc01714608a8ecd61f8d9ac453cda8b0d20056623db09859432498a0000002a646f7661686c696e6b2e7361732d70616972696e672e626f6f7473747261702d76312e70616972696e67",
+      "expected_equal": true
+    },
+    {
+      "id": "V14",
+      "kind": "authority_scope",
+      "title": "P10-OD-14 authority scope bytes (local installation state only)",
+      "host_scope_hex": "646f7661686c696e6b2e70616972696e672d617574686f726974792e76310100112233445566778899aabbccddeeff",
+      "client_scope_hex": "646f7661686c696e6b2e70616972696e672d617574686f726974792e7631020f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "same_uuid_host_scope_hex": "646f7661686c696e6b2e70616972696e672d617574686f726974792e76310100112233445566778899aabbccddeeff",
+      "same_uuid_client_scope_hex": "646f7661686c696e6b2e70616972696e672d617574686f726974792e76310200112233445566778899aabbccddeeff"
+    },
+    {
+      "id": "V15",
+      "kind": "public_key_noncanonical",
+      "title": "Compressed-point SPKI of the client test key is not the canonical publicKey",
+      "compressed_spki_hex": "3039301306072a8648ce3d020106082a8648ce3d03010703220002fdf05d25acd08029eabaf4dbafefda88f9df6acc278a88cff9d67934b71e15cb",
+      "length": 59,
+      "expected_valid": false
+    }
+  ],
+  "model": {
+    "role_assignment": {
+      "initiator": "client",
+      "responder": "host"
+    },
+    "peer_bootstrap_consumption": {
+      "strategy": "exact_expected_frame_comparison",
+      "consumer_decoder": "none",
+      "wrapper_change": "none",
+      "abi_change": "none",
+      "compared_bytes": "entire authenticated canonical Bootstrap frame",
+      "partial_field_acceptance": false
+    },
+    "shared_context_policy": {
+      "host_source": "local_constant",
+      "client_source": "local_constant",
+      "copied_from_peer": false,
+      "fresh_attempt_contribution": false,
+      "fresh_attempt_identity": "ceremony_identity"
+    },
+    "pending_authorization": {
+      "authority_key": "ceremony_identity",
+      "required_fields": [
+        "ceremony_identity",
+        "peer_role",
+        "authenticated_peer_bootstrap_frame",
+        "authenticated_shared_context",
+        "local_bootstrap_frame",
+        "peer_logical_identity",
+        "peer_public_key",
+        "proof_of_possession_verified",
+        "security_fence_generation",
+        "known_device_incarnation_or_absent",
+        "provisional_session_reference",
+        "created_at",
+        "expires_at"
+      ],
+      "never_authority": [
+        "request_id",
+        "client_id_alone",
+        "host_id_alone",
+        "network_location",
+        "shared_context",
+        "sas_decimal_string",
+        "provisional_session_reference"
+      ]
+    },
+    "state_model": {
+      "states": [
+        "ProvisionalCandidate",
+        "SasCeremonyRunning",
+        "SasCeremonyCompletedLocally",
+        "PeerBootstrapVerified",
+        "ProofOfPossessionVerified",
+        "PendingPairingAuthorization",
+        "Paired",
+        "Rejected",
+        "Blocked",
+        "Failed"
+      ],
+      "transitions": [
+        [
+          "ProvisionalCandidate",
+          "SasCeremonyRunning"
+        ],
+        [
+          "SasCeremonyRunning",
+          "SasCeremonyCompletedLocally"
+        ],
+        [
+          "SasCeremonyRunning",
+          "Failed"
+        ],
+        [
+          "SasCeremonyCompletedLocally",
+          "PeerBootstrapVerified"
+        ],
+        [
+          "SasCeremonyCompletedLocally",
+          "Failed"
+        ],
+        [
+          "PeerBootstrapVerified",
+          "ProofOfPossessionVerified"
+        ],
+        [
+          "PeerBootstrapVerified",
+          "Failed"
+        ],
+        [
+          "ProofOfPossessionVerified",
+          "PendingPairingAuthorization"
+        ],
+        [
+          "ProofOfPossessionVerified",
+          "Failed"
+        ],
+        [
+          "PendingPairingAuthorization",
+          "Paired"
+        ],
+        [
+          "PendingPairingAuthorization",
+          "Rejected"
+        ],
+        [
+          "PendingPairingAuthorization",
+          "Blocked"
+        ],
+        [
+          "PendingPairingAuthorization",
+          "Failed"
+        ]
+      ],
+      "durable_trust_written_only_in": [
+        "Paired"
+      ],
+      "local_result_state": "SasCeremonyCompletedLocally"
+    },
+    "initial_pairing_flow": [
+      "provisional_dovahlink_session",
+      "candidate_exchange",
+      "sas_pairing_ceremony",
+      "local_pairing_result",
+      "exact_peer_bootstrap_comparison",
+      "host_key_proof",
+      "client_pairing_proof_of_possession",
+      "pending_pairing_authorization",
+      "pair_reject_block",
+      "durable_trust"
+    ],
+    "normal_reconnect_flow": [
+      "pinned_host_verification",
+      "fresh_host_challenge",
+      "client_proof_of_possession",
+      "host_trust_state_check",
+      "fresh_dovahlink_session"
+    ],
+    "durable_identity_fields": {
+      "known_device": [
+        "client_id",
+        "client_public_key_spki_der",
+        "key_algorithm",
+        "trust_state",
+        "incarnation",
+        "short_id",
+        "display_name",
+        "paired_at",
+        "blocked_at"
+      ],
+      "known_host": [
+        "host_id",
+        "pinned_host_public_key_spki_der",
+        "key_algorithm",
+        "last_known_host_name",
+        "last_known_endpoint"
+      ],
+      "routing_only_fields": [
+        "last_known_endpoint"
+      ]
+    },
+    "bootstrap_secret_policy": {
+      "fields_are_public": true,
+      "forbidden_contents": [
+        "trusted_device_credential",
+        "pending pairing credential",
+        "developer token",
+        "private key or scalar",
+        "pairing code",
+        "session secret"
+      ]
+    }
+  },
+  "authentication_audit": {
+    "verdict": "REPLACEMENT_REQUIRED",
+    "verdict_scope": "durable trust and normal trusted reconnect after initial pairing becomes sas-pairing; the six-digit initial ceremony is excluded (replaced regardless)",
+    "current_long_term_keys": {
+      "host": false,
+      "client": false
+    },
+    "properties": [
+      {
+        "property": "Host authentication",
+        "label": "CURRENT",
+        "mechanism_class": "unauthenticated_claim",
+        "provides_possession_proof": false,
+        "meets_target": false
+      },
+      {
+        "property": "Client authentication",
+        "label": "CURRENT",
+        "mechanism_class": "bearer",
+        "provides_possession_proof": false,
+        "meets_target": false
+      },
+      {
+        "property": "Private-key possession",
+        "label": "CURRENT",
+        "mechanism_class": "absent",
+        "provides_possession_proof": false,
+        "meets_target": false
+      },
+      {
+        "property": "Replay resistance",
+        "label": "CURRENT",
+        "mechanism_class": "bearer",
+        "provides_possession_proof": false,
+        "meets_target": false
+      },
+      {
+        "property": "Session freshness",
+        "label": "CURRENT",
+        "mechanism_class": "absent",
+        "provides_possession_proof": false,
+        "meets_target": false
+      },
+      {
+        "property": "Session binding",
+        "label": "CURRENT",
+        "mechanism_class": "socket_binding_only",
+        "provides_possession_proof": false,
+        "meets_target": false
+      },
+      {
+        "property": "Trust-key binding",
+        "label": "CURRENT",
+        "mechanism_class": "absent",
+        "provides_possession_proof": false,
+        "meets_target": false
+      },
+      {
+        "property": "Known-host pinning",
+        "label": "CURRENT",
+        "mechanism_class": "unauthenticated_claim",
+        "provides_possession_proof": false,
+        "meets_target": false
+      },
+      {
+        "property": "Known-device key binding",
+        "label": "CURRENT",
+        "mechanism_class": "bearer_verifier",
+        "provides_possession_proof": false,
+        "meets_target": false
+      },
+      {
+        "property": "Revoke",
+        "label": "CURRENT",
+        "mechanism_class": "administrative_state",
+        "provides_possession_proof": false,
+        "meets_target": true
+      },
+      {
+        "property": "Block",
+        "label": "CURRENT",
+        "mechanism_class": "administrative_state",
+        "provides_possession_proof": false,
+        "meets_target": true
+      },
+      {
+        "property": "Reset",
+        "label": "CURRENT",
+        "mechanism_class": "administrative_state",
+        "provides_possession_proof": false,
+        "meets_target": true
+      },
+      {
+        "property": "Credential cloning resistance",
+        "label": "CURRENT",
+        "mechanism_class": "bearer",
+        "provides_possession_proof": false,
+        "meets_target": false
+      },
+      {
+        "property": "Endpoint independence",
+        "label": "CURRENT",
+        "mechanism_class": "routing_only",
+        "provides_possession_proof": false,
+        "meets_target": true
+      }
+    ],
+    "target_design": [
+      {
+        "item": "Persistent Host asymmetric key (S3)",
+        "label": "TARGET-DESIGN",
+        "status": "selected-unimplemented"
+      },
+      {
+        "item": "Persistent Client asymmetric key, ECDSA P-256 (S4)",
+        "label": "TARGET-DESIGN",
+        "status": "selected-unimplemented"
+      },
+      {
+        "item": "DER SPKI public identity, SHA-256 fingerprint",
+        "label": "TARGET-DESIGN",
+        "status": "selected-unimplemented"
+      },
+      {
+        "item": "WSS / TLS 1.3 with Host-key pinning (S5, S6)",
+        "label": "TARGET-DESIGN",
+        "status": "selected-unimplemented"
+      },
+      {
+        "item": "Fresh-challenge ECDSA P-256 Client PoP for reconnect (S7)",
+        "label": "TARGET-DESIGN",
+        "status": "selected-underspecified"
+      },
+      {
+        "item": "Host key algorithm",
+        "label": "P10-DECISION",
+        "status": "decided-p10-unimplemented"
+      }
+    ]
+  }
+}

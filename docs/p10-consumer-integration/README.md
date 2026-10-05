@@ -2,7 +2,7 @@
 
 > **Pre-alpha. Not production approval.** P10 integrates the experimental `sas-pairing` packages into DovahLink on Windows. Nothing in P10 is a professional audit, formal verification, production-security approval, release approval, or Android support.
 
-**Status: P10 IN PROGRESS — P10.1 COMPLETE** (consumer boundary + ABI-v1 / portability assessment; documentation only). **P10.2 — Canonical DovahLink Bootstrap Mapping + Current Authentication / Trust Audit** is next and starts only after P10.1 passes independent review. P10.2 must audit DovahLink's **current** authentication before any major integration implementation.
+**Status: P10 IN PROGRESS — P10.2 COMPLETE** (canonical DovahLink Bootstrap mapping + current authentication / trust audit; documentation, vectors, and a test-only verifier), awaiting independent review. P10.1 (consumer boundary + ABI-v1 / portability assessment) is complete and accepted. **P10.3 — Host Integration (.NET, Windows)**, now including the Host long-term key, is next and starts only after P10.2 passes independent review.
 
 The roadmap and the increment plan are in [roadmap/P10-consumer-integration.md](../../roadmap/P10-consumer-integration.md).
 
@@ -10,8 +10,11 @@ The roadmap and the increment plan are in [roadmap/P10-consumer-integration.md](
 
 | Document | Contents |
 |---|---|
-| [decisions.md](decisions.md) | [P10-D-001](decisions.md#p10-d-001--consumer-boundary-platform-boundary-and-portability-discipline) (consumer boundary, platform boundary, portability discipline) and the [pending owner decisions](decisions.md#pending-owner-decisions) P10-OD-01 to P10-OD-15 |
+| [decisions.md](decisions.md) | [P10-D-001](decisions.md#p10-d-001--consumer-boundary-platform-boundary-and-portability-discipline) (consumer boundary, platform boundary, portability discipline), [P10-D-002](decisions.md#p10-d-002--canonical-dovahlink-bootstrap-v1-mapping) (canonical Bootstrap mapping), [P10-D-003](decisions.md#p10-d-003--dovahlink-authentication-disposition-and-pop-boundary) (authentication disposition and PoP boundary), and the [pending owner decisions](decisions.md#pending-owner-decisions) P10-OD-01 to P10-OD-16 |
 | [consumer-boundary.md](consumer-boundary.md) | Responsibility split; verified `sas-pairing` facts A–O; PairingResult, CeremonyIdentity, proof-of-possession, Pair / Reject / Block, durable trust, reconnect, and network-identity boundaries; Bootstrap pre-assessment; DovahLink current-state evidence; the DovahLink boundary matrix; the P10.2 authentication audit contract |
+| [authentication-audit.md](authentication-audit.md) | P10.2 audit of DovahLink's current authentication, trust, and reconnect (CURRENT / TARGET-DESIGN / P10-DECISION labels); Host, Client, and bearer analysis; KnownHost and KnownDevice fields; revoke / block / reset; questions A–AB and AC–AF; the property matrix; the verdict; key existence; surviving controls; the replacement components and their owners |
+| [bootstrap-mapping.md](bootstrap-mapping.md) | P10-D-002 specification: exact `applicationIdentity`, `keyAlgorithm`, `publicKey`, and `sharedContext` bytes for Host and Client; UUID encoding; roles; anti-confusion and the rejected nonce design; exact peer-frame comparison (E-13); PoP boundary; cross-channel binding; local completion versus pending Pair; pending authorization; asymmetric completion; mutation fence; initial versus reconnect flows; authority scope; E-05 / E-06; vectors |
+| [vectors/dovahlink-bootstrap-v1.json](vectors/dovahlink-bootstrap-v1.json) | DovahLink consumer mapping vectors (not `sas-pairing` conformance vectors), verified by `tooling/tests/test_p10_dovahlink_bootstrap_mapping.py` |
 | [portability-assessment.md](portability-assessment.md) | PN / WE / AB classification; authority, network, and cooperative-drive assessments; .NET and Dart integration boundaries with thread and isolate assessments; the ABI-v1 P10 verdict; the Dart future-reuse matrix; experiments E-01 to E-14; P10.8 closure questions; the Android blocker register; contradictions and gaps; the STOP review |
 
 ## Baseline
@@ -27,11 +30,12 @@ The roadmap and the increment plan are in [roadmap/P10-consumer-integration.md](
 
 | Increment | Scope | Decision | State |
 |---|---|---|---|
-| P10.1 | Consumer boundary, platform boundary, ABI-v1 sufficiency, PN / WE / AB classification, Android blocker register, P10 plan | P10-D-001 | Complete; P10.1.1 reconciled the DovahLink baseline and the experiment wording; awaiting independent review |
-| P10.2 | DovahLink authentication / trust audit with a required verdict; canonical Bootstrap mapping; proof-of-possession boundary | — | Next |
-| P10.3 | Host integration (.NET, Windows) | — | Planned |
-| P10.4 | Dart / Flutter client integration (Windows) | — | Planned |
+| P10.1 | Consumer boundary, platform boundary, ABI-v1 sufficiency, PN / WE / AB classification, Android blocker register, P10 plan | P10-D-001 | Complete and accepted (P10.1.1 reconciled the DovahLink baseline and the experiment wording) |
+| P10.2 | DovahLink authentication / trust audit with a required verdict; canonical Bootstrap mapping; proof-of-possession boundary | P10-D-002, P10-D-003 | Complete; awaiting independent review |
+| P10.3 | Host integration (.NET, Windows) + Host long-term key | — | Next, after P10.2 review |
+| P10.4 | Dart / Flutter client integration (Windows) + Client long-term key | — | Planned |
 | P10.5 | SAS comparison + ceremony-bound approval | — | Planned |
+| P10.5A | Authenticated transport (WSS / TLS 1.3 with the Host key) | — | Planned (added by P10.2, owner-approved) |
 | P10.6 | DovahLink authorization + durable trust | — | Planned |
 | P10.7 | Normal trusted reconnect | — | Planned |
 | P10.8 | Integration closure + Android portability report | — | Planned |
@@ -43,6 +47,16 @@ The roadmap and the increment plan are in [roadmap/P10-consumer-integration.md](
 - **Portability.** Consumer concepts (identities, Bootstrap bytes, shared context, `ceremony_identity`, the result's meaning, the SAS string, authorization, trust, proof of possession, reconnect) are PN; the listener tokens, WinSock handles, `DuplicateAndClose`, the `WSAPoll` owner loop, the Windows lock-file authority lease, and DLL packaging are WE and can stay below adapters; concrete Android blockers are the non-Windows authority lease and carrier (both fail closed today), the Windows-only carrier entry of the ABI, the Windows listener tokens, and the missing Android artifact ([portability §14](portability-assessment.md#14-concrete-android-blocker-register)).
 - **DovahLink facts that shape P10** (not a verdict): pairing today is a Host-generated six-digit code that issues a bearer credential; no Host or Client long-term key exists in DovahLink code; reconnect uses that bearer credential; the public transport is loopback-only; DovahLink has selected, but not implemented, "evidence → pending approval for the exact attempt → Pair / Reject / Block → trust" ([consumer boundary §12](consumer-boundary.md#12-dovahlink-current-state-evidence)).
 - **No STOP condition hit** ([portability §17](portability-assessment.md#17-stop-conditions-review)).
+
+## P10.2 results
+
+- **Authentication verdict: 🔴 DOES NOT PROVIDE ADEQUATE AUTHENTICATION — REPLACEMENT REQUIRED** for durable trust and normal reconnect ([audit §16](authentication-audit.md#16-verdict), [P10-D-003](decisions.md#p10-d-003--dovahlink-authentication-disposition-and-pop-boundary)). Trusted reconnect presents a reusable 128-bit bearer credential (SHA-256 verifier on the Host): no challenge, no signature, no session binding, replayable, clonable; nothing authenticates the Host, and the client sends the bearer in `hello` before it sees the Host's unsigned `hostId` claim. No Host or Client long-term key exists (DESIGN EXISTS — IMPLEMENTATION DOES NOT). The six-digit ceremony's replacement is not counted. DovahLink's administrative controls (typed states, session invalidation, fence generation and incarnation, conditional writes, fail-closed DPAPI persistence) are sound and kept.
+- **Replacement scope (owner-approved 2026-10-05):** Host key in P10.3, Client key in P10.4, a new transport increment **P10.5A** (WSS / TLS 1.3 with the Host key), Host verification, Client pairing PoP, and key-bound trust in P10.6, fresh-challenge reconnect PoP and the atomic bearer cutover in P10.7; DovahLink slices S3–S7, S9, S10 open as pre-alpha P10 work under DovahLink's own workflow, its production gate closed.
+- **Canonical Bootstrap v1 ([P10-D-002](decisions.md#p10-d-002--canonical-dovahlink-bootstrap-v1-mapping), [mapping](bootstrap-mapping.md)):** `applicationIdentity` = `dovahlink.application-identity.v1` ‖ role byte ‖ RFC 9562 UUID bytes (50 bytes); `keyAlgorithm` = `dovahlink.ecdsa-p256.spki-der.v1` for both roles (owner chose P-256 for the Host); `publicKey` = the exact 91-byte P-256 SPKI (the Host's TLS key, the Client's PoP key); `sharedContext` = the independently compiled constant `dovahlink.sas-pairing.bootstrap-v1.pairing`; no per-attempt nonce (`ceremony_identity` is the attempt identity). Client = Initiator, Host = Responder.
+- **E-13: exact expected-frame comparison** of the whole authenticated peer frame; no decoder, no wrapper change, no ABI change. E-05, E-06, E-07, E-13 resolved; P10-OD-04, -05, -06 (model), -10, -13 resolved, -14 scope bytes decided (E-11 in P10.3), P10-OD-16 added.
+- **ABI-v1 verdict: ABI-V1-P10-B, unchanged** ([portability §9](portability-assessment.md#p102-re-evaluation)): E-02, E-03, E-04 remain unproven; no ABI information gap was found.
+- **Vectors:** 15 DovahLink consumer mapping vector groups with a stdlib verifier that first reproduces the frozen core-generated P3 Bootstrap frames; all 14 required mutations (A–N) were killed.
+- **No STOP condition hit**; no production change in `sas-pairing` or DovahLink.
 
 ## Evidence
 
